@@ -10,6 +10,8 @@ class Settings {
   final String? aiServerUrl;
   final String? ttsServerUrl;
   final bool isUrlValid;
+  final String basicAuthUser;
+  final String basicAuthPassword;
   final String translationProvider;
   final bool showTags;
   final bool showLastRead;
@@ -52,6 +54,8 @@ class Settings {
     this.aiServerUrl,
     this.ttsServerUrl,
     this.isUrlValid = true,
+    this.basicAuthUser = '',
+    this.basicAuthPassword = '',
     this.translationProvider = 'local',
     this.showTags = true,
     this.showLastRead = true,
@@ -93,6 +97,8 @@ class Settings {
     String? aiServerUrl,
     String? ttsServerUrl,
     bool? isUrlValid,
+    String? basicAuthUser,
+    String? basicAuthPassword,
     String? translationProvider,
     bool? showTags,
     bool? showLastRead,
@@ -135,6 +141,8 @@ class Settings {
       aiServerUrl: aiServerUrl ?? this.aiServerUrl,
       ttsServerUrl: ttsServerUrl ?? this.ttsServerUrl,
       isUrlValid: isUrlValid ?? this.isUrlValid,
+      basicAuthUser: basicAuthUser ?? this.basicAuthUser,
+      basicAuthPassword: basicAuthPassword ?? this.basicAuthPassword,
       translationProvider: translationProvider ?? this.translationProvider,
       showTags: showTags ?? this.showTags,
       showLastRead: showLastRead ?? this.showLastRead,
@@ -245,6 +253,8 @@ class Settings {
         other.aiServerUrl == aiServerUrl &&
         other.ttsServerUrl == ttsServerUrl &&
         other.isUrlValid == isUrlValid &&
+        other.basicAuthUser == basicAuthUser &&
+        other.basicAuthPassword == basicAuthPassword &&
         other.translationProvider == translationProvider &&
         other.showTags == showTags &&
         other.showLastRead == showLastRead &&
@@ -289,6 +299,8 @@ class Settings {
     aiServerUrl,
     ttsServerUrl,
     isUrlValid,
+    basicAuthUser,
+    basicAuthPassword,
     translationProvider,
     showTags,
     showLastRead,

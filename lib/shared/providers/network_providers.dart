@@ -8,8 +8,12 @@ import '../../core/cache/providers/term_cache_provider.dart';
 
 // API service provider using serverUrl from settings
 final apiServiceProvider = Provider<ApiService>((ref) {
-  final serverUrl = ref.watch(settingsProvider.select((s) => s.serverUrl));
-  return ApiService(baseUrl: serverUrl);
+  final settings = ref.watch(settingsProvider);
+  return ApiService(
+    baseUrl: settings.serverUrl,
+    basicAuthUser: settings.basicAuthUser,
+    basicAuthPassword: settings.basicAuthPassword,
+  );
 });
 
 // Content service provider

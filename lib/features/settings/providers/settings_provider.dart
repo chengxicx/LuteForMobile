@@ -26,6 +26,8 @@ class ViewDrawerSettings {
 
 class SettingsNotifier extends Notifier<Settings> {
   static const String _keyLocalUrl = 'local_url';
+  static const String _keyBasicAuthUser = 'basic_auth_user';
+  static const String _keyBasicAuthPassword = 'basic_auth_password';
   static const String _keyUseTermux = 'use_termux';
   static const String _keyTranslationProvider = 'translation_provider';
   static const String _keyShowTags = 'show_tags';
@@ -79,11 +81,15 @@ class SettingsNotifier extends Notifier<Settings> {
     final localUrl = prefs.getString(_keyLocalUrl) ?? '';
     final useTermux = prefs.getBool(_keyUseTermux) ?? false;
     final serverUrl = useTermux ? Settings.termuxUrl : localUrl;
+    final basicAuthUser = prefs.getString(_keyBasicAuthUser) ?? '';
+    final basicAuthPassword = prefs.getString(_keyBasicAuthPassword) ?? '';
 
     state = Settings.defaultSettings().copyWith(
       localUrl: localUrl,
       serverUrl: serverUrl,
       isUrlValid: _isValidUrl(serverUrl),
+      basicAuthUser: basicAuthUser,
+      basicAuthPassword: basicAuthPassword,
     );
 
     _loadOtherSettings(prefs);
@@ -199,6 +205,21 @@ class SettingsNotifier extends Notifier<Settings> {
     }
   }
 
+  Future<void> updateBasicAuth(String user, String password) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyBasicAuthUser, user);
+    await prefs.setString(_keyBasicAuthPassword, password);
+    state = state.copyWith(
+      basicAuthUser: user,
+      basicAuthPassword: password,
+    );
+
+    final cacheManager = ref.read(cacheManagerProvider);
+    await cacheManager.clearServerDependentCaches();
+    await clearCurrentBook();
+    ref.read(readerProvider.notifier).clearPageData();
+  }
+
   Future<void> setServerSelection(bool useTermux) async {
     final prefs = await SharedPreferences.getInstance();
     final previousServerUrl = state.serverUrl;
@@ -222,7 +243,11 @@ class SettingsNotifier extends Notifier<Settings> {
       await cacheManager.clearDictionaryPreferences();
     }
 
-    final isReachable = await ServerHealthService.isReachable(state.serverUrl);
+    final isReachable = await ServerHealthService.isReachable(
+      state.serverUrl,
+      username: state.basicAuthUser,
+      password: state.basicAuthPassword,
+    );
     ServerStatusManager.setReachable(isReachable);
   }
 
@@ -487,6 +512,8 @@ class SettingsNotifier extends Notifier<Settings> {
   void resetSettings() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyLocalUrl);
+    await prefs.remove(_keyBasicAuthUser);
+    await prefs.remove(_keyBasicAuthPassword);
     await prefs.remove(_keyUseTermux);
     await prefs.remove(_keyTranslationProvider);
     await prefs.remove(_keyShowTags);

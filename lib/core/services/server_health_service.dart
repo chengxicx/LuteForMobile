@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:dio/dio.dart';
 
 class ServerHealthService {
@@ -14,7 +15,11 @@ class ServerHealthService {
 
   static Future<bool>? _pendingCheck;
 
-  static Future<bool> isReachable(String url) async {
+  static Future<bool> isReachable(
+    String url, {
+    String username = '',
+    String password = '',
+  }) async {
     if (url.isEmpty) {
       print('ServerHealthService: URL is empty, returning false');
       return false;
@@ -31,7 +36,7 @@ class ServerHealthService {
       return _pendingCheck!;
     }
 
-    _pendingCheck = _performCheck(uri);
+    _pendingCheck = _performCheck(uri, username, password);
     try {
       return await _pendingCheck!;
     } finally {
@@ -39,14 +44,24 @@ class ServerHealthService {
     }
   }
 
-  static Future<bool> _performCheck(Uri uri) async {
+  static Future<bool> _performCheck(Uri uri, String username, String password) async {
     try {
       // Use /info endpoint for health check (designed for this purpose)
       final healthUri = uri.replace(path: '/info');
       print('ServerHealthService: Sending HEAD request to $healthUri');
 
+      final headers = <String, dynamic>{};
+      if (username.isNotEmpty) {
+        final basicAuth =
+            'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+        headers['Authorization'] = basicAuth;
+      }
+
       final startTime = DateTime.now();
-      final response = await _dio.headUri(healthUri);
+      final response = await _dio.headUri(
+        healthUri,
+        options: Options(headers: headers),
+      );
       final elapsed = DateTime.now().difference(startTime).inMilliseconds;
 
       print(
@@ -77,10 +92,12 @@ class ServerHealthService {
     String url, {
     Duration interval = const Duration(milliseconds: 200),
     int maxAttempts = 100,
+    String username = '',
+    String password = '',
   }) async {
     int attempts = 0;
     while (attempts < maxAttempts) {
-      if (await isReachable(url)) {
+      if (await isReachable(url, username: username, password: password)) {
         return true;
       }
       attempts++;
