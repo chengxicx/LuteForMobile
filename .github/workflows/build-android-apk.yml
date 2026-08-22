@@ -1,0 +1,56 @@
+name: Build Android APK
+
+# 手动触发（Actions 页面的 "Run workflow"）或推送到 main 时构建
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'lib/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'android/**'
+      - '.github/workflows/build-android-apk.yml'
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter (latest stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # 生成一次性上传密钥并写入 android/key.properties（该文件不入库，
+      # release buildTypes 的 signingConfig 需要读取它，否则 release 构建会失败）。
+      - name: Generate CI signing keystore
+        run: |
+          PASS="ci_apk_$RANDOM$RANDOM$(date +%s)"
+          keytool -genkeypair -v \
+            -keystore keystore.jks \
+            -storepass "$PASS" \
+            -alias android \
+            -keypass "$PASS" \
+            -dname "CN=Lute, OU=Lute, O=Lute, L=City, S=State, C=US" \
+            -keyalg RSA -keysize 2048 -validity 10000
+          # storeFile 相对 android/app/ 目录解析
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=android\nstoreFile=../../keystore.jks\n' \
+            "$PASS" "$PASS" > android/key.properties
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lute-for-mobile-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
