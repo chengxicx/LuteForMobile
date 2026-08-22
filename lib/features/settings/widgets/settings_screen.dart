@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -110,6 +112,8 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   final _localUrlController = TextEditingController();
+  final _authUserController = TextEditingController();
+  final _authPasswordController = TextEditingController();
   int _buildCount = 0;
   bool _isTesting = false;
   String? _connectionStatus;
@@ -122,8 +126,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     super.initState();
     SharedPreferences.getInstance().then((prefs) {
       final savedUrl = prefs.getString('local_url') ?? '';
+      final authUser = prefs.getString('basic_auth_user') ?? '';
+      final authPassword = prefs.getString('basic_auth_password') ?? '';
       if (mounted) {
         _localUrlController.text = savedUrl;
+        _authUserController.text = authUser;
+        _authPasswordController.text = authPassword;
       }
     });
   }
@@ -131,6 +139,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   void dispose() {
     _localUrlController.dispose();
+    _authUserController.dispose();
+    _authPasswordController.dispose();
     super.dispose();
   }
 
@@ -144,13 +154,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
 
     final url = _localUrlController.text.trim();
+    final authUser = _authUserController.text.trim();
+    final authPassword = _authPasswordController.text;
     try {
       final dio = Dio();
+      final headers = <String, dynamic>{};
+      if (authUser.isNotEmpty) {
+        final basicAuth =
+            'Basic ${base64Encode(utf8.encode('$authUser:$authPassword'))}';
+        headers['Authorization'] = basicAuth;
+      }
       final response = await dio.get(
         url,
         options: Options(
           receiveTimeout: const Duration(seconds: 10),
           sendTimeout: const Duration(seconds: 10),
+          headers: headers,
         ),
       );
 
@@ -189,6 +208,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     final prefs = await SharedPreferences.getInstance();
     final oldUrl = prefs.getString('local_url') ?? '';
+
+    await ref
+        .read(settingsProvider.notifier)
+        .updateBasicAuth(
+          _authUserController.text.trim(),
+          _authPasswordController.text,
+        );
 
     if (oldUrl != newUrl) {
       await ref.read(settingsProvider.notifier).clearCurrentBook();
@@ -306,6 +332,62 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         }
                         return null;
                       },
+                    ),
+                    if (settings.termuxIntegrationEnabled &&
+                        settings.serverUrl == Settings.termuxUrl) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'Authentication is not needed for the local Termux server and will be ignored.',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _authUserController,
+                      decoration: const InputDecoration(
+                        labelText: 'Username (Basic Auth)',
+                        hintText: 'e.g. chengxi',
+                        border: OutlineInputBorder(),
+                      ),
+                      autocorrect: false,
+                      onChanged: (_) {
+                        _connectionTestPassed = false;
+                        _connectionStatus = null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _authPasswordController,
+                      decoration: const InputDecoration(
+                        labelText: 'Password (Basic Auth)',
+                        hintText: 'Leave blank if no authentication',
+                        border: OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      onChanged: (_) {
+                        _connectionTestPassed = false;
+                        _connectionStatus = null;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Required only if your lute server is protected by HTTP Basic Authentication.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: context.appColorScheme.text.primary
+                              .withValues(alpha: 0.6),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 24),
                     Row(
@@ -1196,6 +1278,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                     _localUrlController.text = ref
                                         .read(settingsProvider)
                                         .serverUrl;
+                                    _authUserController.clear();
+                                    _authPasswordController.clear();
                                     _connectionStatus = null;
                                     _connectionTestPassed = false;
                                     Navigator.pop(context);

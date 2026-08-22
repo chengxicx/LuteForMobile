@@ -31,19 +31,31 @@ class ApiRequestQueue {
   bool _isProcessing = false;
   bool _isServerReachable = true;
   String? _serverUrl;
+  String _basicAuthUser = '';
+  String _basicAuthPassword = '';
 
   bool get isServerReachable => _isServerReachable;
+
+  String get basicAuthUser => _basicAuthUser;
+  String get basicAuthPassword => _basicAuthPassword;
 
   void markServerUnreachable() {
     _isServerReachable = false;
   }
 
-  void initialize(String serverUrl, Dio dio) {
+  void initialize(
+    String serverUrl,
+    Dio dio, {
+    String basicAuthUser = '',
+    String basicAuthPassword = '',
+  }) {
     if (_serverUrl != null && _serverUrl == serverUrl) {
       return;
     }
 
     _serverUrl = serverUrl;
+    _basicAuthUser = basicAuthUser;
+    _basicAuthPassword = basicAuthPassword;
     _isServerReachable = ServerStatusManager.isReachable;
 
     ServerStatusManager.addListener(_onServerStatusChanged);
@@ -125,7 +137,11 @@ class ApiRequestQueue {
         '_processQueue',
         details: 'server unreachable, probing...',
       );
-      final isNowReachable = await ServerHealthService.isReachable(_serverUrl!);
+      final isNowReachable = await ServerHealthService.isReachable(
+        _serverUrl!,
+        username: _basicAuthUser,
+        password: _basicAuthPassword,
+      );
       if (isNowReachable) {
         _isServerReachable = true;
         ServerStatusManager.setReachable(true);

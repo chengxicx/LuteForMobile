@@ -77,6 +77,8 @@ class QueuedDioInterceptor extends Interceptor {
   void onError(DioException err, ErrorInterceptorHandler handler) async {
     final isReachable = await ServerHealthService.isReachable(
       err.requestOptions.baseUrl,
+      username: _queue.basicAuthUser,
+      password: _queue.basicAuthPassword,
     );
 
     if (isReachable) {

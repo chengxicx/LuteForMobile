@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:lute_for_mobile/core/services/backup_service.dart';
@@ -13,25 +14,49 @@ class ApiService {
   static const String _defaultTermImageSearchParams =
       'q=[LUTE]&form=HDRSC2&first=1&tsc=ImageHoverTitle';
 
-  ApiService({required String baseUrl, Dio? dio})
-    : _dio =
-          dio ??
-          Dio(
-            BaseOptions(
-              baseUrl: baseUrl,
-              connectTimeout: const Duration(seconds: 10),
-              receiveTimeout: const Duration(seconds: 10),
-              sendTimeout: const Duration(seconds: 10),
-              headers: {'Content-Type': 'text/html'},
-              followRedirects: false,
-              validateStatus: (status) => status != null && status < 400,
-            ),
-          ) {
-    _requestQueue.initialize(baseUrl, _dio);
+  ApiService({
+    required String baseUrl,
+    Dio? dio,
+    String basicAuthUser = '',
+    String basicAuthPassword = '',
+  }) : _dio = _buildDio(
+          dio,
+          baseUrl: baseUrl,
+          basicAuthUser: basicAuthUser,
+          basicAuthPassword: basicAuthPassword,
+        ) {
+    _requestQueue.initialize(
+      baseUrl,
+      _dio,
+      basicAuthUser: basicAuthUser,
+      basicAuthPassword: basicAuthPassword,
+    );
     _dio.interceptors.add(QueuedDioInterceptor(_requestQueue));
     _addRetryInterceptor();
     _addLoggingInterceptor();
     _addStatusInterceptor();
+  }
+
+  static Dio _buildDio(
+    Dio? dio, {
+    required String baseUrl,
+    required String basicAuthUser,
+    required String basicAuthPassword,
+  }) {
+    final existing = dio ?? Dio();
+    final options = existing.options;
+    options.baseUrl = baseUrl;
+    options.connectTimeout = const Duration(seconds: 10);
+    options.receiveTimeout = const Duration(seconds: 10);
+    options.sendTimeout = const Duration(seconds: 10);
+    options.followRedirects = false;
+    options.validateStatus = (status) => status != null && status < 400;
+    options.headers['Content-Type'] = 'text/html';
+    if (basicAuthUser.isNotEmpty) {
+      final basicAuth = 'Basic ${base64Encode(utf8.encode('$basicAuthUser:$basicAuthPassword'))}';
+      options.headers['Authorization'] = basicAuth;
+    }
+    return existing;
   }
 
   void _addStatusInterceptor() {

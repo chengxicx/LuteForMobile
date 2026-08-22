@@ -21,6 +21,8 @@ void main() async {
   final localUrl = prefs.getString('local_url') ?? '';
   final useTermux = prefs.getBool('use_termux') ?? false;
   final serverUrl = useTermux ? Settings.termuxUrl : localUrl;
+  final basicAuthUser = prefs.getString('basic_auth_user') ?? '';
+  final basicAuthPassword = prefs.getString('basic_auth_password') ?? '';
 
   if (kIsWeb) {
     await Hive.initFlutter();
@@ -42,7 +44,11 @@ void main() async {
     print('main.dart: Android server check: $isRunning');
     ServerStatusManager.setReachable(isRunning);
   } else if (serverUrl.isNotEmpty) {
-    final isServerReachable = await ServerHealthService.isReachable(serverUrl);
+    final isServerReachable = await ServerHealthService.isReachable(
+      serverUrl,
+      username: basicAuthUser,
+      password: basicAuthPassword,
+    );
     print('main.dart: Server health check result: $isServerReachable');
     ServerStatusManager.setReachable(isServerReachable);
   } else {
@@ -52,7 +58,11 @@ void main() async {
   ServerStatusManager.setInitialCheckComplete(true);
 
   if (serverUrl.isNotEmpty) {
-    final apiService = ApiService(baseUrl: serverUrl);
+    final apiService = ApiService(
+      baseUrl: serverUrl,
+      basicAuthUser: basicAuthUser,
+      basicAuthPassword: basicAuthPassword,
+    );
     apiService.triggerAutoBackup();
   }
 
