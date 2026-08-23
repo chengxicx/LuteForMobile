@@ -3,6 +3,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/providers/tts_provider.dart';
+import '../../../core/network/tts_service.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
 
 /// A raw sentence of the page, as gathered by the reader.  The provider
