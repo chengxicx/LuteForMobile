@@ -9,6 +9,7 @@ class PageData {
   final String? title;
   final List<Paragraph> paragraphs;
   final String? audioFilename;
+  final String? audioUrl;
   final Duration? audioCurrentPos;
   final List<double> audioBookmarks;
   final MangaPageData? mangaPage;
@@ -21,13 +22,20 @@ class PageData {
     this.title,
     required this.paragraphs,
     this.audioFilename,
+    this.audioUrl,
     this.audioCurrentPos,
     this.audioBookmarks = const [],
     this.mangaPage,
     this.youtube,
   });
 
-  bool get hasAudio => audioFilename != null && audioFilename!.isNotEmpty;
+  /// A book has playable audio when it has an uploaded audio file
+  /// (regular audio books set `book_audio_file`) or when the page metadata
+  /// provides an audio URL (MP3 books expose `LUTE_YT_DATA.audioUrl` even
+  /// though `book_audio_file` is left empty).
+  bool get hasAudio =>
+      (audioFilename != null && audioFilename!.isNotEmpty) ||
+      (audioUrl != null && audioUrl!.isNotEmpty);
 
   bool get isManga => mangaPage != null;
 
@@ -40,6 +48,7 @@ class PageData {
     String? title,
     List<Paragraph>? paragraphs,
     String? audioFilename,
+    String? audioUrl,
     Duration? audioCurrentPos,
     List<double>? audioBookmarks,
     MangaPageData? mangaPage,
@@ -52,6 +61,7 @@ class PageData {
       title: title ?? this.title,
       paragraphs: paragraphs ?? this.paragraphs,
       audioFilename: audioFilename ?? this.audioFilename,
+      audioUrl: audioUrl ?? this.audioUrl,
       audioCurrentPos: audioCurrentPos ?? this.audioCurrentPos,
       audioBookmarks: audioBookmarks ?? this.audioBookmarks,
       mangaPage: mangaPage ?? this.mangaPage,

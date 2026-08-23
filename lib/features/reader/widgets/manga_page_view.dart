@@ -150,10 +150,58 @@ class _MangaPageViewState extends State<MangaPageView> {
   ) {
     final fontSize = pageWidth * block.fontSizeCqw / 100.0;
 
-    final lines = <Widget>[];
-    for (final lineItems in block.lineItems) {
-      lines.add(
-        Container(
+    // Build one tappable word widget for a text item.
+    Widget word(TextItem item) {
+      return TextDisplay.buildInteractiveWord(
+        context,
+        item,
+        textSize: fontSize,
+        lineSpacing: 1.1,
+        fontFamily: widget.fontFamily,
+        fontWeight: widget.fontWeight,
+        isItalic: widget.isItalic,
+        widgetKey: ValueKey(
+          'manga-${item.paragraphId}-${item.order}-${item.wordId}',
+        ),
+        onTap: widget.onTap,
+        onDoubleTap: widget.onDoubleTap,
+        onLongPress: widget.onLongPress,
+        onTripleTap: widget.onTripleTap,
+      );
+    }
+
+    // A horizontal line: words wrapped left-to-right on a white backdrop.
+    Widget horizontalLine(List<TextItem> lineItems) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.85),
+          borderRadius: BorderRadius.circular(2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25),
+              blurRadius: 2,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: Wrap(
+          spacing: 0,
+          runSpacing: 0,
+          children: lineItems.map(word).toList(),
+        ),
+      );
+    }
+
+    // Vertical manga reproduces the CSS `writing-mode: vertical-rl` of the
+    // web template: each log "line" becomes a vertical column (words stacked
+    // top-to-bottom) and the columns flow right-to-left.  Rotating the whole
+    // line (RotatedBox) would tilt every character sideways, so instead we
+    // stack the words upright.
+    List<Widget> lines;
+    if (block.vertical) {
+      lines = block.lineItems.map((lineItems) {
+        return Container(
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(2),
@@ -165,31 +213,15 @@ class _MangaPageViewState extends State<MangaPageView> {
               ),
             ],
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: Wrap(
-            spacing: 0,
-            runSpacing: 0,
-            children: lineItems.map((item) {
-              return TextDisplay.buildInteractiveWord(
-                context,
-                item,
-                textSize: fontSize,
-                lineSpacing: 1.1,
-                fontFamily: widget.fontFamily,
-                fontWeight: widget.fontWeight,
-                isItalic: widget.isItalic,
-                widgetKey: ValueKey(
-                  'manga-${item.paragraphId}-${item.order}-${item.wordId}',
-                ),
-                onTap: widget.onTap,
-                onDoubleTap: widget.onDoubleTap,
-                onLongPress: widget.onLongPress,
-                onTripleTap: widget.onTripleTap,
-              );
-            }).toList(),
+          padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 1),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: lineItems.map(word).toList(),
           ),
-        ),
-      );
+        );
+      }).toList();
+    } else {
+      lines = block.lineItems.map(horizontalLine).toList();
     }
 
     final blockContent = Column(
@@ -213,13 +245,7 @@ class _MangaPageViewState extends State<MangaPageView> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final line in lines)
-                    RotatedBox(
-                      quarterTurns: 1,
-                      child: line,
-                    ),
-                ],
+                children: lines,
               ),
             )
           : blockContent,

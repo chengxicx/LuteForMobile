@@ -10,6 +10,8 @@ import '../../../shared/widgets/app_bar_leading.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
 import '../../../features/settings/providers/settings_provider.dart';
+import '../../../features/settings/providers/tts_settings_provider.dart';
+import '../../../features/settings/models/tts_settings.dart';
 import '../../../features/settings/models/settings.dart';
 import '../../../features/terms/providers/terms_provider.dart';
 import '../../../features/stats/providers/stats_provider.dart';
@@ -22,6 +24,7 @@ import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
 import '../providers/audio_player_provider.dart';
+import '../providers/tts_player_provider.dart';
 import '../providers/current_book_provider.dart';
 import '../widgets/term_tooltip.dart';
 import 'text_display.dart';
@@ -34,6 +37,7 @@ import 'package:lute_for_mobile/app.dart';
 import 'dart:convert';
 import 'manga_page_view.dart';
 import 'youtube_player_view.dart';
+import 'tts_player_widget.dart';
 
 class ReaderScreen extends ConsumerStatefulWidget {
   final GlobalKey<ScaffoldState>? scaffoldKey;
@@ -170,6 +174,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   int? _lastStatsLangId;
   bool _checkServerPageInProgress = false;
   int? _lastAudioBookId;
+  String? _lastTtsPageKey;
 
   Future<void> _loadLanguageMapping() async {
     if (_languageIdToName.isNotEmpty) return;
@@ -383,8 +388,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     ref.read(audioPlayerProvider.notifier).reset();
 
     if (pageData.hasAudio) {
-      final audioUrl =
-          '${settings.serverUrl}/useraudio/stream/${pageData!.bookId}';
+      final audioUrl = _audioUrlFor(settings, pageData!);
       await ref
           .read(audioPlayerProvider.notifier)
           .loadAudio(
@@ -395,6 +399,61 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             audioCurrentPos: pageData.audioCurrentPos,
           );
     }
+  }
+
+  /// Resolves the playable audio URL for a page.  MP3 books expose a
+  /// server-relative URL via `LUTE_YT_DATA.audioUrl`; regular audio books fall
+  /// back to the standard `/useraudio/stream/<bookId>` endpoint.
+  String _audioUrlFor(Settings settings, PageData pageData) {
+    final relative = pageData.audioUrl;
+    if (relative != null && relative.isNotEmpty) {
+      return '${settings.serverUrl}${relative.startsWith('/') ? '' : '/'}$relative';
+    }
+    return '${settings.serverUrl}/useraudio/stream/${pageData.bookId}';
+  }
+
+  /// Whether the TTS read-aloud player should be shown for the current page.
+  /// Mirrors the web reader: a full timeline player bar is shown for plain text
+  /// pages (no uploaded audio, no manga/image, no youtube) once a TTS provider
+  /// is configured.  Audio books keep the MP3 player instead.
+  bool _showTtsPlayer(PageData? pageData, Settings settings) {
+    if (pageData == null || !settings.showAudioPlayer) return false;
+    if (pageData.hasAudio || pageData.isManga || pageData.isYoutube) return false;
+    final ttsSettings = ref.read(ttsSettingsProvider);
+    return ttsSettings.provider != TTSProvider.none;
+  }
+
+  /// Builds the ordered list of sentences for a text page and feeds them to the
+  /// TTS player.  Called on every page load so the player always reflects the
+  /// currently displayed page.
+  void _loadTtsIfNeeded(PageData pageData) {
+    final settings = ref.read(settingsProvider);
+    if (!_showTtsPlayer(pageData, settings)) {
+      _lastTtsPageKey = null;
+      return;
+    }
+    final key = '${pageData.bookId}-${pageData.currentPage}';
+    if (_lastTtsPageKey == key) return;
+    _lastTtsPageKey = key;
+    final sentences = _sentencesForPage(pageData);
+    ref.read(ttsPlayerProvider.notifier).loadPage(sentences);
+  }
+
+  /// Groups the page's text items into whole sentences (preserving order).
+  List<TTSPlayerSentence> _sentencesForPage(PageData pageData) {
+    final order = <int>[];
+    final buffers = <int, StringBuffer>{};
+    for (final paragraph in pageData.paragraphs) {
+      for (final item in paragraph.textItems) {
+        final buffer = buffers[item.sentenceId] ??= StringBuffer();
+        if (buffer.isEmpty) order.add(item.sentenceId);
+        buffer.write(item.text);
+      }
+    }
+    return [
+      for (final id in order)
+        TTSPlayerSentence(sentenceId: id, text: buffers[id]!.toString()),
+    ];
   }
 
   Future<void> reloadPage({bool forceFresh = false}) async {
@@ -427,6 +486,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
 
       _loadAudioIfNeeded();
+      _loadTtsIfNeeded(pageData);
     }
   }
 
@@ -457,6 +517,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
 
       _loadAudioIfNeeded();
+      _loadTtsIfNeeded(pageData);
 
       // Force rebuild to ensure UI reflects loaded book content
       if (mounted) {
@@ -484,6 +545,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final pageData = ref.watch(readerProvider.select((s) => s.pageData));
     final textSettings = ref.watch(textFormattingSettingsProvider);
     final settings = ref.watch(settingsProvider);
+    ref.watch(ttsSettingsProvider);
+    final showTtsPlayer = _showTtsPlayer(pageData, settings);
 
     if (textSettings.fullscreenMode && !_lastFullscreenMode) {
       _lastFullscreenMode = true;
@@ -522,13 +585,23 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                           : 0,
                     ),
                     child: AudioPlayerWidget(
-                      audioUrl:
-                          '${settings.serverUrl}/useraudio/stream/${pageData!.bookId}',
+                      audioUrl: _audioUrlFor(settings, pageData!),
                       bookId: pageData!.bookId,
                       page: pageData!.currentPage,
                       bookmarks: pageData!.audioBookmarks,
                       audioCurrentPos: pageData.audioCurrentPos,
                     ),
+                  ),
+                if (showTtsPlayer)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeInOut,
+                    margin: EdgeInsets.only(
+                      top: textSettings.fullscreenMode && !_isUiVisible
+                          ? MediaQuery.of(context).padding.top + kToolbarHeight
+                          : 0,
+                    ),
+                    child: const TTSPlayerWidget(),
                   ),
                 Expanded(child: _buildBody(isLoading, errorMessage, pageData)),
               ],

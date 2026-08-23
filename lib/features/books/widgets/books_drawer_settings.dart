@@ -54,7 +54,7 @@ class BooksDrawerSettings extends ConsumerWidget {
               'Book Settings',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            initiallyExpanded: false,
+            initiallyExpanded: true,
             children: [
               const SizedBox(height: 8),
               Text(
