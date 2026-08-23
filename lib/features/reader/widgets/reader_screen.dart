@@ -517,7 +517,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
 
       _loadAudioIfNeeded();
-      _loadTtsIfNeeded(pageData);
+      if (pageData != null) {
+        _loadTtsIfNeeded(pageData);
+      }
 
       // Force rebuild to ensure UI reflects loaded book content
       if (mounted) {
