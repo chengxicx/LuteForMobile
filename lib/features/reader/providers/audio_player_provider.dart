@@ -14,6 +14,8 @@ class AudioPlayerState {
   final String? errorMessage;
   final bool isLoading;
   final double playbackSpeed;
+  final bool loopMode;
+  final bool autoPauseMode;
 
   AudioPlayerState({
     required this.audioPlayer,
@@ -24,6 +26,8 @@ class AudioPlayerState {
     this.errorMessage,
     required this.isLoading,
     this.playbackSpeed = 1.0,
+    this.loopMode = false,
+    this.autoPauseMode = false,
   });
 
   List<double> get bookmarkPositions {
@@ -41,6 +45,8 @@ class AudioPlayerState {
     String? errorMessage,
     bool? isLoading,
     double? playbackSpeed,
+    bool? loopMode,
+    bool? autoPauseMode,
   }) {
     return AudioPlayerState(
       audioPlayer: audioPlayer ?? this.audioPlayer,
@@ -51,6 +57,8 @@ class AudioPlayerState {
       errorMessage: errorMessage ?? this.errorMessage,
       isLoading: isLoading ?? this.isLoading,
       playbackSpeed: playbackSpeed ?? this.playbackSpeed,
+      loopMode: loopMode ?? this.loopMode,
+      autoPauseMode: autoPauseMode ?? this.autoPauseMode,
     );
   }
 }
@@ -124,7 +132,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     });
 
     _positionSubscription = _audioPlayer!.onPositionChanged.listen((position) {
-      state = state.copyWith(position: position);
+      _handlePositionChanged(position);
     });
 
     _durationSubscription = _audioPlayer!.onDurationChanged.listen((duration) {
@@ -138,6 +146,75 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       );
       unawaited(_savePosition());
     });
+  }
+
+  void _handlePositionChanged(Duration position) {
+    final bookmarks = state.bookmarkDurations;
+
+    // Sentence loop / auto-pause.
+    //
+    // Bookmarks are the sentence/segment start timestamps (the audio
+    // bookmark data synced from the server).  The current segment spans
+    // from the last bookmark at/before the playhead to the next bookmark
+    // (or the audio end for the final segment).  When the playhead
+    // crosses the segment end:
+    //   - loop mode: seek back to the segment start and keep playing.
+    //   - auto-pause mode: seek back to the segment start and pause, so
+    //     pressing play replays the same sentence.
+    // Loop takes precedence over auto-pause, matching the web player.
+    var finalPosition = position;
+    if (bookmarks.isNotEmpty &&
+        state.playerState == PlayerState.playing) {
+      int segStartIndex = -1;
+      for (var i = bookmarks.length - 1; i >= 0; i--) {
+        if (bookmarks[i] <= position) {
+          segStartIndex = i;
+          break;
+        }
+      }
+
+      if (segStartIndex >= 0) {
+        final segStart = bookmarks[segStartIndex];
+        final segEnd = segStartIndex + 1 < bookmarks.length
+            ? bookmarks[segStartIndex + 1]
+            : state.duration;
+
+        if (segEnd > segStart && position >= segEnd) {
+          if (state.loopMode) {
+            unawaited(_audioPlayer?.seek(segStart));
+            finalPosition = segStart;
+          } else if (state.autoPauseMode) {
+            unawaited(_audioPlayer?.seek(segStart));
+            unawaited(_audioPlayer?.pause());
+            finalPosition = segStart;
+          }
+        }
+      }
+    }
+
+    state = state.copyWith(position: finalPosition);
+  }
+
+  Future<void> toggleLoopMode() async {
+    final newLoop = !state.loopMode;
+    state = state.copyWith(loopMode: newLoop);
+
+    // Mirrors the web player: turning the loop on while the audio is
+    // paused (e.g. auto-paused at the end of a sentence) resumes
+    // playback so the sentence starts looping immediately.
+    if (newLoop &&
+        state.playerState != PlayerState.playing &&
+        state.duration > Duration.zero) {
+      try {
+        await _audioPlayer?.resume();
+      } catch (_) {
+        // Ignore resume failures (e.g. no source loaded yet).
+      }
+    }
+  }
+
+  void toggleAutoPauseMode() {
+    state = state.copyWith(autoPauseMode: !state.autoPauseMode);
   }
 
   Future<void> loadAudio({

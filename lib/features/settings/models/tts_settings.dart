@@ -6,6 +6,7 @@ enum TTSProvider {
   localOpenAI,
   openAI,
   supertonicFastApi,
+  edgeTTS,
   none,
 }
 

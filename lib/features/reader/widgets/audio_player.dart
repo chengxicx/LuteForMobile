@@ -330,6 +330,38 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
             iconSize: 28,
           ),
           SizedBox(width: 8),
+          IconButton(
+            icon: Icon(
+              state.loopMode ? Icons.repeat_on : Icons.repeat,
+            ),
+            onPressed: () {
+              ref.read(audioPlayerProvider.notifier).toggleLoopMode();
+            },
+            color: state.loopMode
+                ? context.audioBookmark
+                : context.audioPlayerIcon,
+            iconSize: 22,
+            tooltip: state.loopMode ? 'Loop on' : 'Loop off',
+            padding: EdgeInsets.all(4),
+          ),
+          IconButton(
+            icon: Icon(
+              state.autoPauseMode
+                  ? Icons.pause_circle
+                  : Icons.pause_circle_outline,
+            ),
+            onPressed: () {
+              ref.read(audioPlayerProvider.notifier).toggleAutoPauseMode();
+            },
+            color: state.autoPauseMode
+                ? context.audioBookmark
+                : context.audioPlayerIcon,
+            iconSize: 22,
+            tooltip: state.autoPauseMode
+                ? 'Auto-pause on'
+                : 'Auto-pause off',
+            padding: EdgeInsets.all(4),
+          ),
           TextButton(
             onPressed: () {
               final currentIndex = _speeds.indexOf(state.playbackSpeed);

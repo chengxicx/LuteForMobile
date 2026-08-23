@@ -508,70 +508,71 @@ class BooksNotifier extends Notifier<BooksState> {
       );
 
       _activePage = 0;
-      final networkBooks = await _repository.getActiveBooks(
-        page: 0,
-        pageSize: _pageSize,
-        search: requestQuery.isEmpty ? null : requestQuery,
-      );
-      ApiLogger.logRequest(
-        '_loadBooksFromNetwork',
-        details: 'got ${networkBooks.length} books',
-      );
-
-      if (state.searchQuery != requestQuery) {
-        _pendingSearchReload = true;
-        return;
-      }
-
-      final networkBooksMap = {for (var b in networkBooks) b.id: b};
-      final existingBookIds = {for (var b in state.activeBooks) b.id};
-      final updatedActiveBooks = state.activeBooks.map((existing) {
-        final network = networkBooksMap[existing.id];
-        if (network != null) {
-          return existing.copyWith(
-            title: network.title,
-            language: network.language,
-            langId: existing.langId ?? network.langId,
-            totalPages: network.totalPages,
-            currentPage: network.currentPage,
-            percent: network.percent,
-            wordCount: network.wordCount,
-            tags: network.tags ?? existing.tags,
-            lastRead: network.lastRead ?? existing.lastRead,
-            isCompleted: network.isCompleted,
-            audioFilename: network.audioFilename ?? existing.audioFilename,
-            audioMetadataResolved:
-                network.audioMetadataResolved || existing.audioMetadataResolved,
-            distinctTerms: existing.distinctTerms,
-            unknownPct: existing.unknownPct,
-            statusDistribution: existing.statusDistribution,
-          );
+      final List<Book> networkBooks;
+      if (requestQuery.isEmpty) {
+        // Full sync with the server: the server's active endpoint excludes
+        // archived books, so replace the local list to drop any books that
+        // were archived/frozen on the server but linger in the cache.
+        networkBooks = await _repository.getAllActiveBooks();
+        if (state.searchQuery != requestQuery) {
+          _pendingSearchReload = true;
+          return;
         }
-        return existing;
-      }).toList();
 
-      final newBooks = networkBooks
-          .where((b) => !existingBookIds.contains(b.id))
-          .toList();
+        final finalActiveBooks = _mergeServerBooks(
+          networkBooks,
+          state.activeBooks,
+        );
 
-      final serverBookIds = networkBooksMap.keys.toSet();
-      final finalActiveBooks = [
-        ...updatedActiveBooks.where((b) => serverBookIds.contains(b.id)),
-        ...newBooks,
-      ];
+        await _repository.saveBooksToCache(
+          activeBooks: finalActiveBooks,
+          archivedBooks: state.archivedBooks,
+        );
 
-      await _repository.saveBooksToCache(
-        activeBooks: finalActiveBooks,
-        archivedBooks: state.archivedBooks,
-      );
+        state = state.copyWith(
+          isLoading: false,
+          activeBooks: finalActiveBooks,
+          archivedBooks: state.archivedBooks,
+          hasMoreActive: false,
+          errorMessage: null,
+        );
+      } else {
+        networkBooks = await _repository.getActiveBooks(
+          page: 0,
+          pageSize: _pageSize,
+          search: requestQuery,
+        );
+        if (state.searchQuery != requestQuery) {
+          _pendingSearchReload = true;
+          return;
+        }
 
-      state = state.copyWith(
-        isLoading: false,
-        activeBooks: finalActiveBooks,
-        archivedBooks: state.archivedBooks,
-        hasMoreActive: networkBooks.length == _pageSize,
-        errorMessage: null,
-      );
+        final serverIds = {for (var b in networkBooks) b.id};
+        // Keep only cached books the server still lists as active, plus the
+        // fresh search results.
+        final merged = [
+          ...state.activeBooks.where((b) => serverIds.contains(b.id)),
+          ...networkBooks,
+        ];
+        final finalActiveBooks = <Book>[];
+        final seen = <int>{};
+        for (final b in merged) {
+          if (seen.add(b.id)) finalActiveBooks.add(b);
+        }
+
+        await _repository.saveBooksToCache(
+          activeBooks: finalActiveBooks,
+          archivedBooks: state.archivedBooks,
+        );
+
+        state = state.copyWith(
+          isLoading: false,
+          activeBooks: finalActiveBooks,
+          archivedBooks: state.archivedBooks,
+          hasMoreActive: networkBooks.length == _pageSize,
+          errorMessage: null,
+        );
+      }
 
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: true));
     } catch (e) {
@@ -706,28 +707,65 @@ class BooksNotifier extends Notifier<BooksState> {
         settings.statsCalcSampleSize.toString(),
       );
 
-      final networkBooks = await _repository.getActiveBooks();
+      // Full sync: replace the local active list with the server's active
+      // books. The server excludes archived books, so books archived/frozen
+      // on the server are removed from the list.
+      final networkBooks = await _repository.getAllActiveBooks();
       final archived = state.archivedBooks;
-
-      final existingBookIds = {for (var b in state.activeBooks) b.id};
-      final newBooks = networkBooks
-          .where((b) => !existingBookIds.contains(b.id))
-          .toList();
-
-      final finalActiveBooks = [...state.activeBooks, ...newBooks];
+      final finalActiveBooks = _mergeServerBooks(
+        networkBooks,
+        state.activeBooks,
+      );
 
       await _repository.saveBooksToCache(
         activeBooks: finalActiveBooks,
         archivedBooks: archived,
       );
 
-      state = state.copyWith(activeBooks: finalActiveBooks, errorMessage: null);
+      state = state.copyWith(
+        activeBooks: finalActiveBooks,
+        hasMoreActive: false,
+        errorMessage: null,
+      );
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: true));
     } catch (e) {
       state = state.copyWith(errorMessage: e.toString());
     } finally {
       _isLoadingFromNetwork = false;
     }
+  }
+
+  /// Merges the server's authoritative active book list with locally cached
+  /// books, preserving locally cached stats (distinctTerms, unknownPct,
+  /// statusDistribution) for books that still exist on the server. Books
+  /// missing from [serverBooks] (archived/deleted on the server) are dropped.
+  List<Book> _mergeServerBooks(
+    List<Book> serverBooks,
+    List<Book> localBooks,
+  ) {
+    final existingMap = {for (var b in localBooks) b.id: b};
+    return serverBooks.map((nb) {
+      final existing = existingMap[nb.id];
+      if (existing == null) return nb;
+      return existing.copyWith(
+        title: nb.title,
+        language: nb.language,
+        langId: existing.langId ?? nb.langId,
+        totalPages: nb.totalPages,
+        currentPage: nb.currentPage,
+        percent: nb.percent,
+        wordCount: nb.wordCount,
+        tags: nb.tags ?? existing.tags,
+        lastRead: nb.lastRead ?? existing.lastRead,
+        isCompleted: nb.isCompleted,
+        audioFilename: nb.audioFilename ?? existing.audioFilename,
+        audioMetadataResolved:
+            nb.audioMetadataResolved || existing.audioMetadataResolved,
+        distinctTerms: existing.distinctTerms,
+        unknownPct: existing.unknownPct,
+        statusDistribution: existing.statusDistribution,
+      );
+    }).toList();
   }
 
   Future<void> _refreshArchived() async {
@@ -772,7 +810,10 @@ class BooksNotifier extends Notifier<BooksState> {
 
   void toggleArchivedFilter() {
     final newShowArchived = !state.showArchived;
-    state = state.copyWith(showArchived: newShowArchived);
+    // Clear any lingering error so the filter chip can always switch back
+    // to the other list (previously an archived-load failure left the screen
+    // stuck on the ErrorDisplay).
+    state = state.copyWith(showArchived: newShowArchived, errorMessage: null);
 
     if (newShowArchived &&
         state.archivedBooks.isEmpty &&

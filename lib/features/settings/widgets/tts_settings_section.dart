@@ -84,6 +84,8 @@ class _TTSSettingsSectionState extends ConsumerState<TTSSettingsSection> {
         return 'OpenAI';
       case TTSProvider.supertonicFastApi:
         return 'Supertonic FastAPI';
+      case TTSProvider.edgeTTS:
+        return 'Edge TTS (Server)';
       case TTSProvider.none:
         return 'None';
     }
@@ -106,12 +108,22 @@ class _TTSSettingsSectionState extends ConsumerState<TTSSettingsSection> {
         return _buildLocalOpenAISettings(context, ref, config);
       case TTSProvider.supertonicFastApi:
         return _buildSupertonicFastApiSettings(context, ref, config);
+      case TTSProvider.edgeTTS:
+        return _buildEdgeTTSSettings(context, ref, config);
       case TTSProvider.none:
         return Text(
           'TTS is disabled',
           style: TextStyle(color: context.appColorScheme.text.secondary),
         );
     }
+  }
+
+  Widget _buildEdgeTTSSettings(
+    BuildContext context,
+    WidgetRef ref,
+    TTSSettingsConfig? config,
+  ) {
+    return _EdgeTTSSettings(config: config);
   }
 
   Widget _buildOnDeviceSettings(
@@ -899,6 +911,79 @@ class _SupertonicFastApiTTSSettingsState
   }
 
   static const String _supertonicPath = '/synthesize';
+}
+
+class _EdgeTTSSettings extends ConsumerStatefulWidget {
+  final TTSSettingsConfig? config;
+
+  const _EdgeTTSSettings({this.config});
+
+  @override
+  ConsumerState<_EdgeTTSSettings> createState() => _EdgeTTSSettingsState();
+}
+
+class _EdgeTTSSettingsState extends ConsumerState<_EdgeTTSSettings> {
+  late TextEditingController _languageCodeController;
+
+  @override
+  void initState() {
+    super.initState();
+    _languageCodeController = TextEditingController(
+      text: widget.config?.languageCode ?? 'en',
+    );
+  }
+
+  @override
+  void didUpdateWidget(_EdgeTTSSettings oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.config?.languageCode != oldWidget.config?.languageCode &&
+        _languageCodeController.text !=
+            (widget.config?.languageCode ?? 'en')) {
+      _languageCodeController.text = widget.config?.languageCode ?? 'en';
+    }
+  }
+
+  @override
+  void dispose() {
+    _languageCodeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          decoration: const InputDecoration(
+            labelText: 'Language Code',
+            hintText: 'e.g., en, ja, es, fr, de',
+            border: OutlineInputBorder(),
+          ),
+          controller: _languageCodeController,
+          onSubmitted: (value) {
+            ref.read(ttsSettingsProvider.notifier).updateEdgeTTSConfig(
+                  widget.config!.copyWith(
+                    languageCode: value.trim().isEmpty ? 'en' : value.trim(),
+                  ),
+                );
+          },
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Uses the Lute server\'s edge-tts endpoint '
+          '(GET /tts/<lang>/<text>). The voice is selected automatically by '
+          'the server based on the language code.',
+          style: TextStyle(
+            color: context.appColorScheme.text.secondary,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 16),
+        const _TestSpeechButton(provider: TTSProvider.edgeTTS),
+      ],
+    );
+  }
 }
 
 class _TestSpeechButton extends ConsumerStatefulWidget {
