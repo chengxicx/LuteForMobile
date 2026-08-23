@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lute_for_mobile/features/settings/models/tts_settings.dart';
 import 'package:lute_for_mobile/features/settings/providers/tts_settings_provider.dart';
+import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
 import 'package:lute_for_mobile/core/network/tts_service.dart';
 
 class TTSNotifier extends Notifier<TTSService> {
@@ -82,6 +83,14 @@ class TTSNotifier extends Notifier<TTSService> {
             languageCode: config?.languageCode ?? 'en',
             totalSteps: config?.totalSteps ?? 5,
             speed: config?.speed ?? 1.05,
+          );
+        case TTSProvider.edgeTTS:
+          final appSettings = ref.read(settingsProvider);
+          return EdgeTTSService(
+            serverUrl: appSettings.serverUrl,
+            languageCode: config?.languageCode ?? 'en',
+            basicAuthUser: appSettings.basicAuthUser,
+            basicAuthPassword: appSettings.basicAuthPassword,
           );
         case TTSProvider.none:
           return NoTTSService();

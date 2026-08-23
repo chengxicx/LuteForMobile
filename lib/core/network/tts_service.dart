@@ -723,6 +723,114 @@ class SupertonicFastApiTTSService implements TTSService {
   bool get supportsBytesOutput => true;
 }
 
+/// Edge TTS via the Lute server's /tts/<lang>/<text> endpoint.
+///
+/// The server synthesizes speech using edge-tts and returns an mp3 (cached on
+/// the server). The Lute server may require Basic Auth, so credentials are
+/// passed through so requests don't fail with a 401.
+class EdgeTTSService implements TTSService {
+  final String serverUrl;
+  final String languageCode;
+  final String basicAuthUser;
+  final String basicAuthPassword;
+
+  final Dio _dio = Dio();
+  late final AudioPlayer _audioPlayer;
+  final _playerStateController = StreamController<PlayerState>.broadcast();
+
+  EdgeTTSService({
+    required this.serverUrl,
+    this.languageCode = 'en',
+    this.basicAuthUser = '',
+    this.basicAuthPassword = '',
+  }) {
+    _audioPlayer = AudioPlayer()
+      ..setReleaseMode(ReleaseMode.stop)
+      ..onPlayerStateChanged.listen((state) {
+        _playerStateController.add(state);
+      });
+
+    if (basicAuthUser.isNotEmpty) {
+      _dio.options.headers['Authorization'] =
+          'Basic ${base64Encode(utf8.encode('$basicAuthUser:$basicAuthPassword'))}';
+    }
+  }
+
+  Future<Uint8List> _fetchAudio(String text) async {
+    final encodedText = Uri.encodeComponent(text);
+    final url = '$serverUrl/tts/$languageCode/$encodedText';
+    final response = await _dio.get<List<int>>(
+      url,
+      options: Options(responseType: ResponseType.bytes),
+    );
+    final bytes = response.data;
+    if (bytes == null || bytes.isEmpty) {
+      throw TTSException('Empty audio returned from Edge TTS server');
+    }
+    return Uint8List.fromList(bytes);
+  }
+
+  @override
+  Future<void> speak(String text) async {
+    try {
+      final audioBytes = await _fetchAudio(text);
+      await _audioPlayer.play(BytesSource(audioBytes));
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        throw TTSException(
+          'Server authentication failed. Check your server credentials.',
+        );
+      }
+      if (e.type == DioExceptionType.connectionError) {
+        throw TTSException('Failed to connect to Lute server at $serverUrl');
+      }
+      throw TTSException('Edge TTS request failed: ${e.message}');
+    } catch (e) {
+      if (e is TTSException) {
+        rethrow;
+      }
+      throw TTSException('Failed to speak with Edge TTS: $e');
+    }
+  }
+
+  @override
+  Future<void> stop() async {
+    try {
+      await _audioPlayer.stop();
+      await _audioPlayer.release();
+    } catch (e) {
+      throw TTSException('Failed to stop Edge TTS: $e');
+    }
+  }
+
+  @override
+  Future<void> setLanguage(String languageCode) async {}
+
+  @override
+  Future<void> setSettings(TTSSettingsConfig config) async {}
+
+  @override
+  Future<List<TTSVoice>> getAvailableVoices() async {
+    // The server picks the voice automatically based on the language code.
+    return [TTSVoice(name: 'Server voice', locale: languageCode)];
+  }
+
+  @override
+  void dispose() {
+    _audioPlayer.dispose();
+    _playerStateController.close();
+  }
+
+  @override
+  Stream<PlayerState> get playerStateStream => _playerStateController.stream;
+
+  @override
+  Future<Uint8List> getAudioBytes(String text) async => _fetchAudio(text);
+
+  @override
+  bool get supportsBytesOutput => true;
+}
+
 class NoTTSService implements TTSService {
   @override
   Future<void> speak(String text) async {

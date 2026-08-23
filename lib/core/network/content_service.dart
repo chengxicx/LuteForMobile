@@ -1010,6 +1010,10 @@ class ContentService {
     await _apiService.postPlayerData(bookId, position, bookmarks);
   }
 
+  Future<void> saveYoutubePlayerData(int bookId, double position) async {
+    await _apiService.postYoutubePlayerData(bookId, position);
+  }
+
   Future<List<Language>> getLanguagesWithIds() async {
     // Check if we have a valid cached result (< 5 seconds old)
     if (_cachedLanguages != null && _languagesCacheTime != null) {

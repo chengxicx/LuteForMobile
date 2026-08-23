@@ -474,7 +474,9 @@ class ApiService {
     };
 
     final response = await _dio.post<String>(
-      '/book/datatables/archived',
+      // Server registers this route with a capital 'A' (see lute/book/routes.py);
+      // the lowercase route 404s and makes the archived toggle fail.
+      '/book/datatables/Archived',
       data: data,
       options: Options(contentType: Headers.formUrlEncodedContentType),
     );
@@ -677,6 +679,19 @@ class ApiService {
         'position': position,
         'bookmarks': bookmarksString,
       },
+      options: Options(contentType: 'application/json'),
+    );
+  }
+
+  /// Saves the current YouTube video position (mirrors the web player,
+  /// which posts to `/read/save_youtube_player_data` on a timer).
+  Future<Response<String>> postYoutubePlayerData(
+    int bookId,
+    double position,
+  ) async {
+    return await _dio.post<String>(
+      '/read/save_youtube_player_data',
+      data: {'bookid': bookId, 'position': position},
       options: Options(contentType: 'application/json'),
     );
   }

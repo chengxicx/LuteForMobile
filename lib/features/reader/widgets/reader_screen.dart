@@ -31,6 +31,9 @@ import 'book_completion_celebration_dialog.dart';
 import '../../../core/network/dictionary_service.dart';
 import 'audio_player.dart';
 import 'package:lute_for_mobile/app.dart';
+import 'dart:convert';
+import 'manga_page_view.dart';
+import 'youtube_player_view.dart';
 
 class ReaderScreen extends ConsumerStatefulWidget {
   final GlobalKey<ScaffoldState>? scaffoldKey;
@@ -806,6 +809,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     );
   }
 
+  Map<String, String>? _mangaImageHeaders(Settings settings) {
+    if (settings.basicAuthUser.isEmpty) return null;
+    final credentials =
+        '${settings.basicAuthUser}:${settings.basicAuthPassword}';
+    return {
+      'Authorization': 'Basic ${base64Encode(utf8.encode(credentials))}',
+    };
+  }
+
   Widget _buildBody(bool isLoading, String? errorMessage, PageData? pageData) {
     if (isLoading) {
       return const LoadingIndicator(message: 'Loading content...');
@@ -954,9 +966,61 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       highlightedOrder: _highlightedOrder,
     );
 
+    final mangaPage = pageData.mangaPage;
+    final content = mangaPage != null
+        ? MangaPageView(
+            key: _pageKey,
+            manga: mangaPage,
+            imageUrl: '${settings.serverUrl}${mangaPage.imagePath}',
+            imageHeaders: _mangaImageHeaders(settings),
+            onTap: (item, context) {
+              _handleTap(item, context);
+            },
+            onDoubleTap: (item) {
+              _handleDoubleTap(item);
+            },
+            onLongPress: (item) {
+              _handleLongPress(item);
+            },
+            onTripleTap: (item) {
+              _handleTripleTap(item);
+            },
+            fontFamily: textSettings.fontFamily,
+            fontWeight: textSettings.fontWeight,
+            isItalic: textSettings.isItalic,
+            bottomControlWidget: _buildPageControls(context, pageData),
+          )
+        : textDisplay;
+
+    // YouTube player: rendered above the subtitle text and kept outside the
+    // page-transitioned subtree (keyed by book id) so it keeps playing while
+    // the user turns pages.  The position is saved to the server on a timer.
+    final youtube = pageData.youtube;
+    final youtubePlayer = youtube != null
+        ? Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: YoutubePlayerView(
+              key: ValueKey('yt-${pageData.bookId}'),
+              videoId: youtube.videoId,
+              startPos: youtube.startPos,
+              bookId: pageData.bookId,
+              onPositionChanged: (bookId, position) {
+                ref
+                    .read(readerRepositoryProvider)
+                    .contentService
+                    .saveYoutubePlayerData(bookId, position);
+              },
+            ),
+          )
+        : null;
+
     return Stack(
       children: [
-        NotificationListener<ScrollNotification>(
+        Column(
+          children: [
+            if (youtubePlayer != null) youtubePlayer,
+            Expanded(
+              child: NotificationListener<ScrollNotification>(
           onNotification: (scrollNotification) {
             if (scrollNotification is ScrollUpdateNotification) {
               if (scrollNotification.scrollDelta != null &&
@@ -980,6 +1044,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             onHorizontalDragEnd: (details) async {
               if (_isMultiTermSelecting) return;
               if (pageData.pageCount <= 1) return;
+              // Manga pages are zoomed/panned with InteractiveViewer;
+              // page turns go through the on-screen controls.
+              if (pageData.isManga) return;
 
               final currentTextSettings = ref.read(
                 textFormattingSettingsProvider,
@@ -1015,10 +1082,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             child: settings.pageTurnAnimations
                 ? _PageTransition(
                     isForward: _isNavigatingForward,
-                    child: textDisplay,
+                    child: content,
                   )
-                : textDisplay,
+                : content,
           ),
+        ),
+            ),
+          ],
         ),
         if (hasGestureNav)
           Positioned(

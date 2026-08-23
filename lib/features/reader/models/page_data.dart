@@ -1,4 +1,6 @@
 import 'paragraph.dart';
+import 'manga_page.dart';
+import 'youtube_data.dart';
 
 class PageData {
   final int bookId;
@@ -9,6 +11,8 @@ class PageData {
   final String? audioFilename;
   final Duration? audioCurrentPos;
   final List<double> audioBookmarks;
+  final MangaPageData? mangaPage;
+  final YoutubeData? youtube;
 
   PageData({
     required this.bookId,
@@ -19,9 +23,15 @@ class PageData {
     this.audioFilename,
     this.audioCurrentPos,
     this.audioBookmarks = const [],
+    this.mangaPage,
+    this.youtube,
   });
 
   bool get hasAudio => audioFilename != null && audioFilename!.isNotEmpty;
+
+  bool get isManga => mangaPage != null;
+
+  bool get isYoutube => youtube != null;
 
   PageData copyWith({
     int? bookId,
@@ -32,6 +42,8 @@ class PageData {
     String? audioFilename,
     Duration? audioCurrentPos,
     List<double>? audioBookmarks,
+    MangaPageData? mangaPage,
+    YoutubeData? youtube,
   }) {
     return PageData(
       bookId: bookId ?? this.bookId,
@@ -42,6 +54,8 @@ class PageData {
       audioFilename: audioFilename ?? this.audioFilename,
       audioCurrentPos: audioCurrentPos ?? this.audioCurrentPos,
       audioBookmarks: audioBookmarks ?? this.audioBookmarks,
+      mangaPage: mangaPage ?? this.mangaPage,
+      youtube: youtube ?? this.youtube,
     );
   }
 

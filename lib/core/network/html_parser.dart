@@ -5,6 +5,8 @@ import '../../core/logger/api_logger.dart';
 import '../../features/reader/models/text_item.dart';
 import '../../features/reader/models/paragraph.dart';
 import '../../features/reader/models/page_data.dart';
+import '../../features/reader/models/manga_page.dart';
+import '../../features/reader/models/youtube_data.dart';
 import '../../features/reader/models/term_tooltip.dart';
 import '../../features/reader/models/term_form.dart';
 import '../../shared/models/language.dart';
@@ -32,6 +34,8 @@ class HtmlParser {
     final audioFilename = _extractAudioFilename(metadataDocument);
     final audioCurrentPos = _extractAudioCurrentPos(metadataDocument);
     final audioBookmarks = _extractAudioBookmarks(metadataDocument);
+    final mangaPage = _extractManga(textDocument, currentPage);
+    final youtube = _extractYoutubeData(metadataDocument);
 
     return PageData(
       bookId: bookId,
@@ -42,6 +46,8 @@ class HtmlParser {
       audioFilename: audioFilename,
       audioCurrentPos: audioCurrentPos,
       audioBookmarks: audioBookmarks,
+      mangaPage: mangaPage,
+      youtube: youtube,
     );
   }
 
@@ -126,6 +132,105 @@ class HtmlParser {
   int? _extractIntAttribute(html.Element element, String attributeName) {
     final value = element.attributes[attributeName];
     return value != null ? int.tryParse(value) : null;
+  }
+
+  /// Extracts a Mokuro manga page (image + text blocks) from the page
+  /// HTML served by the web app (`manga_page.html` template).  Returns
+  /// null when the page is a regular text page.
+  MangaPageData? _extractManga(html.Document document, int pageNum) {
+    final mangaPageEl = document.querySelector('.manga-page');
+    if (mangaPageEl == null) return null;
+
+    final imgEl = mangaPageEl.querySelector('.manga-page-img');
+    final imagePath = imgEl?.attributes['src'] ?? '';
+
+    final imgWidth =
+        double.tryParse(mangaPageEl.attributes['data-page-width'] ?? '') ?? 100;
+    final imgHeight =
+        double.tryParse(mangaPageEl.attributes['data-page-height'] ?? '') ??
+        100;
+
+    final blocks = <MangaBlock>[];
+    final blockEls = mangaPageEl.querySelectorAll('.manga-text-block');
+    for (final blockEl in blockEls) {
+      final style = blockEl.attributes['style'] ?? '';
+      final vertical = blockEl.classes.contains('manga-vertical');
+
+      final lineItems = <List<TextItem>>[];
+      final lineEls = blockEl.querySelectorAll('.manga-text-line');
+      for (final lineEl in lineEls) {
+        final items = _extractTextItems(lineEl);
+        if (items.isNotEmpty) {
+          lineItems.add(items);
+        }
+      }
+
+      // The server template puts the font-size (in cqw) on the
+      // .manga-text-line element, not on the block element.
+      double fontSizeCqw = 0;
+      final firstLineEl = blockEl.querySelector('.manga-text-line');
+      if (firstLineEl != null) {
+        fontSizeCqw = _extractCqw(firstLineEl.attributes['style'] ?? '');
+      }
+
+      blocks.add(
+        MangaBlock(
+          left: _extractPercent(style, 'left'),
+          top: _extractPercent(style, 'top'),
+          width: _extractPercent(style, 'width'),
+          height: _extractPercent(style, 'height'),
+          vertical: vertical,
+          fontSizeCqw: fontSizeCqw,
+          lineItems: lineItems,
+        ),
+      );
+    }
+
+    return MangaPageData(
+      imagePath: imagePath,
+      imgWidth: imgWidth,
+      imgHeight: imgHeight,
+      pageNum: pageNum,
+      blocks: blocks,
+    );
+  }
+
+  double _extractPercent(String style, String property) {
+    final match = RegExp('$property\\s*:\\s*([0-9.]+)%').firstMatch(style);
+    return match != null ? double.tryParse(match.group(1)!) ?? 0 : 0;
+  }
+
+  double _extractCqw(String style) {
+    final match = RegExp('font-size\\s*:\\s*([0-9.]+)cqw').firstMatch(style);
+    return match != null ? double.tryParse(match.group(1)!) ?? 0 : 0;
+  }
+
+  /// Extracts YouTube video data from the page metadata.  The web player
+  /// include (`youtube_player.html`) renders a `LUTE_YT_DATA` script block
+  /// with `videoId` / `startPos`; for non-youtube books (including mp3,
+  /// which reuses the same include) `videoId` is `null` and we return null.
+  YoutubeData? _extractYoutubeData(html.Document document) {
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('LUTE_YT_DATA.videoId')) continue;
+
+      final videoMatch = RegExp(
+        r'LUTE_YT_DATA\.videoId\s*=\s*("([^"]*)"|null)',
+      ).firstMatch(text);
+      final videoId = videoMatch?.group(2);
+      if (videoId == null || videoId.isEmpty) return null;
+
+      double startPos = 0;
+      final startMatch = RegExp(
+        r'LUTE_YT_DATA\.startPos\s*=\s*([0-9.]+)',
+      ).firstMatch(text);
+      if (startMatch != null) {
+        startPos = double.tryParse(startMatch.group(1)!) ?? 0;
+      }
+
+      return YoutubeData(videoId: videoId, startPos: startPos);
+    }
+    return null;
   }
 
   TermTooltip parseTermTooltip(String htmlContent) {

@@ -11,6 +11,7 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
   static const String _localOpenaiConfigKey = 'local_openai_tts_config';
   static const String _supertonicFastApiConfigKey =
       'supertonic_fastapi_tts_config';
+  static const String _edgeTTSConfigKey = 'edge_tts_config';
   bool _isInitialized = false;
 
   @override
@@ -54,6 +55,9 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
           totalSteps: 5,
           speed: 1.05,
         ),
+        TTSProvider.edgeTTS: const TTSSettingsConfig(
+          languageCode: 'en',
+        ),
         TTSProvider.none: const TTSSettingsConfig(),
       },
     );
@@ -78,6 +82,7 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
       prefs,
       _supertonicFastApiConfigKey,
     );
+    final edgeTTSConfig = await _loadConfig(prefs, _edgeTTSConfigKey);
 
     final loadedSettings = TTSSettings(
       provider: provider,
@@ -94,6 +99,8 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
         TTSProvider.supertonicFastApi:
             supertonicFastApiConfig ??
             state.providerConfigs[TTSProvider.supertonicFastApi]!,
+        TTSProvider.edgeTTS:
+            edgeTTSConfig ?? state.providerConfigs[TTSProvider.edgeTTS]!,
         TTSProvider.none: state.providerConfigs[TTSProvider.none]!,
       },
     );
@@ -173,6 +180,12 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
     final prefs = await SharedPreferences.getInstance();
     await _saveConfig(prefs, _supertonicFastApiConfigKey, config);
     state = state.updateProviderConfig(TTSProvider.supertonicFastApi, config);
+  }
+
+  Future<void> updateEdgeTTSConfig(TTSSettingsConfig config) async {
+    final prefs = await SharedPreferences.getInstance();
+    await _saveConfig(prefs, _edgeTTSConfigKey, config);
+    state = state.updateProviderConfig(TTSProvider.edgeTTS, config);
   }
 
   Future<void> _saveConfig(

@@ -35,6 +35,21 @@ class BooksRepository {
     }
   }
 
+  /// Fetches the complete list of active (non-archived) books from the server.
+  ///
+  /// The server's active endpoint excludes archived books (BkArchived = false),
+  /// so replacing the local list with this result drops any books that were
+  /// archived/frozen on the server but still linger in the local cache.
+  Future<List<Book>> getAllActiveBooks() async {
+    try {
+      await _loadLanguageMapping();
+      final books = await contentService.getAllActiveBooks();
+      return _enrichBooksWithLanguageIds(books);
+    } catch (e) {
+      throw Exception('Failed to load active books: $e');
+    }
+  }
+
   Future<List<Book>> getArchivedBooks({
     int page = 0,
     int pageSize = 10,
