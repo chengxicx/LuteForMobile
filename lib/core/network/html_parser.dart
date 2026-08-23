@@ -35,7 +35,13 @@ class HtmlParser {
     final audioCurrentPos = _extractAudioCurrentPos(metadataDocument);
     final audioBookmarks = _extractAudioBookmarks(metadataDocument);
     final mangaPage = _extractManga(textDocument, currentPage);
-    final youtube = _extractYoutubeData(metadataDocument);
+    // The LUTE_YT_DATA block (YouTube videoId + MP3 audioUrl) is part of the
+    // page body (the youtube/audio player include), which can arrive in either
+    // the text or the metadata document depending on endpoint.  Search both.
+    final youtube =
+        _extractYoutubeData(metadataDocument) ?? _extractYoutubeData(textDocument);
+    final audioUrl =
+        _extractAudioUrl(metadataDocument) ?? _extractAudioUrl(textDocument);
 
     return PageData(
       bookId: bookId,
@@ -44,6 +50,7 @@ class HtmlParser {
       title: title,
       paragraphs: paragraphs,
       audioFilename: audioFilename,
+      audioUrl: audioUrl,
       audioCurrentPos: audioCurrentPos,
       audioBookmarks: audioBookmarks,
       mangaPage: mangaPage,
@@ -229,6 +236,24 @@ class HtmlParser {
       }
 
       return YoutubeData(videoId: videoId, startPos: startPos);
+    }
+    return null;
+  }
+
+  /// Extracts the audio URL exposed by MP3 books via `LUTE_YT_DATA.audioUrl`.
+  /// Regular audio books do not set this (they use `book_audio_file`), so it
+  /// is normally null for them.  Returns a server-relative path like
+  /// `/useraudio/stream/<id>` for MP3 books.
+  String? _extractAudioUrl(html.Document document) {
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('LUTE_YT_DATA.audioUrl')) continue;
+      final match = RegExp(
+        r'LUTE_YT_DATA\.audioUrl\s*=\s*("([^"]*)"|null)',
+      ).firstMatch(text);
+      final url = match?.group(2);
+      if (url == null || url.isEmpty) return null;
+      return url;
     }
     return null;
   }

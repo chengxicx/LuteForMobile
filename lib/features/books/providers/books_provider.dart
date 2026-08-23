@@ -214,7 +214,7 @@ class BooksNotifier extends Notifier<BooksState> {
       if (hasCachedBooks) {
         state = state.copyWith(
           isLoading: false,
-          activeBooks: activeFromCache,
+          activeBooks: _filterByLanguage(activeFromCache),
           archivedBooks: archivedFromCache ?? state.archivedBooks,
         );
       } else {
@@ -233,6 +233,15 @@ class BooksNotifier extends Notifier<BooksState> {
     } finally {
       _isLoadingBooks = false;
     }
+  }
+
+  /// Filters a list of active books by the selected language filter
+  /// (a language name, or null for "All Languages").  The filter is stored
+  /// in user settings and matched against the server's `LgName`.
+  List<Book> _filterByLanguage(List<Book> books) {
+    final filter = ref.read(settingsProvider).languageFilter;
+    if (filter == null || filter.isEmpty) return books;
+    return books.where((b) => b.language == filter).toList();
   }
 
   void setCurrentBook(int? bookId) {
@@ -531,7 +540,7 @@ class BooksNotifier extends Notifier<BooksState> {
 
         state = state.copyWith(
           isLoading: false,
-          activeBooks: finalActiveBooks,
+          activeBooks: _filterByLanguage(finalActiveBooks),
           archivedBooks: state.archivedBooks,
           hasMoreActive: false,
           errorMessage: null,
@@ -567,7 +576,7 @@ class BooksNotifier extends Notifier<BooksState> {
 
         state = state.copyWith(
           isLoading: false,
-          activeBooks: finalActiveBooks,
+          activeBooks: _filterByLanguage(finalActiveBooks),
           archivedBooks: state.archivedBooks,
           hasMoreActive: networkBooks.length == _pageSize,
           errorMessage: null,
@@ -723,7 +732,7 @@ class BooksNotifier extends Notifier<BooksState> {
       );
 
       state = state.copyWith(
-        activeBooks: finalActiveBooks,
+        activeBooks: _filterByLanguage(finalActiveBooks),
         hasMoreActive: false,
         errorMessage: null,
       );
@@ -864,7 +873,10 @@ class BooksNotifier extends Notifier<BooksState> {
         search: state.searchQuery.isEmpty ? null : state.searchQuery,
       );
 
-      final allBooks = [...state.activeBooks, ...newBooks];
+      final allBooks = _filterByLanguage([
+        ...state.activeBooks,
+        ...newBooks,
+      ]);
       state = state.copyWith(
         activeBooks: allBooks,
         hasMoreActive: newBooks.length == _pageSize,
