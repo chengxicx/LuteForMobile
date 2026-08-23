@@ -114,6 +114,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _localUrlController = TextEditingController();
   final _authUserController = TextEditingController();
   final _authPasswordController = TextEditingController();
+  String _protocolValue = 'https';
   int _buildCount = 0;
   bool _isTesting = false;
   String? _connectionStatus;
@@ -129,7 +130,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       final authUser = prefs.getString('basic_auth_user') ?? '';
       final authPassword = prefs.getString('basic_auth_password') ?? '';
       if (mounted) {
-        _localUrlController.text = savedUrl;
+        final parsed = _parseUrl(savedUrl);
+        _protocolValue = parsed.$1;
+        _localUrlController.text = parsed.$2;
         _authUserController.text = authUser;
         _authPasswordController.text = authPassword;
       }
@@ -153,7 +156,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _connectionTestPassed = false;
     });
 
-    final url = _localUrlController.text.trim();
+    final url = _buildFullUrl();
     final authUser = _authUserController.text.trim();
     final authPassword = _authPasswordController.text;
     try {
@@ -198,7 +201,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void _saveSettings() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final newUrl = _localUrlController.text.trim();
+    final newUrl = _buildFullUrl();
 
     await _testConnection();
 
@@ -274,64 +277,98 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _localUrlController,
-                      decoration: InputDecoration(
-                        labelText: 'Local URL',
-                        hintText: 'http://192.168.1.100:5001',
-                        labelStyle: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(
-                              color: settings.serverUrl == Settings.termuxUrl
-                                  ? context.appColorScheme.text.primary
-                                        .withValues(alpha: 0.4)
-                                  : context.m3Secondary,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 110,
+                          child: DropdownButtonFormField<String>(
+                            key: ValueKey(_protocolValue),
+                            initialValue: _protocolValue,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 12,
+                              ),
                             ),
-                        border: const OutlineInputBorder(),
-                        errorText: settings.isUrlValid
-                            ? null
-                            : 'Invalid URL format',
-                        suffixIcon: _connectionStatus != null
-                            ? Icon(
-                                _connectionTestPassed
-                                    ? Icons.check_circle
-                                    : Icons.error,
-                                color: _connectionTestPassed
-                                    ? context.success
-                                    : context.error,
-                              )
-                            : settings.isUrlValid
-                            ? Icon(Icons.check_circle, color: context.connected)
-                            : Icon(Icons.error, color: context.error),
-                      ),
-                      style: settings.serverUrl == Settings.termuxUrl
-                          ? TextStyle(
-                              color: context.appColorScheme.text.primary
-                                  .withValues(alpha: 0.5),
-                            )
-                          : null,
-                      keyboardType: TextInputType.url,
-                      onChanged: (_) {
-                        _connectionTestPassed = false;
-                        _connectionStatus = null;
-                      },
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Please enter a server URL';
-                        }
-                        try {
-                          final uri = Uri.parse(value.trim());
-                          if (!uri.hasScheme ||
-                              (uri.scheme != 'http' && uri.scheme != 'https')) {
-                            return 'URL must start with http:// or https://';
-                          }
-                          if (uri.host.isEmpty) {
-                            return 'Please enter a valid host';
-                          }
-                        } catch (_) {
-                          return 'Please enter a valid URL';
-                        }
-                        return null;
-                      },
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'http',
+                                child: Text('http://'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'https',
+                                child: Text('https://'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => _protocolValue = value);
+                                _connectionTestPassed = false;
+                                _connectionStatus = null;
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _localUrlController,
+                            decoration: InputDecoration(
+                              labelText: 'Server Host',
+                              hintText:
+                                  'e.g. www.metaman.dpdns.org or 192.168.1.100:5001',
+                              border: const OutlineInputBorder(),
+                              errorText: settings.isUrlValid
+                                  ? null
+                                  : 'Invalid URL format',
+                              suffixIcon: _connectionStatus != null
+                                  ? Icon(
+                                      _connectionTestPassed
+                                          ? Icons.check_circle
+                                          : Icons.error,
+                                      color: _connectionTestPassed
+                                          ? context.success
+                                          : context.error,
+                                    )
+                                  : settings.isUrlValid
+                                  ? Icon(
+                                      Icons.check_circle,
+                                      color: context.connected,
+                                    )
+                                  : Icon(Icons.error, color: context.error),
+                            ),
+                            keyboardType: TextInputType.url,
+                            onChanged: (_) {
+                              _connectionTestPassed = false;
+                              _connectionStatus = null;
+                            },
+                            validator: (value) {
+                              if (value == null ||
+                                  value.trim().isEmpty) {
+                                return 'Please enter a server host';
+                              }
+                              final host = value.trim();
+                              if (host.contains('://') ||
+                                  host.contains(' ')) {
+                                return 'Enter only the host (no http://)';
+                              }
+                              try {
+                                final authority =
+                                    '$_protocolValue://$host';
+                                final uri = Uri.parse(authority);
+                                if (uri.host.isEmpty) {
+                                  return 'Please enter a valid host';
+                                }
+                              } catch (_) {
+                                return 'Please enter a valid host';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                     if (settings.termuxIntegrationEnabled &&
                         settings.serverUrl == Settings.termuxUrl) ...[
@@ -352,7 +389,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       controller: _authUserController,
                       decoration: const InputDecoration(
                         labelText: 'Username (Basic Auth)',
-                        hintText: 'e.g. chengxi',
+                        hintText: 'e.g. song',
                         border: OutlineInputBorder(),
                       ),
                       autocorrect: false,
@@ -1275,9 +1312,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                     ref
                                         .read(settingsProvider.notifier)
                                         .resetSettings();
-                                    _localUrlController.text = ref
+                                    final resetUrl = ref
                                         .read(settingsProvider)
                                         .serverUrl;
+                                    final parsedReset = _parseUrl(resetUrl);
+                                    _protocolValue = parsedReset.$1;
+                                    _localUrlController.text = parsedReset.$2;
                                     _authUserController.clear();
                                     _authPasswordController.clear();
                                     _connectionStatus = null;
@@ -1312,6 +1352,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
       ),
     );
+  }
+
+  String _buildFullUrl() {
+    final host = _localUrlController.text.trim();
+    if (host.isEmpty) return '';
+    return '$_protocolValue://$host';
+  }
+
+  (String, String) _parseUrl(String url) {
+    final value = url.trim();
+    if (value.isEmpty) return ('https', '');
+    final uri = Uri.tryParse(value);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      final idx = value.indexOf('://');
+      final host = idx >= 0 ? value.substring(idx + 3) : value;
+      return (uri.scheme, host);
+    }
+    return ('https', value);
   }
 
   Widget _buildSettingRow(String label, String value) {
