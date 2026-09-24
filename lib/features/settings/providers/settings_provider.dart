@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../../../core/cache/providers/cache_manager_provider.dart';
 import '../../../features/reader/providers/reader_provider.dart';
 import '../../../core/services/termux_service.dart';
 import '../../../core/services/server_health_service.dart';
+import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/server_status_provider.dart';
 
 typedef DrawerSettingsBuilder =
@@ -54,6 +56,7 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyShowPageNumbers = 'show_page_numbers';
   static const String _keyEnableTripleTapToMarkKnown =
       'enable_triple_tap_to_mark_known';
+  static const String _keyAutoPronounceOnTap = 'auto_pronounce_on_tap';
   static const String _keyEnablePagePreload = 'enable_page_preload';
   static const String _keyTermuxIntegrationEnabled =
       'termux_integration_enabled';
@@ -92,6 +95,9 @@ class SettingsNotifier extends Notifier<Settings> {
       basicAuthPassword: basicAuthPassword,
     );
 
+    SessionManager.updateBasicAuth(basicAuthUser, basicAuthPassword);
+    SessionManager.updateServerUrl(serverUrl);
+
     _loadOtherSettings(prefs);
   }
 
@@ -119,6 +125,8 @@ class SettingsNotifier extends Notifier<Settings> {
     final showPageNumbers = prefs.getBool(_keyShowPageNumbers) ?? true;
     final enableTripleTapToMarkKnown =
         prefs.getBool(_keyEnableTripleTapToMarkKnown) ?? false;
+    final autoPronounceOnTap =
+        prefs.getBool(_keyAutoPronounceOnTap) ?? true;
     final enablePagePreload = prefs.getBool(_keyEnablePagePreload) ?? false;
     final termuxIntegrationEnabled =
         prefs.getBool(_keyTermuxIntegrationEnabled) ?? false;
@@ -167,6 +175,7 @@ class SettingsNotifier extends Notifier<Settings> {
       autoLoadTermStatsCards: autoLoadTermStatsCards,
       showPageNumbers: showPageNumbers,
       enableTripleTapToMarkKnown: enableTripleTapToMarkKnown,
+      autoPronounceOnTap: autoPronounceOnTap,
       enablePagePreload: enablePagePreload,
       termuxIntegrationEnabled: termuxIntegrationEnabled,
       statsCalcSampleSize: statsCalcSampleSize,
@@ -196,6 +205,7 @@ class SettingsNotifier extends Notifier<Settings> {
     );
 
     final cacheManager = ref.read(cacheManagerProvider);
+    SessionManager.updateServerUrl(serverUrl);
     if (previousServerUrl != state.serverUrl) {
       await cacheManager.clearServerDependentCaches();
       await clearCurrentBook();
@@ -213,6 +223,7 @@ class SettingsNotifier extends Notifier<Settings> {
       basicAuthUser: user,
       basicAuthPassword: password,
     );
+    SessionManager.updateBasicAuth(user, password);
 
     final cacheManager = ref.read(cacheManagerProvider);
     await cacheManager.clearServerDependentCaches();
@@ -233,6 +244,8 @@ class SettingsNotifier extends Notifier<Settings> {
       final isValid = _isValidUrl(localUrl);
       state = state.copyWith(serverUrl: localUrl, isUrlValid: isValid);
     }
+
+    SessionManager.updateServerUrl(state.serverUrl);
 
     final cacheManager = ref.read(cacheManagerProvider);
     if (previousServerUrl != state.serverUrl) {
@@ -434,6 +447,12 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.setBool(_keyEnableTripleTapToMarkKnown, enabled);
   }
 
+  Future<void> updateAutoPronounceOnTap(bool enabled) async {
+    state = state.copyWith(autoPronounceOnTap: enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyAutoPronounceOnTap, enabled);
+  }
+
   Future<void> updateEnablePagePreload(bool enabled) async {
     state = state.copyWith(enablePagePreload: enabled);
     final prefs = await SharedPreferences.getInstance();
@@ -533,6 +552,7 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.remove(_keyAutoLoadTermStatsCards);
     await prefs.remove(_keyShowPageNumbers);
     await prefs.remove(_keyEnableTripleTapToMarkKnown);
+    await prefs.remove(_keyAutoPronounceOnTap);
     await prefs.remove(_keyStatsCalcSampleSize);
     await prefs.remove(_keyStatsRefreshBatchSize);
     await prefs.remove(_keyStatsRefreshCooldownHours);
@@ -884,18 +904,43 @@ class TextFormattingSettingsNotifier extends Notifier<TextFormattingSettings> {
     }
   }
 
+  /// Size and spacing are dragged, and `onChanged` fires on every tick -- that
+  /// is one write per pixel of thumb movement.  The state is updated at once
+  /// (the preview has to follow the finger) but the write is debounced and
+  /// committed by [flushPendingWrites], which the slider calls on release.
+  ///
+  /// The debounced write reads the *current* state rather than the value the
+  /// gesture happened to end on: holding a single pending value would drop the
+  /// size when the reader dragged size and then spacing within the window.
+  Timer? _pendingWriteTimer;
+
+  void _scheduleFormattingWrite() {
+    _pendingWriteTimer?.cancel();
+    _pendingWriteTimer = Timer(const Duration(milliseconds: 250), () {
+      unawaited(_commitPendingWrite());
+    });
+  }
+
+  Future<void> _commitPendingWrite() async {
+    _pendingWriteTimer?.cancel();
+    _pendingWriteTimer = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_keyTextSize, state.textSize);
+    await prefs.setDouble(_keyLineSpacing, state.lineSpacing);
+  }
+
+  /// Writes any debounced value now.  Call when a gesture ends, so leaving the
+  /// screen immediately after a drag cannot lose the last value.
+  Future<void> flushPendingWrites() => _commitPendingWrite();
+
   Future<void> updateTextSize(double size) async {
     state = state.copyWith(textSize: size);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_keyTextSize, size);
+    _scheduleFormattingWrite();
   }
 
   Future<void> updateLineSpacing(double spacing) async {
     state = state.copyWith(lineSpacing: spacing);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_keyLineSpacing, spacing);
+    _scheduleFormattingWrite();
   }
 
   Future<void> updateFontFamily(String family) async {
@@ -1262,14 +1307,15 @@ class ThemeSettingsNotifier extends Notifier<ThemeSettings> {
         localProvider: Color(0xFF1565C0),
       ),
       status: StatusColors(
-        status0: Color(0xFF808080),
-        status1: Color(0xFFB46B7A),
-        status2: Color(0xFFBA8050),
-        status3: Color(0xFFBD9C7B),
-        status4: Color(0xFF756D6B),
-        status5: Color(0xFF77706E),
-        status98: Color(0xFF756D6B),
-        status99: Color(0xFF419252),
+        // 与 lightThemePreset 保持一致：色相分段、无 alpha。
+        status0: Color(0xFF7B4BA8),
+        status1: Color(0xFFA8384F),
+        status2: Color(0xFFA8541A),
+        status3: Color(0xFF6E5F0E),
+        status4: Color(0xFF26655A),
+        status5: Color(0xFF2F5C99),
+        status98: Color(0xFF6B6B72),
+        status99: Color(0xFF2E7D46),
         highlightedText: Color(0xFFFFFFFF),
         wordGlowColor: Color(0xFFFFD700),
         multiTermSelectionColor: Color(0xFFD87414),

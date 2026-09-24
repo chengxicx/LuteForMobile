@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'api_request_queue.dart';
 import '../services/server_health_service.dart';
+import 'session_manager.dart';
 import '../../shared/providers/server_status_provider.dart';
 
 class QueuedDioInterceptor extends Interceptor {
@@ -75,13 +76,18 @@ class QueuedDioInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    final isReachable = await ServerHealthService.isReachable(
-      err.requestOptions.baseUrl,
-      username: _queue.basicAuthUser,
-      password: _queue.basicAuthPassword,
-    );
+    // The server answered and only the session needs a re-login: never
+    // treat this as the server being down.
+    if (err.error is ServerLoginRequiredException) {
+      return handler.next(err);
+    }
 
-    if (isReachable) {
+    final baseUrl = err.requestOptions.baseUrl;
+    final health = baseUrl.isEmpty
+        ? null
+        : await ServerHealthService.check(baseUrl);
+
+    if (health == null || health.ok || health.requiresLogin) {
       handler.next(err);
     } else {
       _queue.markServerUnreachable();

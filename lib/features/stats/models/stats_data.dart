@@ -13,8 +13,20 @@ class DailyReadingStats {
   });
 
   factory DailyReadingStats.fromJson(Map<String, dynamic> json) {
+    // 容错：readdate 缺失或格式非法时退化为 epoch，
+    // 而不是抛异常让整页阅读统计打不开。
+    final rawDate = json['readdate'];
+    DateTime parsedDate;
+    try {
+      parsedDate = rawDate is String && rawDate.isNotEmpty
+          ? DateTime.parse(rawDate)
+          : DateTime.fromMillisecondsSinceEpoch(0);
+    } catch (_) {
+      parsedDate = DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
     return DailyReadingStats(
-      date: DateTime.parse(json['readdate'] as String),
+      date: parsedDate,
       wordcount: json['wordcount'] as int? ?? 0,
       runningTotal: json['runningTotal'] as int? ?? 0,
     );

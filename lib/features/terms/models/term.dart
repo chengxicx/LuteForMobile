@@ -45,11 +45,19 @@ class Term {
   }
 
   factory Term.fromJson(Map<String, dynamic> json) {
+    // 容错取整：服务端字段缺失或为 null 时退化，避免词条列表整页崩溃。
+    int asInt(dynamic v, [int fallback = 0]) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? fallback;
+      return fallback;
+    }
+
     return Term(
-      id: json['WoID'] as int,
-      text: json['WoText'] as String,
+      id: asInt(json['WoID']),
+      text: json['WoText'] as String? ?? '',
       translation: json['WoTranslation'] as String?,
-      status: (json['StID'] as int?).toString(),
+      status: asInt(json['StID']).toString(),
       langId: json['LgID'] as int? ?? 0,
       language: json['LgName'] as String? ?? '',
       tags: (json['Tags'] as String?)

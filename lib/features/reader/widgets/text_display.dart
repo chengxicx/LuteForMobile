@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import '../../../core/logger/widget_logger.dart';
 import '../models/text_item.dart';
 import '../models/paragraph.dart';
@@ -29,6 +31,17 @@ class TextDisplay extends StatefulWidget {
   final int? highlightedWordId;
   final int? highlightedParagraphId;
   final int? highlightedOrder;
+
+  /// Sentences (by [TextItem.sentenceId]) the player is currently on -- the
+  /// TTS player's sentence, or the line of the subtitle cue a media player
+  /// (MP3 / YouTube / Bilibili) is playing.  They get a background block,
+  /// mirroring the web reader's `lute-playing-line`, so the reader can follow
+  /// along in the page instead of only in the player bar.
+  ///
+  /// A set rather than a single id: one subtitle cue can own several
+  /// sentences of the page.
+  final Set<int> highlightedSentenceIds;
+
   final TextDirection? textDirection;
 
   const TextDisplay({
@@ -54,6 +67,7 @@ class TextDisplay extends StatefulWidget {
     this.highlightedWordId,
     this.highlightedParagraphId,
     this.highlightedOrder,
+    this.highlightedSentenceIds = const {},
     this.textDirection,
   });
 
@@ -78,6 +92,7 @@ class TextDisplay extends StatefulWidget {
     int? highlightedWordId,
     int? highlightedParagraphId,
     int? highlightedOrder,
+    Set<int> highlightedSentenceIds = const {},
     bool isSelected = false,
   }) {
     Color? textColor;
@@ -90,6 +105,8 @@ class TextDisplay extends StatefulWidget {
       textColor = context.getStatusTextColor(status);
       backgroundColor = context.getStatusBackgroundColor(status);
     }
+
+    final isReadingSentence = highlightedSentenceIds.contains(item.sentenceId);
 
     final isHighlighted =
         highlightedWordId != null &&
@@ -120,9 +137,31 @@ class TextDisplay extends StatefulWidget {
           )
         : null;
 
+    // The playing line's block replaces a word's own status colour while it
+    // is on: the block has to read as one mark, and a status patch inside it
+    // would break it up.  Its padding is kept, though -- padding is *inside*
+    // the block, so it widens the mark rather than notching it, and keeping
+    // it means the highlight moving down the page does not reflow the text.
+    final blockColor = isSelected
+        ? selectionColor
+        : isReadingSentence
+        ? context.playingLineHighlight
+        : backgroundColor;
+
+    // Square corners while the line is being read: every word is its own box,
+    // so a radius on each one would notch the junctions between them.  The
+    // padding rule is deliberately tied to the *status* background only --
+    // adding it for the playing block would shift every word 2px when the
+    // highlight moves on.
+    final blockRadius = isReadingSentence
+        ? BorderRadius.zero
+        : BorderRadius.circular(4);
+
     final textStyle = TextStyle(
       color: isSelected
           ? selectionTextColor
+          : isReadingSentence
+          ? context.playingLineText
           : textColor ?? Theme.of(context).textTheme.bodyLarge?.color,
       fontWeight: fontWeight,
       fontSize: textSize,
@@ -136,8 +175,8 @@ class TextDisplay extends StatefulWidget {
           ? const EdgeInsets.symmetric(horizontal: 2.0)
           : null,
       decoration: BoxDecoration(
-        color: isSelected ? selectionColor : backgroundColor,
-        borderRadius: BorderRadius.circular(4),
+        color: blockColor,
+        borderRadius: blockRadius,
         border: isSelected
             ? Border.all(color: selectionTextColor.withValues(alpha: 0.35))
             : null,
@@ -190,6 +229,40 @@ class _TextDisplayState extends State<TextDisplay> {
   TextItem? _selectionCurrentItem;
   final Map<String, GlobalKey> _itemKeys = {};
   int _buildCount = 0;
+
+  /// 长按选词期间的命中测试缓存：item 与屏幕矩形一一对应。
+  /// 拖动时每次指针移动都要做命中测试；若每次都遍历全页并调用
+  /// findRenderObject / localToGlobal（都是相对昂贵的操作），
+  /// 长页面（数百个词）上会明显掉帧。因此在长按开始时算一次，
+  /// 拖动期间只做纯矩形包含判断。
+  List<TextItem>? _hitTestItems;
+  List<Rect>? _hitTestRects;
+
+  /// 上一帧正在朗读/播放的句子集合，用来只在「播到的行变了」时触发一次
+  /// 自动滚动 —— 播放状态本身每 250ms 就会重建，不能跟着滚。
+  Set<int> _lastPlayingSentenceIds = const {};
+
+  bool _autoScrollScheduled = false;
+
+  void _buildHitTestCache() {
+    final items = _allItems();
+    final kept = <TextItem>[];
+    final rects = <Rect>[];
+    for (final item in items) {
+      final context = _itemKeys[_itemKeyId(item)]?.currentContext;
+      final renderObject = context?.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.hasSize) continue;
+      kept.add(item);
+      rects.add(renderObject.localToGlobal(Offset.zero) & renderObject.size);
+    }
+    _hitTestItems = kept;
+    _hitTestRects = rects;
+  }
+
+  void _clearHitTestCache() {
+    _hitTestItems = null;
+    _hitTestRects = null;
+  }
 
   @override
   void initState() {
@@ -288,6 +361,19 @@ class _TextDisplayState extends State<TextDisplay> {
   }
 
   TextItem? _findItemAtGlobalPosition(Offset globalPosition) {
+    // 优先走缓存（长按拖动路径）。
+    final cachedItems = _hitTestItems;
+    final cachedRects = _hitTestRects;
+    if (cachedItems != null && cachedRects != null) {
+      for (var i = 0; i < cachedItems.length; i++) {
+        if (cachedRects[i].contains(globalPosition)) {
+          return cachedItems[i];
+        }
+      }
+      return null;
+    }
+
+    // 无缓存时回退到实时计算，保持原有行为。
     for (final item in _allItems()) {
       final itemKey = _itemKeys[_itemKeyId(item)];
       final context = itemKey?.currentContext;
@@ -307,6 +393,9 @@ class _TextDisplayState extends State<TextDisplay> {
 
   void _handleSelectionStart(TextItem item) {
     TermTooltipClass.close();
+    HapticFeedback.mediumImpact();
+    // 清掉上一次的缓存，首次移动时会基于新布局重建。
+    _clearHitTestCache();
     setState(() {
       _selectionStartItem = item;
       _selectionCurrentItem = item;
@@ -316,6 +405,10 @@ class _TextDisplayState extends State<TextDisplay> {
 
   void _handleSelectionMove(TextItem item, Offset globalPosition) {
     if (_selectionStartItem == null) return;
+    // 首次移动时建立命中缓存，之后每次移动只做矩形包含判断。
+    if (_hitTestItems == null) {
+      _buildHitTestCache();
+    }
     final hoveredItem = _findItemAtGlobalPosition(globalPosition) ?? item;
     if (_selectionCurrentItem == hoveredItem) return;
     setState(() {
@@ -324,11 +417,13 @@ class _TextDisplayState extends State<TextDisplay> {
   }
 
   void _handleSelectionEnd(TextItem item) {
+    _clearHitTestCache();
     final start = _selectionStartItem;
     final current = _selectionCurrentItem ?? item;
     if (start == null) return;
 
     final selectedItems = _selectedItems(start, current);
+    HapticFeedback.selectionClick();
     setState(() {
       _selectionStartItem = null;
       _selectionCurrentItem = null;
@@ -352,6 +447,7 @@ class _TextDisplayState extends State<TextDisplay> {
       _buildCount,
       'paragraphs: ${widget.paragraphs.length}',
     );
+    _maybeAutoScrollToPlayingSentence();
     final fallbackDirection =
         widget.textDirection ?? Directionality.of(context);
     return RepaintBoundary(
@@ -434,7 +530,80 @@ class _TextDisplayState extends State<TextDisplay> {
       highlightedWordId: widget.highlightedWordId,
       highlightedParagraphId: widget.highlightedParagraphId,
       highlightedOrder: widget.highlightedOrder,
+      highlightedSentenceIds: widget.highlightedSentenceIds,
       isSelected: _isSelected(item),
+    );
+  }
+
+  /// First item of the sentence(s) the player is on, or null when the player
+  /// is somewhere else in the book (a media book's page is only a slice of
+  /// its cues, so the line being played is often not on this page).
+  TextItem? _firstPlayingItem() {
+    if (widget.highlightedSentenceIds.isEmpty) return null;
+    for (final item in _allItems()) {
+      if (widget.highlightedSentenceIds.contains(item.sentenceId)) return item;
+    }
+    return null;
+  }
+
+  /// Follow the playback: when the marked sentence changes, bring it into
+  /// view.
+  ///
+  /// Deliberately a no-op while the mark is already on screen: scrolling then
+  /// would move the page under a reader who is following along perfectly well
+  /// where they are.  Only the change is interesting, not the player's 250 ms
+  /// position ticks, so the comparison is against the previous build's set.
+  void _maybeAutoScrollToPlayingSentence() {
+    final ids = widget.highlightedSentenceIds;
+    if (setEquals(ids, _lastPlayingSentenceIds)) return;
+    _lastPlayingSentenceIds = ids;
+    if (ids.isEmpty || _autoScrollScheduled) return;
+
+    _autoScrollScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoScrollScheduled = false;
+      if (!mounted) return;
+      _scrollToPlayingSentence();
+    });
+  }
+
+  void _scrollToPlayingSentence() {
+    final controller = widget.scrollController;
+    if (controller == null || !controller.hasClients) return;
+
+    final item = _firstPlayingItem();
+    if (item == null) return;
+
+    final itemContext = _itemKeys[_itemKeyId(item)]?.currentContext;
+    if (itemContext == null) return;
+
+    final itemBox = itemContext.findRenderObject();
+    if (itemBox is! RenderBox || !itemBox.hasSize) return;
+
+    final viewportBox = Scrollable.maybeOf(itemContext)?.context.findRenderObject();
+    if (viewportBox is! RenderBox || !viewportBox.hasSize) return;
+
+    final itemRect = itemBox.localToGlobal(Offset.zero) & itemBox.size;
+    final viewportRect =
+        viewportBox.localToGlobal(Offset.zero) & viewportBox.size;
+
+    // A tenth of the viewport as margin, so a line just barely peeking in at
+    // the edge still counts as out of view.
+    final margin = viewportRect.height * 0.1;
+    final inView =
+        itemRect.top >= viewportRect.top + margin &&
+        itemRect.bottom <= viewportRect.bottom - margin;
+    if (inView) return;
+
+    unawaited(
+      Scrollable.ensureVisible(
+        itemContext,
+        alignment: 0.35,
+        duration: MediaQuery.of(context).disableAnimations
+            ? Duration.zero
+            : const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      ),
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/logger/widget_logger.dart';
@@ -168,6 +169,18 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   int? _highlightedOrder;
   TextItem? _originalTextItem;
   bool _isMultiTermSelecting = false;
+
+  /// Bumped on every word tap; see reader_screen.dart for the full rationale.
+  /// The card is shown only if no newer tap has happened while it was fetching.
+  int _tooltipSeq = 0;
+
+  /// Per-word chain of status writes, one in flight per word -- cycling is a
+  /// read-modify-write, so overlapping cycles would collapse into one step.
+  final Map<int, Future<void>> _statusWrites = {};
+
+  /// Double tap cycles through these, skipping 2/4/5 to stay a predictable
+  /// three-way toggle (matches the web reader's _quick_cycle_status).
+  static const List<String> _statusCycle = ['1', '3', '99'];
   bool _isNavigatingForward = true;
   Map<int, String> _languageIdToName = {};
   final Map<int, TextDirection> _languageIdToDirection = {};
@@ -1297,10 +1310,16 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
 
   void _handleTap(TextItem item, BuildContext context) async {
     if (item.isSpace) return;
+
+    // Buzz on touch, not after the fetch -- see reader_screen.dart.
+    HapticFeedback.lightImpact();
+
     TermTooltipClass.close();
 
     try {
       if (item.wordId == null) return;
+
+      final seq = ++_tooltipSeq;
 
       final renderBox = context.findRenderObject() as RenderBox;
       final termRect = renderBox.localToGlobal(Offset.zero) & renderBox.size;
@@ -1308,31 +1327,31 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
       final termTooltip = await ref
           .read(readerProvider.notifier)
           .fetchTermTooltip(item.wordId!);
+      // Superseded by a newer tap while this one was fetching.
+      if (seq != _tooltipSeq) return;
       if (termTooltip != null && termTooltip.hasData && mounted) {
-        TermTooltipClass.show(context, termTooltip, termRect);
-      }
-    } catch (e) {
-      return;
-    }
-  }
-
-  void _handleDoubleTap(TextItem item) async {
-    TermTooltipClass.close();
-
-    if (item.wordId == null) return;
-    if (item.langId == null) return;
-
-    try {
-      final termForm = await ref
-          .read(readerProvider.notifier)
-          .fetchTermFormById(item.wordId!);
-      if (termForm != null && mounted) {
-        _showTermForm(
-          termForm,
-          sentence: _extractSentence(item),
-          initialReaderStatus: RegExp(
-            r'status(\d+)',
-          ).firstMatch(item.statusClass)?.group(1),
+        final langId = item.langId;
+        // Auto pronounce (Settings -> Reading): read the term as the card opens,
+        // so the reader does not have to reach for the speaker button.
+        if (ref.read(settingsProvider).autoPronounceOnTap) {
+          unawaited(
+            ref
+                .read(sentenceTTSProvider.notifier)
+                .speakSentence(termTooltip.term, 0),
+          );
+        }
+        TermTooltipClass.show(
+          context,
+          termTooltip,
+          termRect,
+          onSpeak: () => unawaited(
+            ref
+                .read(sentenceTTSProvider.notifier)
+                .speakSentence(termTooltip.term, 0),
+          ),
+          onSentenceTranslation: langId == null
+              ? null
+              : () => _translateSentenceFromCard(item, langId),
         );
       }
     } catch (e) {
@@ -1340,13 +1359,130 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     }
   }
 
-  void _handleLongPress(TextItem item) {
-    if (item.wordId == null) return;
-    if (item.langId == null) return;
-
+  /// Sentence translation, entered from the button on the word card.
+  ///
+  /// The card goes first: the translation is a modal sheet, and a card left
+  /// behind in the overlay would float above it.
+  void _translateSentenceFromCard(TextItem item, int langId) {
     final sentence = _extractSentence(item);
-    if (sentence.isNotEmpty) {
-      _showSentenceTranslation(sentence, item.langId!);
+    if (sentence.isEmpty) return;
+    TermTooltipClass.close();
+    _showSentenceTranslation(sentence, langId);
+  }
+
+  /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.
+  ///
+  /// Mirrors the web reader's Quick Set Status Mode double tap
+  /// (_quick_cycle_status in lute-touch.js).  A word that is not on the cycle yet
+  /// -- status 0, or one of the skipped 2/4/5 -- enters at 1, as the web does.
+  void _handleDoubleTap(TextItem item) {
+    final wordId = item.wordId;
+    if (wordId == null) return;
+
+    // Supersede the card the pair's first tap may still be fetching.
+    _tooltipSeq++;
+    TermTooltipClass.close();
+
+    final current =
+        RegExp(r'status(\d+)').firstMatch(item.statusClass)?.group(1) ?? '0';
+    final idx = _statusCycle.indexOf(current);
+    final next = idx == -1
+        ? _statusCycle.first
+        : _statusCycle[(idx + 1) % _statusCycle.length];
+
+    if (next == current) return;
+
+    HapticFeedback.mediumImpact();
+
+    // Repaint immediately; the write below is a fetch-then-post.
+    unawaited(_applyStatusLocally(wordId, next));
+
+    _originalTextItem = item;
+    _triggerWordGlow();
+
+    final previousWrite = _statusWrites[wordId] ?? Future<void>.value();
+    _statusWrites[wordId] = previousWrite.then(
+      (_) => _persistStatus(wordId, next, current),
+    );
+  }
+
+  /// Post [status] for one word, undoing the optimistic update if the write does
+  /// not stick.  Goes through the term form because `/read/edit_term/<id>`
+  /// submits a whole term -- a bare status would blank the term's other fields.
+  Future<void> _persistStatus(
+    int wordId,
+    String status,
+    String previous,
+  ) async {
+    try {
+      final termForm = await ref
+          .read(readerProvider.notifier)
+          .fetchTermFormById(wordId);
+      if (termForm == null) {
+        await _revertStatus(wordId, previous);
+        return;
+      }
+      final success = await ref
+          .read(readerProvider.notifier)
+          .saveTerm(termForm.copyWith(status: status));
+      if (!success) await _revertStatus(wordId, previous);
+    } catch (e) {
+      await _revertStatus(wordId, previous);
+    }
+  }
+
+  /// Show [status] on screen at once: the reader view owns the status, and the
+  /// sentence view keeps its own copy that has to be re-synced afterwards (the
+  /// same call the triple-tap path makes).
+  Future<void> _applyStatusLocally(int wordId, String status) async {
+    await ref.read(readerProvider.notifier).updateTermStatus(wordId, status);
+    ref.read(sentenceReaderProvider.notifier).syncStatusFromPageData();
+  }
+
+  Future<void> _revertStatus(int wordId, String previous) async {
+    try {
+      await _applyStatusLocally(wordId, previous);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not update status'),
+          duration: Duration(milliseconds: 1500),
+        ),
+      );
+    } catch (e) {
+      return;
+    }
+  }
+
+  /// Long press on a single word opens its term edit form.
+  ///
+  /// This is the web reader's Quick Set Status Mode gesture
+  /// (show_term_edit_form in lute-touch.js): a long press is what reaches the
+  /// form.  Reached from the sentence text and from the end of a one-word
+  /// multi-select.
+  void _handleLongPress(TextItem item) {
+    _openTermForm(item);
+  }
+
+  /// Fetch a word's term data and open the edit form for it.  There is a round
+  /// trip before the sheet appears; the long-press haptics cover the wait.
+  Future<void> _openTermForm(TextItem item) async {
+    final wordId = item.wordId;
+    if (wordId == null) return;
+    try {
+      final termForm = await ref
+          .read(readerProvider.notifier)
+          .fetchTermFormById(wordId);
+      if (termForm == null || !mounted) return;
+      _showTermForm(
+        termForm,
+        sentence: _extractSentence(item),
+        initialReaderStatus: RegExp(
+          r'status(\d+)',
+        ).firstMatch(item.statusClass)?.group(1),
+      );
+    } catch (e) {
+      return;
     }
   }
 
@@ -1837,6 +1973,8 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     );
   }
 
+  /// Sentence translation sheet.  Reached from the word card's Sentence button
+  /// (see _translateSentenceFromCard).
   void _showSentenceTranslation(String sentence, int languageId) {
     final repository = ref.read(readerRepositoryProvider);
 

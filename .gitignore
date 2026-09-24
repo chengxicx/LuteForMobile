@@ -63,3 +63,10 @@ Reference Server Code/
 # Local server clones
 /lute-v3/
 docs/termimage.md
+
+# Local build artifacts and tooling memory
+/dist/
+/.workbuddy-ai/
+
+# Loose screenshots dumped at the repo root (app icons live under android/ios)
+/*.png

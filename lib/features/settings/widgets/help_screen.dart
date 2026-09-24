@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../app.dart';
 import '../../../core/logger/widget_logger.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
@@ -16,41 +17,59 @@ class HelpScreen extends ConsumerWidget {
     _buildCount++;
     WidgetLogger.logRebuild('HelpScreen', _buildCount);
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: AppBarLeading(scaffoldKey: scaffoldKey),
-        title: const Text('Help'),
-        elevation: 2,
-      ),
-      body: CustomScrollView(
-        slivers: [
-          SliverList(
-            delegate: SliverChildListDelegate([
-              const SizedBox(height: 8),
-              _buildReaderScreenSection(context),
-              const SizedBox(height: 8),
-              _buildTermFormSection(context),
-              const SizedBox(height: 8),
-              _buildSentenceReaderSection(context),
-              const SizedBox(height: 8),
-              _buildAudioPlayerSection(context),
-              const SizedBox(height: 8),
-              _buildSentenceTranslationSection(context),
-              const SizedBox(height: 8),
-              _buildBooksScreenSection(context),
-              const SizedBox(height: 8),
-              _buildAIFeaturesSection(context),
-              const SizedBox(height: 8),
-              _buildPerformanceSection(context),
-              if (!kIsWeb &&
-                  defaultTargetPlatform == TargetPlatform.android) ...[
+    // Help 与 Settings 一样是 IndexedStack 切页：底栏隐藏、系统返回键默认
+    // 只会退出 App。显示时拦截返回键回到进入前的主页面；非当前路由时保持
+    // 透明，避免影响其它 tab。
+    final isCurrentRoute = ref.watch(currentScreenRouteProvider) == 'help';
+
+    return PopScope(
+      canPop: !isCurrentRoute,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        ref
+            .read(navigationProvider)
+            .navigateToScreen(ref.read(lastMainRouteProvider));
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: const BackToMainButton(),
+          title: const Text('Help'),
+          elevation: 2,
+          actions: [
+            AppBarLeading(scaffoldKey: scaffoldKey),
+            const SizedBox(width: 8),
+          ],
+        ),
+        body: CustomScrollView(
+          slivers: [
+            SliverList(
+              delegate: SliverChildListDelegate([
                 const SizedBox(height: 8),
-                _buildTermuxSection(context),
-              ],
-              const SizedBox(height: 16),
-            ]),
-          ),
-        ],
+                _buildReaderScreenSection(context),
+                const SizedBox(height: 8),
+                _buildTermFormSection(context),
+                const SizedBox(height: 8),
+                _buildSentenceReaderSection(context),
+                const SizedBox(height: 8),
+                _buildAudioPlayerSection(context),
+                const SizedBox(height: 8),
+                _buildSentenceTranslationSection(context),
+                const SizedBox(height: 8),
+                _buildBooksScreenSection(context),
+                const SizedBox(height: 8),
+                _buildAIFeaturesSection(context),
+                const SizedBox(height: 8),
+                _buildPerformanceSection(context),
+                if (!kIsWeb &&
+                    defaultTargetPlatform == TargetPlatform.android) ...[
+                  const SizedBox(height: 8),
+                  _buildTermuxSection(context),
+                ],
+                const SizedBox(height: 16),
+              ]),
+            ),
+          ],
+        ),
       ),
     );
   }

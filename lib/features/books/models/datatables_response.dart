@@ -15,13 +15,25 @@ class DataTablesResponse<T> {
     Map<String, dynamic> json,
     T Function(Map<String, dynamic>) fromJsonT,
   ) {
+    // 容错取整：服务端字段缺失或为 null 时，不应让整页列表崩溃。
+    int asInt(dynamic v, [int fallback = 0]) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? fallback;
+      return fallback;
+    }
+
+    final rawData = json['data'];
     return DataTablesResponse(
-      draw: json['draw'] as int? ?? 1,
-      recordsTotal: json['recordsTotal'] as int,
-      recordsFiltered: json['recordsFiltered'] as int,
-      data: (json['data'] as List<dynamic>)
-          .map((item) => fromJsonT(item as Map<String, dynamic>))
-          .toList(),
+      draw: asInt(json['draw'], 1),
+      recordsTotal: asInt(json['recordsTotal']),
+      recordsFiltered: asInt(json['recordsFiltered']),
+      data: rawData is List
+          ? rawData
+                .whereType<Map<String, dynamic>>()
+                .map(fromJsonT)
+                .toList()
+          : <T>[],
     );
   }
 }

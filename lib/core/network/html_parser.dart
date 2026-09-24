@@ -35,13 +35,24 @@ class HtmlParser {
     final audioCurrentPos = _extractAudioCurrentPos(metadataDocument);
     final audioBookmarks = _extractAudioBookmarks(metadataDocument);
     final mangaPage = _extractManga(textDocument, currentPage);
-    // The LUTE_YT_DATA block (YouTube videoId + MP3 audioUrl) is part of the
-    // page body (the youtube/audio player include), which can arrive in either
-    // the text or the metadata document depending on endpoint.  Search both.
+    // The LUTE_YT_DATA block (YouTube videoId + MP3 audioUrl) is part of
+    // the page body (the youtube/audio player include), which can arrive in
+    // the text or the metadata document depending on endpoint.  The bilibili
+    // include renders into the same block (bilibiliUrl/mpdUrl), so it is
+    // searched the same way.
     final youtube =
         _extractYoutubeData(metadataDocument) ?? _extractYoutubeData(textDocument);
+    final bilibili =
+        _extractBilibiliData(metadataDocument) ??
+        _extractBilibiliData(textDocument);
     final audioUrl =
         _extractAudioUrl(metadataDocument) ?? _extractAudioUrl(textDocument);
+    // The players that drive the reading text's "line being played" mark all
+    // read from cues, so they are gathered regardless of which backend the
+    // book uses: an MP3 book emits the same block as a YouTube one, with a
+    // null videoId (which is why _extractYoutubeData returns null for it).
+    final cues = _extractCueList(metadataDocument, textDocument);
+    final pageCueMap = _extractPageCueMapFrom(textDocument, metadataDocument);
 
     return PageData(
       bookId: bookId,
@@ -55,6 +66,9 @@ class HtmlParser {
       audioBookmarks: audioBookmarks,
       mangaPage: mangaPage,
       youtube: youtube,
+      bilibili: bilibili,
+      cues: cues,
+      pageCueMap: pageCueMap,
     );
   }
 
@@ -214,8 +228,9 @@ class HtmlParser {
 
   /// Extracts YouTube video data from the page metadata.  The web player
   /// include (`youtube_player.html`) renders a `LUTE_YT_DATA` script block
-  /// with `videoId` / `startPos`; for non-youtube books (including mp3,
-  /// which reuses the same include) `videoId` is `null` and we return null.
+  /// with `videoId` / `startPos` / `cues`; for non-youtube books (including
+  /// mp3, which reuses the same include) `videoId` is `null` and we return
+  /// null.
   YoutubeData? _extractYoutubeData(html.Document document) {
     for (final script in document.querySelectorAll('script')) {
       final text = script.text;
@@ -227,17 +242,205 @@ class HtmlParser {
       final videoId = videoMatch?.group(2);
       if (videoId == null || videoId.isEmpty) return null;
 
-      double startPos = 0;
-      final startMatch = RegExp(
-        r'LUTE_YT_DATA\.startPos\s*=\s*([0-9.]+)',
-      ).firstMatch(text);
-      if (startMatch != null) {
-        startPos = double.tryParse(startMatch.group(1)!) ?? 0;
-      }
-
-      return YoutubeData(videoId: videoId, startPos: startPos);
+      return YoutubeData(
+        videoId: videoId,
+        startPos: _extractStartPos(text),
+        cues: _extractCues(text),
+      );
     }
     return null;
+  }
+
+  /// Extracts Bilibili video data from the page metadata.  The bilibili
+  /// player include (`bilibili_player.html`) renders a `LUTE_YT_DATA`
+  /// block with `bilibiliUrl` (the official embed URL, absolute) and
+  /// `mpdUrl` (our server-relative DASH manifest; `null` when the server
+  /// could not build one and only the embed fallback is available).
+  /// Returns null for non-bilibili books, where neither line is emitted.
+  BilibiliData? _extractBilibiliData(html.Document document) {
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('LUTE_YT_DATA.bilibiliUrl') &&
+          !text.contains('LUTE_YT_DATA.mpdUrl')) {
+        continue;
+      }
+
+      final embedUrl = _readJsonString(text, r'LUTE_YT_DATA\.bilibiliUrl');
+      final mpdUrl = _readJsonString(text, r'LUTE_YT_DATA\.mpdUrl');
+      final hasEmbed = embedUrl != null && embedUrl.isNotEmpty;
+      final hasMpd = mpdUrl != null && mpdUrl.isNotEmpty;
+      // A bilibili block with neither URL is not playable at all.
+      if (!hasEmbed && !hasMpd) return null;
+
+      return BilibiliData(
+        mpdUrl: hasMpd ? mpdUrl : null,
+        embedUrl: hasEmbed ? embedUrl : null,
+        startPos: _extractStartPos(text),
+        cues: _extractCues(text),
+      );
+    }
+    return null;
+  }
+
+  /// Reads a `LUTE_YT_DATA.<field> = "..."` assignment rendered through
+  /// Jinja's `tojson`, returning the decoded string.  Handles the HTML-safe
+  /// escaping Flask applies (`&` becomes `\u0026` in embed URLs) and a
+  /// literal `null`.  [assignmentTarget] is the regex for the left-hand
+  /// side, so the dot in `LUTE_YT_DATA` must be escaped by the caller.
+  String? _readJsonString(String scriptText, String assignmentTarget) {
+    final match = RegExp(
+      assignmentTarget + r'''\s*=\s*("(?:[^"\\]|\\.)*"|null)''',
+    ).firstMatch(scriptText);
+    final literal = match?.group(1);
+    if (literal == null || literal == 'null') return null;
+    try {
+      final value = jsonDecode(literal);
+      return value is String && value.isNotEmpty ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Reads `LUTE_YT_DATA.startPos = <number>`; 0 when absent/unreadable.
+  double _extractStartPos(String scriptText) {
+    final match = RegExp(
+      r'LUTE_YT_DATA\.startPos\s*=\s*([0-9.]+)',
+    ).firstMatch(scriptText);
+    if (match == null) return 0;
+    return double.tryParse(match.group(1)!) ?? 0;
+  }
+
+  /// Reads the `LUTE_YT_DATA.cues = [...]` array out of a script block.
+  ///
+  /// The literal is raw JSON, so it is delimited by bracket balance rather
+  /// than by a regex: cue text is arbitrary book content and may itself
+  /// contain brackets, braces, quotes and commas.  Anything unreadable
+  /// degrades to "no subtitles" -- the player still plays, just without
+  /// per-sentence loop and auto-pause.
+  static List<YoutubeCue> _extractCues(String scriptText) {
+    const marker = 'LUTE_YT_DATA.cues';
+    final markerIndex = scriptText.indexOf(marker);
+    if (markerIndex < 0) return const [];
+
+    final start = scriptText.indexOf('[', markerIndex + marker.length);
+    if (start < 0) return const [];
+
+    final end = _matchingBracket(scriptText, start);
+    if (end < 0) return const [];
+
+    try {
+      return YoutubeCue.listFromJson(
+        jsonDecode(scriptText.substring(start, end + 1)),
+      );
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// The book's subtitle cues, whichever document carries the
+  /// `LUTE_YT_DATA.cues` block.
+  ///
+  /// The block is part of the page body (the player include) and can arrive
+  /// in the text or the metadata document depending on endpoint -- the same
+  /// ambiguity [_extractYoutubeData] handles.  The first document that
+  /// yields a non-empty list wins, so a book whose metadata block renders
+  /// `[]` still gets its cues from the body.
+  static List<YoutubeCue> _extractCueList(
+    html.Document metadataDocument,
+    html.Document textDocument,
+  ) {
+    for (final document in [metadataDocument, textDocument]) {
+      for (final script in document.querySelectorAll('script')) {
+        if (!script.text.contains('LUTE_YT_DATA.cues')) continue;
+        final cues = _extractCues(script.text);
+        if (cues.isNotEmpty) return cues;
+      }
+    }
+    return const [];
+  }
+
+  /// Reads `window.LUTE_PAGE_CUE_MAP = [...]` -- the cue index of each line
+  /// of this page, in line order.
+  ///
+  /// Empty for books without cues, for older servers that do not render the
+  /// map, and for pages whose lines no longer match the cues.  Callers fall
+  /// back to matching the cue text against the page's lines in that case.
+  static List<int> _extractPageCueMap(html.Document document) {
+    const marker = 'LUTE_PAGE_CUE_MAP';
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      final markerIndex = text.indexOf(marker);
+      if (markerIndex < 0) continue;
+
+      final start = text.indexOf('[', markerIndex + marker.length);
+      if (start < 0) continue;
+
+      final end = _matchingBracket(text, start);
+      if (end < 0) continue;
+
+      try {
+        final decoded = jsonDecode(text.substring(start, end + 1));
+        if (decoded is! List) continue;
+        return decoded
+            .map(
+              (value) =>
+                  value is num ? value.toInt() : int.tryParse('$value'),
+            )
+            .whereType<int>()
+            .toList();
+      } catch (_) {
+        continue;
+      }
+    }
+    return const [];
+  }
+
+  /// The page's cue map, from whichever document carries it.  It is rendered
+  /// with the page body (`read/page_content.html`), so the text document is
+  /// tried first; the metadata document is a fallback for endpoints that
+  /// inline the body.
+  static List<int> _extractPageCueMapFrom(
+    html.Document textDocument,
+    html.Document metadataDocument,
+  ) {
+    final fromText = _extractPageCueMap(textDocument);
+    return fromText.isNotEmpty
+        ? fromText
+        : _extractPageCueMap(metadataDocument);
+  }
+
+  /// Index of the `]` that closes the `[` at [openIndex], or -1 when the
+  /// brackets never balance.  String literals and escapes are skipped so a
+  /// cue text containing `]` or `"` cannot close the array early.
+  static int _matchingBracket(String source, int openIndex) {
+    var depth = 0;
+    var inString = false;
+    var escaped = false;
+
+    for (var i = openIndex; i < source.length; i++) {
+      final char = source[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char == '\\') {
+          escaped = true;
+        } else if (char == '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char == '"') {
+        inString = true;
+      } else if (char == '[') {
+        depth++;
+      } else if (char == ']') {
+        depth--;
+        if (depth == 0) return i;
+      }
+    }
+    return -1;
   }
 
   /// Extracts the audio URL exposed by MP3 books via `LUTE_YT_DATA.audioUrl`.

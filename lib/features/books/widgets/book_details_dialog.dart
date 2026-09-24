@@ -302,8 +302,15 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
                   Expanded(
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        ref.read(navigationProvider).navigateToReader(book.id);
-                        Navigator.of(context).pop();
+                        // 必须把 Book 一起传下去：从 Book Set 页长按打开的成员书
+                        // 不在书架列表里，app.dart 查不到它，不传就会退化成
+                        // 一本没有标题、没有语言的空壳书。
+                        ref
+                            .read(navigationProvider)
+                            .navigateToReader(book.id, null, book);
+                        // 用 popUntil(isFirst) 而不是 pop()：本弹窗可能压在
+                        // Book Set 页之上，只 pop 一层会把阅读器盖在下面。
+                        Navigator.of(context).popUntil((route) => route.isFirst);
                       },
                       icon: const Icon(Icons.play_arrow),
                       label: const Text('Start Reading'),

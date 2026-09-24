@@ -20,13 +20,19 @@ class LanguageReadingStats {
   DateTime? get lastDate => dailyStats.isEmpty ? null : dailyStats.last.date;
 
   factory LanguageReadingStats.fromJson(Map<String, dynamic> json) {
-    final language = json['language'] as String;
-    final List<dynamic> statsList = json['dailyStats'] as List<dynamic>;
-    final dailyStats = statsList
-        .map((e) => DailyReadingStats.fromJson(e as Map<String, dynamic>))
-        .toList();
+    // 容错：字段缺失或为 null 时退化为空值，而不是抛异常让整页统计打不开。
+    final rawList = json['dailyStats'];
+    final dailyStats = rawList is List
+        ? rawList
+              .whereType<Map<String, dynamic>>()
+              .map(DailyReadingStats.fromJson)
+              .toList()
+        : <DailyReadingStats>[];
 
-    return LanguageReadingStats(language: language, dailyStats: dailyStats);
+    return LanguageReadingStats(
+      language: json['language'] as String? ?? '',
+      dailyStats: dailyStats,
+    );
   }
 
   Map<String, dynamic> toJson() {

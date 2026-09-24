@@ -7,6 +7,7 @@ import 'package:lute_for_mobile/features/settings/providers/tts_settings_provide
 import 'package:lute_for_mobile/features/settings/widgets/kokoro_voice_chips.dart';
 import 'package:lute_for_mobile/features/settings/widgets/on_device_voice_selector.dart';
 import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:lute_for_mobile/shared/utils/tts_language_mapper.dart';
 
 class TTSSettingsSection extends ConsumerStatefulWidget {
   const TTSSettingsSection({super.key});
@@ -956,7 +957,7 @@ class _EdgeTTSSettingsState extends ConsumerState<_EdgeTTSSettings> {
       children: [
         TextField(
           decoration: const InputDecoration(
-            labelText: 'Language Code',
+            labelText: 'Fallback Language Code',
             hintText: 'e.g., en, ja, es, fr, de',
             border: OutlineInputBorder(),
           ),
@@ -971,9 +972,10 @@ class _EdgeTTSSettingsState extends ConsumerState<_EdgeTTSSettings> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Uses the Lute server\'s edge-tts endpoint '
-          '(GET /tts/<lang>/<text>). The voice is selected automatically by '
-          'the server based on the language code.',
+          'Reading follows the language of the book you have open; this code '
+          'is only used when that language is unknown. The server picks the '
+          'voice for the language via its edge-tts endpoint '
+          '(GET /tts/<lang>/<text>).',
           style: TextStyle(
             color: context.appColorScheme.text.secondary,
             fontSize: 12,
@@ -1007,7 +1009,12 @@ class _TestSpeechButtonState extends ConsumerState<_TestSpeechButton> {
 
     try {
       final service = ref.read(ttsServiceProvider);
-      await service.speak('Hello, this is a test of the text to speech.');
+      // 例句必须与语音的语种一致：Edge TTS 会把当前语言拼进请求 URL，
+      // 拿英文句子去喂日文语音，edge-tts 会返回 NoAudioReceived。
+      final sample = service is EdgeTTSService
+          ? ttsSampleSentenceFor(service.languageCode)
+          : 'Hello, this is a test of the text to speech.';
+      await service.speak(sample);
       await Future.delayed(const Duration(seconds: 3));
     } catch (e) {
       setState(() => _error = e.toString());

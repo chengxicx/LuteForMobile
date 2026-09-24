@@ -1,18 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:dio/dio.dart';
+
+import '../network/session_manager.dart';
 
 class ServerHealthService {
-  static const Duration _kDefaultTimeout = Duration(milliseconds: 500);
-
-  static final Dio _dio = Dio(
-    BaseOptions(
-      connectTimeout: _kDefaultTimeout,
-      receiveTimeout: _kDefaultTimeout,
-      sendTimeout: _kDefaultTimeout,
-    ),
-  )..interceptors.clear();
-
   static Future<bool>? _pendingCheck;
 
   static Future<bool> isReachable(
@@ -36,7 +26,7 @@ class ServerHealthService {
       return _pendingCheck!;
     }
 
-    _pendingCheck = _performCheck(uri, username, password);
+    _pendingCheck = _performCheck(url);
     try {
       return await _pendingCheck!;
     } finally {
@@ -44,48 +34,36 @@ class ServerHealthService {
     }
   }
 
-  static Future<bool> _performCheck(Uri uri, String username, String password) async {
+  static Future<bool> _performCheck(String url) async {
     try {
-      // Use /info endpoint for health check (designed for this purpose)
-      final healthUri = uri.replace(path: '/info');
-      print('ServerHealthService: Sending HEAD request to $healthUri');
-
-      final headers = <String, dynamic>{};
-      if (username.isNotEmpty) {
-        final basicAuth =
-            'Basic ${base64Encode(utf8.encode('$username:$password'))}';
-        headers['Authorization'] = basicAuth;
+      final result = await check(url);
+      print(
+        'ServerHealthService: GET $url/info -> ok=${result.ok} '
+        'requiresLogin=${result.requiresLogin} '
+        'requiresBasicAuth=${result.requiresBasicAuth} ${result.message}',
+      );
+      if (result.ok) return true;
+      if (result.requiresLogin) {
+        // The server answers but the multi-user session is gone. Try a
+        // silent re-login with remembered credentials before reporting
+        // the server as unreachable.
+        final recovered = await SessionManager.tryAutoRelogin();
+        if (recovered) {
+          final retryResult = await check(url);
+          if (retryResult.ok) return true;
+        }
       }
-
-      final startTime = DateTime.now();
-      final response = await _dio.headUri(
-        healthUri,
-        options: Options(headers: headers),
-      );
-      final elapsed = DateTime.now().difference(startTime).inMilliseconds;
-
-      print(
-        'ServerHealthService: HEAD $healthUri -> ${response.statusCode} in ${elapsed}ms',
-      );
-      return response.statusCode == 200;
-    } on TimeoutException catch (e) {
-      print(
-        'ServerHealthService: HEAD ${uri.toString()} TIMEOUT - ${e.duration}',
-      );
-      return false;
-    } on DioException catch (e) {
-      print('ServerHealthService: HEAD ${uri.toString()} DIO ERROR');
-      print('  - type: ${e.type}');
-      print('  - message: ${e.message}');
-      print('  - error: ${e.error}');
-      print('  - stack trace: ${e.stackTrace}');
       return false;
     } on Exception catch (e) {
-      print(
-        'ServerHealthService: HEAD ${uri.toString()} EXCEPTION - ${e.runtimeType}: $e',
-      );
+      print('ServerHealthService: HEAD $url EXCEPTION - ${e.runtimeType}: $e');
       return false;
     }
+  }
+
+  /// Detailed probe used by the queue and the settings screen: distinguishes
+  /// a reachable server that only needs a login from a dead one.
+  static Future<ServerInfoCheck> check(String url) {
+    return SessionManager.checkServerInfo(url);
   }
 
   static Future<bool> waitForReachable(

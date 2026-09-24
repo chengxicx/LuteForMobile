@@ -14,6 +14,10 @@ import 'term_status_chart.dart';
 import 'language_breakdown_card.dart';
 import 'reading_milestones_card.dart';
 import 'terms_added_today_card.dart';
+import 'term_activity_section.dart';
+import 'vocabulary_progress_card.dart';
+import '../providers/level_report_provider.dart';
+import '../providers/term_activity_provider.dart';
 
 class StatsScreen extends ConsumerStatefulWidget {
   final GlobalKey<ScaffoldState>? scaffoldKey;
@@ -90,6 +94,19 @@ class _StatsScreenState extends ConsumerState<StatsScreen> {
         .read(statsProvider.notifier)
         .filteredLanguages;
 
+    // Vocabulary-progress reports are per language, so they only appear once
+    // a language (not "all") is selected -- the same rule the web page uses
+    // when it reveals its JLPT / CEFR / ... buttons.
+    final selectedLangName = ref
+        .watch(statsProvider)
+        .value
+        ?.selectedLanguage
+        ?.language;
+    final selectedLangId = ref.watch(statsSelectedLangIdProvider);
+    final reportKinds = selectedLangName == null
+        ? const <LevelReportKind>[]
+        : levelReportKindsFor(selectedLangName);
+
     return RefreshIndicator(
       onRefresh: () => ref.read(statsProvider.notifier).refreshStats(),
       child: ListView(
@@ -103,8 +120,17 @@ class _StatsScreenState extends ConsumerState<StatsScreen> {
           const PeriodFilterWidget(),
           const SizedBox(height: 8),
           const LanguageFilterWidget(),
+          if (selectedLangId != null && reportKinds.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            VocabularyProgressCard(
+              key: ValueKey(selectedLangId),
+              langId: selectedLangId,
+              kinds: reportKinds,
+            ),
+          ],
           const SizedBox(height: 8),
           WordsReadChart(languages: filteredLanguages),
+          const TermActivitySection(),
           const TermsAddedTodayCard(),
           ReadingMilestonesCard(languages: filteredLanguages),
           const TermStatusChart(),

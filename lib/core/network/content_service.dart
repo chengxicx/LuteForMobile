@@ -11,6 +11,9 @@ import '../../features/reader/services/page_cache_service.dart';
 import '../../features/books/models/book.dart';
 import '../../features/books/models/book_create.dart';
 import '../../features/books/models/datatables_response.dart';
+import '../../features/grammar/models/grammar_point.dart';
+import '../../features/stats/models/level_report.dart';
+import '../../features/stats/models/term_activity.dart';
 import '../../features/terms/models/term.dart';
 import '../../shared/models/language.dart';
 import '../../shared/models/language_card_settings.dart';
@@ -503,22 +506,42 @@ class ContentService {
     return data;
   }
 
+  /// 把 datatables 的 JSON 响应解析成书籍列表。
+  ///
+  /// 过滤规则：只丢弃「BkID 无效**且**不是 tag 聚合行」的条目。
+  /// 聚合行的 BkID 是 NULL（服务端 `series_branch` 里的 `NULL AS BkID`），
+  /// 容错转换后会退化成 0，但它是一等公民，必须保留；
+  /// 而真正字段缺失的条目既点不开（会去请求 `/book/edit/0` 并失败），
+  /// 又会被写进本地缓存变成「幽灵书」，必须丢弃。
+  DataTablesResponse<Book> _parseBookList(String? body) {
+    final jsonData = json.decode(body ?? '') as Map<String, dynamic>;
+    final parsed = DataTablesResponse.fromJson(
+      jsonData,
+      (json) => Book.fromJson(json),
+    );
+    return DataTablesResponse<Book>(
+      draw: parsed.draw,
+      recordsTotal: parsed.recordsTotal,
+      recordsFiltered: parsed.recordsFiltered,
+      data: parsed.data.where((b) => b.id > 0 || b.isSeries).toList(),
+    );
+  }
+
   Future<DataTablesResponse<Book>> getActiveBooks({
     int start = 0,
     int length = 10,
     String? search,
     int draw = 1,
+    String? tagFilter,
   }) async {
     final response = await _apiService.getActiveBooks(
       draw: draw,
       start: start,
       length: length,
       search: search,
+      tagFilter: tagFilter,
     );
-
-    final jsonString = response.data ?? '';
-    final jsonData = json.decode(jsonString) as Map<String, dynamic>;
-    return DataTablesResponse.fromJson(jsonData, (json) => Book.fromJson(json));
+    return _parseBookList(response.data);
   }
 
   Future<DataTablesResponse<Book>> getArchivedBooks({
@@ -526,17 +549,16 @@ class ContentService {
     int length = 10,
     String? search,
     int draw = 1,
+    String? tagFilter,
   }) async {
     final response = await _apiService.getArchivedBooks(
       draw: draw,
       start: start,
       length: length,
       search: search,
+      tagFilter: tagFilter,
     );
-
-    final jsonString = response.data ?? '';
-    final jsonData = json.decode(jsonString) as Map<String, dynamic>;
-    return DataTablesResponse.fromJson(jsonData, (json) => Book.fromJson(json));
+    return _parseBookList(response.data);
   }
 
   Future<List<Book>> getAllActiveBooks() async {
@@ -547,6 +569,20 @@ class ContentService {
   Future<List<Book>> getAllArchivedBooks() async {
     final response = await getArchivedBooks(start: 0, length: 10000);
     return response.data;
+  }
+
+  /// 拉取某个 Book Set（tag 聚合）下的**成员书**。
+  ///
+  /// 带 `filtTag` 请求会让服务端关闭 tag 聚合、返回该 tag 下的扁平书单；
+  /// 不加这个参数时，这些书会被聚合行隐藏，永远拿不到。
+  /// [archived] 为 true 时读取该 tag 下已归档的成员书。
+  Future<List<Book>> getSeriesBooks(String tag, {bool archived = false}) async {
+    final response = archived
+        ? await getArchivedBooks(start: 0, length: 10000, tagFilter: tag)
+        : await getActiveBooks(start: 0, length: 10000, tagFilter: tag);
+    // 关闭聚合后返回的都是普通书，BkID 必须有效才算数；
+    // 同时排除 isSeries，防止服务端未来改了聚合开关策略时混进聚合行。
+    return response.data.where((b) => b.id > 0 && !b.isSeries).toList();
   }
 
   Future<void> invalidateAllBookStatsCache({Duration? timeout}) async {
@@ -1213,6 +1249,65 @@ class ContentService {
     final jsonString = response.data ?? '{}';
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     return json;
+  }
+
+  /// Term trends, heatmap and status summary (the web stats page's term
+  /// charts).  [period] is `today` / `7days` / `monthly`.
+  Future<TermActivity> getTermActivity({
+    required String period,
+    int? langId,
+  }) async {
+    final response = await _apiService.getTermStatsData(
+      period: period,
+      langId: langId,
+    );
+    final jsonString = response.data ?? '{}';
+    final json = jsonDecode(jsonString);
+    if (json is! Map<String, dynamic>) {
+      throw FormatException('Unexpected term stats payload: $jsonString');
+    }
+    return TermActivity.fromJson(json);
+  }
+
+  /// Vocabulary progress against a level list (JLPT / CEFR / TOPIK / ...).
+  Future<LevelReport> getLevelReport({
+    required String kind,
+    required int langId,
+  }) async {
+    final response = await _apiService.getLevelReportData(
+      kind: kind,
+      langId: langId,
+    );
+    final jsonString = response.data ?? '{}';
+    final json = jsonDecode(jsonString);
+    if (json is! Map<String, dynamic>) {
+      throw FormatException('Unexpected level report payload: $jsonString');
+    }
+    return LevelReport.fromJson(json);
+  }
+
+  /// Grammar points on a reading page.  An empty [text] makes the server
+  /// analyse the whole page instead of the snippet the reader sent.
+  Future<List<GrammarPoint>> getGrammarAnalysis({
+    required int bookId,
+    required int pageNum,
+    String? text,
+  }) async {
+    final response = await _apiService.getGrammarAnalysis(
+      bookId: bookId,
+      pageNum: pageNum,
+      text: text,
+    );
+    final jsonString = response.data ?? '[]';
+    final json = jsonDecode(jsonString);
+    if (json is! List) {
+      throw FormatException('Unexpected grammar payload: $jsonString');
+    }
+    return json
+        .whereType<Map>()
+        .map((e) => GrammarPoint.fromJson(Map<String, dynamic>.from(e)))
+        .where((point) => point.name.isNotEmpty)
+        .toList();
   }
 
   Future<void> warmTermCache({int? langId}) async {
