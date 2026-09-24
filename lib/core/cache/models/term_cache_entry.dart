@@ -68,13 +68,21 @@ class TermCacheEntry extends HiveObject {
     final termJson = jsonEncode(json);
     final sizeInBytes = utf8.encode(termJson).length;
 
+    // 容错取整：缓存里字段缺失或为 null 时退化，避免解析时抛异常。
+    int asInt(dynamic v, [int fallback = 0]) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? fallback;
+      return fallback;
+    }
+
     return TermCacheEntry(
-      termId: json['WoID'] as int,
-      text: json['WoText'] as String,
+      termId: asInt(json['WoID']),
+      text: json['WoText'] as String? ?? '',
       translation: json['WoTranslation'] as String?,
-      statusId: json['StID'] as int,
+      statusId: asInt(json['StID']),
       statusText: json['StText'] as String? ?? '',
-      languageId: json['LgID'] as int,
+      languageId: asInt(json['LgID']),
       languageName: json['LgName'] as String? ?? '',
       parentText: json['ParentText'] as String?,
       tags: json['TagList'] as String? ?? '',

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lute_for_mobile/core/network/tts_service.dart';
 import 'package:lute_for_mobile/core/providers/tts_provider.dart';
 import '../providers/audio_player_provider.dart';
 
@@ -168,6 +169,14 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
         state = state.copyWith(status: SentenceTTSStatus.playing);
       }
     } catch (e) {
+      // Fragment that the server cannot synthesize (e.g. a single closing
+      // bracket) -- not an error to surface or retry. Reset to idle so the
+      // reader can move on to the next sentence.
+      if (e is TTSUnpronounceableFragmentException) {
+        debugPrint('Skipping unpronounceable TTS fragment: $text');
+        state = const SentenceTTSState();
+        return;
+      }
       debugPrint('TTS Error: $e');
       await _handleError(text, sentenceId, e);
     }
@@ -203,6 +212,12 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
           state = state.copyWith(status: SentenceTTSStatus.playing);
         }
       } catch (retryError) {
+        // Same handling as the outer catch: an unpronounceable fragment is
+        // not retryable -- surface nothing, reset, done.
+        if (retryError is TTSUnpronounceableFragmentException) {
+          state = const SentenceTTSState();
+          return;
+        }
         await _handleError(text, sentenceId, retryError);
       }
     } else {

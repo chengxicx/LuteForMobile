@@ -1,9 +1,23 @@
 # Bug Fixes
-- Add HTTP Basic Authentication support so the client can read books from servers protected by Basic Auth (e.g. the production `metaman.dpdns.org` deployment). Previously all API requests lacked auth, so such servers returned HTTP 401 and the book list/reader failed to load.
-- Include Basic Auth credentials in the server health check (`/info`) so a protected server is no longer misreported as unreachable.
+- Attach the multi-user session cookie (and Basic Auth when configured) to every server request. Backup/restore and settings sync, audiobook streaming, term images and server-side TTS previously sent no credentials at all and failed with 401/redirects against protected servers (e.g. a password-protected production deployment).
+- Redirects to `/login` are now detected and surfaced as a clear "login required" error instead of being treated as a successful response whose login-page HTML silently parsed into empty data.
+- Server health check now uses `GET /info` with a 5s timeout and no longer follows redirects, so a login page can no longer be misreported as a reachable server (was a 500ms HEAD request).
+- Audiobook streaming now downloads the audio to a cache file with the session headers before playback (audioplayers 6.x cannot send request headers for remote URLs); local/Termux servers without auth still stream directly.
+- Book rows that have no real `BkID` (Book Set aggregates, which the server returns as `NULL AS BkID`, plus any malformed row) are no longer coerced to id 0 and treated as a normal book. They used to collide into a single entry when merging, made the background stats refresh and audio-metadata backfill request `/book/table_stats/0`, and opened a blank reader through `/book/edit/0`.
+- Opening a book no longer fabricates a placeholder with `langId: 0` when the book cannot be found in the shelf list. That placeholder overwrote `currentBookLangId`, which silently broke the language filter on the Stats and Terms screens.
+- `Start Reading` in the book details dialog now passes the book object to the reader and dismisses the whole navigation stack, so a book opened from a Book Set page is no longer left hidden behind the Book Set page (and keeps its title and language).
+- Reading aloud no longer fails with `Empty audio returned from Edge TTS server`. The Edge TTS language code was pinned to `en` in the settings defaults regardless of the book being read, so Japanese text was sent to an English voice; edge-tts answers `NoAudioReceived` for that, and the server cached the resulting zero-byte file forever. Speech now follows the language of the book that is open, and the settings field is only a fallback used when that language is unknown. `EdgeTTSService.setLanguage()` was a no-op and is now implemented.
+- The "Test Speech" button in TTS settings now speaks a sample in the language that will actually be used. It previously always sent an English sentence, which produced the same silent failure (and the same poisoned cache entry) whenever the active language was not English.
+- A book restored on app start (the reader reopens the last book from its saved id) now also publishes its language. That path only called `loadBook(id)` and never populated the current-book provider, so the speech language fell back to the settings default `en` and the fix above had no effect in the most common case — opening the app and pressing play.
 
 # New Feature
-- Settings screen now lets you configure a Username and Password (Basic Auth) for the lute server.
+- Book Set support. When the server aggregates books that share a tag into a single row (`BookType = 'series'`, e.g. `ai-story`), the bookshelf now renders one Book Set card — "Book Set · N" badge, read progress bar, aggregate word and term counts — and tapping it opens a dedicated Book Set screen with a summary header (books / read % / words / terms / progress) and a Continue button.
+  - Member books are fetched on demand by reusing the existing `filtTag` request parameter, which switches the server back to a flat book list; no server-side change was needed.
+  - Aggregate counts the server reports as pending (`SeriesStatsPending`) are computed in the background, after which the shelf reloads once.
+  - `BookType`, `SeriesTag`, `SeriesBookCount`, `SeriesReadCount` and `SeriesStatsPending` are persisted in the Hive cache, otherwise a cached Book Set row would come back as a ghost book.
+- Support lute v3.12+ multi-user login mode: new "Lute Account Login (multi-user mode)" section in Settings performs `POST /login`, stores the Flask session cookie (valid ~30 days) and remembers the credentials for silent re-login when the session expires. A session-expired state is shown in the app bar and a "Log Out" action clears the session.
+- "Test Connection" now probes `/info` and reports the lute server version, and distinguishes reachable / login-required / Basic-Auth-required instead of only "success or failure".
 
 # Other Changes
--
+- Pin `path_provider_android` to 2.2.17 via `dependency_overrides`: its 2.3.x releases pull in `jni`, whose native CMake module requires a multi-GB NDK install to build.
+- Added `test/tts_language_mapper_test.dart`: a contract test that walks the app's language-name to BCP-47 table and asserts the server has a real edge-tts voice for every entry. A mismatch is silent — no error, just no audio — so it needs an assertion rather than review.

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:lute_for_mobile/core/network/session_manager.dart';
 
 class BackupService {
   static const Duration defaultTimeout = Duration(seconds: 30);
@@ -29,11 +30,42 @@ class BackupService {
     'japanese_reading': 'katakana',
   };
 
+  /// Runs an HTTP call with the current session headers. package:http
+  /// follows redirects, so an expired multi-user session surfaces as the
+  /// login page with HTTP 200 — detect that and (re-)login once.
+  static Future<http.Response> _send(
+    Future<http.Response> Function(Map<String, String> authHeaders) send, {
+    Duration? timeout,
+  }) async {
+    Future<http.Response> attempt() {
+      final future = send(SessionManager.authHeaders());
+      return timeout == null ? future : future.timeout(timeout);
+    }
+
+    final response = await attempt();
+    if (!_isLoginRequired(response)) return response;
+    if (await SessionManager.tryAutoRelogin()) {
+      return attempt();
+    }
+    throw const ServerLoginRequiredException();
+  }
+
+  static bool _isLoginRequired(http.Response response) {
+    final body = response.body;
+    return body.contains('name="username"') &&
+        body.contains('name="password"');
+  }
+
   static Future<List<Map<String, dynamic>>> listBackups(
     String serverUrl,
   ) async {
     try {
-      final response = await http.get(Uri.parse('$serverUrl/backup/index'));
+      final response = await _send(
+        (headers) => http.get(
+          Uri.parse('$serverUrl/backup/index'),
+          headers: headers,
+        ),
+      );
 
       if (response.statusCode == 200) {
         final html = response.body;
@@ -89,6 +121,8 @@ class BackupService {
       } else {
         throw Exception('Failed to load backups: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } catch (e) {
       throw Exception('Failed to load backups: $e');
     }
@@ -144,18 +178,25 @@ class BackupService {
     Duration timeout = defaultTimeout,
   }) async {
     try {
-      final response = await http
-          .post(
-            Uri.parse('$serverUrl/backup/do_backup'),
-            body: {'type': 'manual'},
-          )
-          .timeout(timeout);
+      final response = await _send(
+        (headers) => http.post(
+          Uri.parse('$serverUrl/backup/do_backup'),
+          headers: headers,
+          body: {'type': 'manual'},
+        ),
+        timeout: timeout,
+      );
 
+      if (_isLoginRequired(response)) {
+        throw const ServerLoginRequiredException();
+      }
       if (response.statusCode == 200) {
         return 'Backup created successfully';
       } else {
         throw Exception('Failed to create backup: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception(
         'Backup creation timed out after ${timeout.inSeconds} seconds',
@@ -171,8 +212,11 @@ class BackupService {
     String serverType = 'termux',
   }) async {
     try {
-      final response = await http.get(
-        Uri.parse('$serverUrl/backup/download/$filename'),
+      final response = await _send(
+        (headers) => http.get(
+          Uri.parse('$serverUrl/backup/download/$filename'),
+          headers: headers,
+        ),
       );
 
       if (response.statusCode == 200) {
@@ -186,6 +230,8 @@ class BackupService {
       } else {
         throw Exception('Failed to download backup: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } catch (e) {
       throw Exception('Failed to download backup: $e');
     }
@@ -197,13 +243,18 @@ class BackupService {
     Duration timeout = defaultTimeout,
   }) async {
     try {
-      final response = await http
-          .post(
-            Uri.parse('$serverUrl/backup/do_restore'),
-            body: {'filename': filename},
-          )
-          .timeout(timeout);
+      final response = await _send(
+        (headers) => http.post(
+          Uri.parse('$serverUrl/backup/do_restore'),
+          headers: headers,
+          body: {'filename': filename},
+        ),
+        timeout: timeout,
+      );
 
+      if (_isLoginRequired(response)) {
+        throw const ServerLoginRequiredException();
+      }
       if (response.statusCode == 200) {
         return 'Restore completed successfully';
       } else {
@@ -214,6 +265,8 @@ class BackupService {
           ),
         );
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception('Restore timed out after ${timeout.inSeconds} seconds');
     } catch (e) {
@@ -236,6 +289,7 @@ class BackupService {
         'POST',
         Uri.parse('$serverUrl/backup/upload'),
       );
+      request.headers.addAll(SessionManager.authHeaders());
       request.files.add(
         await http.MultipartFile.fromPath(
           'backup_file',
@@ -244,12 +298,18 @@ class BackupService {
         ),
       );
 
-      final response = await request.send().timeout(timeout);
+      final streamedResponse = await request.send().timeout(timeout);
+      final response = await http.Response.fromStream(streamedResponse);
+      if (_isLoginRequired(response)) {
+        throw const ServerLoginRequiredException();
+      }
       if (response.statusCode != 200 &&
           response.statusCode != 302 &&
           response.statusCode != 303) {
         throw Exception('Failed to upload backup: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception(
         'Backup upload timed out after ${timeout.inSeconds} seconds',
@@ -265,13 +325,18 @@ class BackupService {
     Duration timeout = defaultTimeout,
   }) async {
     try {
-      final response = await http
-          .post(
-            Uri.parse('$serverUrl/backup/do_delete'),
-            body: {'filename': filename},
-          )
-          .timeout(timeout);
+      final response = await _send(
+        (headers) => http.post(
+          Uri.parse('$serverUrl/backup/do_delete'),
+          headers: headers,
+          body: {'filename': filename},
+        ),
+        timeout: timeout,
+      );
 
+      if (_isLoginRequired(response)) {
+        throw const ServerLoginRequiredException();
+      }
       if (response.statusCode != 200) {
         throw Exception(
           _extractErrorMessage(
@@ -280,6 +345,8 @@ class BackupService {
           ),
         );
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception('Delete timed out after ${timeout.inSeconds} seconds');
     } catch (e) {
@@ -292,9 +359,13 @@ class BackupService {
     Duration timeout = defaultTimeout,
   }) async {
     try {
-      final response = await http
-          .get(Uri.parse('$serverUrl/settings/index'))
-          .timeout(timeout);
+      final response = await _send(
+        (headers) => http.get(
+          Uri.parse('$serverUrl/settings/index'),
+          headers: headers,
+        ),
+        timeout: timeout,
+      );
 
       if (response.statusCode == 200) {
         final html = response.body;
@@ -307,6 +378,8 @@ class BackupService {
       } else {
         throw Exception('Failed to load settings: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception(
         'Getting backup_dir timed out after ${timeout.inSeconds} seconds',
@@ -319,8 +392,11 @@ class BackupService {
   static Future<void> updateBackupDir(String serverUrl, String newPath) async {
     try {
       final encodedPath = Uri.encodeComponent(newPath);
-      final response = await http.post(
-        Uri.parse('$serverUrl/settings/set/backup_dir/$encodedPath'),
+      final response = await _send(
+        (headers) => http.post(
+          Uri.parse('$serverUrl/settings/set/backup_dir/$encodedPath'),
+          headers: headers,
+        ),
       );
 
       if (response.statusCode == 200) {
@@ -328,6 +404,8 @@ class BackupService {
       } else {
         throw Exception('Failed to update backup_dir: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } catch (e) {
       throw Exception('Failed to update backup_dir: $e');
     }
@@ -338,9 +416,13 @@ class BackupService {
     Duration timeout = defaultTimeout,
   }) async {
     try {
-      final response = await http
-          .get(Uri.parse('$serverUrl/settings/index'))
-          .timeout(timeout);
+      final response = await _send(
+        (headers) => http.get(
+          Uri.parse('$serverUrl/settings/index'),
+          headers: headers,
+        ),
+        timeout: timeout,
+      );
 
       if (response.statusCode == 200) {
         final html = response.body;
@@ -349,6 +431,8 @@ class BackupService {
       } else {
         throw Exception('Failed to load settings: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception(
         'Getting settings timed out after ${timeout.inSeconds} seconds',
@@ -369,19 +453,29 @@ class BackupService {
         'submit': 'Save',
       };
 
-      final response = await http
-          .post(
+      final response = await _send(
+        (headers) {
+          final merged = {'Content-Type': 'application/x-www-form-urlencoded'};
+          merged.addAll(headers);
+          return http.post(
             Uri.parse('$serverUrl/settings/index'),
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            headers: merged,
             body: formBody,
-          )
-          .timeout(timeout);
+          );
+        },
+        timeout: timeout,
+      );
 
+      if (_isLoginRequired(response)) {
+        throw const ServerLoginRequiredException();
+      }
       if (response.statusCode != 200) {
         throw Exception(
           'Failed to restore default settings: ${response.statusCode}',
         );
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception(
         'Restoring default settings timed out after ${timeout.inSeconds} seconds',
@@ -514,19 +608,29 @@ class BackupService {
 
       formBody.add(const MapEntry('submit', 'Save'));
 
-      final response = await http
-          .post(
+      final response = await _send(
+        (headers) {
+          final merged = {'Content-Type': 'application/x-www-form-urlencoded'};
+          merged.addAll(headers);
+          return http.post(
             Uri.parse('$serverUrl/settings/index'),
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            headers: merged,
             body: formBody,
-          )
-          .timeout(timeout);
+          );
+        },
+        timeout: timeout,
+      );
 
+      if (_isLoginRequired(response)) {
+        throw const ServerLoginRequiredException();
+      }
       if (response.statusCode == 200) {
         return;
       } else {
         throw Exception('Failed to update backup_dir: ${response.statusCode}');
       }
+    } on ServerLoginRequiredException {
+      rethrow;
     } on TimeoutException {
       throw Exception(
         'Updating backup_dir timed out after ${timeout.inSeconds} seconds',

@@ -137,12 +137,10 @@ class ApiRequestQueue {
         '_processQueue',
         details: 'server unreachable, probing...',
       );
-      final isNowReachable = await ServerHealthService.isReachable(
-        _serverUrl!,
-        username: _basicAuthUser,
-        password: _basicAuthPassword,
-      );
-      if (isNowReachable) {
+      final health = await ServerHealthService.check(_serverUrl!);
+      if (health.ok || health.requiresLogin) {
+        // requiresLogin: the server answers, so requests may proceed and
+        // surface the login error instead of stalling in the queue.
         _isServerReachable = true;
         ServerStatusManager.setReachable(true);
         _pollTimer?.cancel();

@@ -9,6 +9,11 @@ import '../../../shared/theme/theme_extensions.dart';
 /// the MP3 [AudioPlayerWidget]: a timeline slider over the whole page plus
 /// previous / play-pause / next controls.  It reads the page's sentences
 /// sequentially via the configured TTS service.
+///
+/// The aux controls on the right match the web player's: a − / + rate control
+/// (tap the number to reset) and the Loop / Auto-pause toggles.  Loop repeats
+/// the sentence being read; auto-pause stops at the end of each one.  Loop
+/// wins when both are on.
 class TTSPlayerWidget extends ConsumerStatefulWidget {
   const TTSPlayerWidget({super.key});
 
@@ -188,9 +193,102 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
             padding: EdgeInsets.all(4),
             tooltip: 'Next sentence',
           ),
+          SizedBox(width: 4),
+          _buildRateControl(context, state),
+          _buildToggle(
+            context,
+            icon: state.loopMode ? Icons.repeat_on : Icons.repeat,
+            isOn: state.loopMode,
+            tooltip: state.loopMode
+                ? 'Loop current sentence: on'
+                : 'Loop current sentence: off',
+            onPressed: () => notifier.toggleLoopMode(),
+          ),
+          _buildToggle(
+            context,
+            icon: state.autoPauseMode
+                ? Icons.pause_circle
+                : Icons.pause_circle_outline,
+            isOn: state.autoPauseMode,
+            tooltip: state.autoPauseMode
+                ? 'Auto-pause at each sentence: on'
+                : 'Auto-pause at each sentence: off',
+            onPressed: () => notifier.toggleAutoPauseMode(),
+          ),
         ],
       ),
     );
+  }
+
+  /// − / + rate control with the current value between them.  Tapping the
+  /// value resets to 1x, matching the web player's rate indicator.
+  Widget _buildRateControl(BuildContext context, TTSPlayerState state) {
+    final notifier = ref.read(ttsPlayerProvider.notifier);
+    final label = _formatRate(state.playbackRate);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: Icon(Icons.remove),
+          onPressed: () =>
+              notifier.nudgePlaybackRate(-TTSPlayerNotifier.playbackRateStep),
+          color: context.audioPlayerIcon,
+          iconSize: 18,
+          padding: EdgeInsets.all(4),
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Slower',
+        ),
+        GestureDetector(
+          onTap: () => notifier.resetPlaybackRate(),
+          child: Container(
+            constraints: BoxConstraints(minWidth: 34),
+            alignment: Alignment.center,
+            padding: EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: context.audioPlayerIcon,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+        IconButton(
+          icon: Icon(Icons.add),
+          onPressed: () =>
+              notifier.nudgePlaybackRate(TTSPlayerNotifier.playbackRateStep),
+          color: context.audioPlayerIcon,
+          iconSize: 18,
+          padding: EdgeInsets.all(4),
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Faster',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildToggle(
+    BuildContext context, {
+    required IconData icon,
+    required bool isOn,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      icon: Icon(icon),
+      onPressed: onPressed,
+      color: isOn ? context.audioBookmark : context.audioPlayerIcon,
+      iconSize: 22,
+      padding: EdgeInsets.all(4),
+      tooltip: tooltip,
+    );
+  }
+
+  String _formatRate(double rate) {
+    final text = rate.toStringAsFixed(2).replaceAll(RegExp(r'\.?0+$'), '');
+    return '${text.isEmpty ? '1' : text}x';
   }
 
   /// Maps an overall timeline position back to the sentence index that it

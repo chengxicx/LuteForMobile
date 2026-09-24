@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="ZBTzEhFcNZ0uNineC4CZgt">
+<head data-page-node-id="xnZcgfLVXYTz0aTnkEe6vC">
+<meta charset="UTF-8" data-page-node-id="e4s327rWYfhGTGQZUSTa9j">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="3ALZXQS49DZAhcVHAle9a4">
+<title>远程服务器 Flutter 环境部署与编译验证</title>
+<style>
+  :root {
+    --bg: #FAF9F7;
+    --surface: #FFFFFF;
+    --border: #E4E1DC;
+    --ink: #1F1D1B;
+    --ink-2: #55514C;
+    --ink-3: #8A857E;
+    --accent: #2F5C99;
+    --accent-soft: #EDF2FA;
+    --good: #2E7D46;
+    --good-soft: #ECF6EF;
+    --warn: #A8541A;
+    --warn-soft: #FBF1E7;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 48px 24px 72px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  header { margin-bottom: 40px; }
+  h1 { font-size: 30px; line-height: 1.3; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-3); font-size: 14.5px; }
+  .sub code { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+
+  h2 {
+    font-size: 19px; margin: 44px 0 16px; letter-spacing: -0.01em;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 15.5px; margin: 26px 0 10px; color: var(--ink-2); }
+
+  p { margin: 0 0 14px; color: var(--ink-2); }
+  ul { margin: 0 0 14px; padding-left: 22px; color: var(--ink-2); }
+  li { margin-bottom: 7px; }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 22px 0 8px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 18px 16px;
+  }
+  .card .k { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .card .v { font-size: 25px; font-weight: 650; margin: 6px 0 4px; letter-spacing: -0.02em; }
+  .card .n { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+  .card.ok .v { color: var(--good); }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 8px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  td { color: var(--ink-2); }
+  tr:last-child td { border-bottom: none; }
+  table.boxed { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table.boxed th { background: #F5F3F0; }
+  td.num { font-family: var(--mono); font-size: 13.5px; text-align: right; white-space: nowrap; }
+  td.mono, span.mono { font-family: var(--mono); font-size: 13.5px; }
+
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 600; line-height: 1.6;
+  }
+  .pill.ok { background: var(--good-soft); color: var(--good); }
+  .pill.no { background: #F2F1EF; color: var(--ink-3); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+
+  pre {
+    background: #2B2926; color: #EDEAE5; border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; font-family: var(--mono);
+    font-size: 13px; line-height: 1.65; margin: 14px 0;
+  }
+  pre .c { color: #9A948C; }
+  code.inl {
+    font-family: var(--mono); font-size: 13.5px;
+    background: #F2F0ED; padding: 1px 6px; border-radius: 5px; color: var(--ink);
+  }
+
+  .note {
+    background: var(--accent-soft); border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0; padding: 14px 18px; margin: 18px 0;
+    font-size: 14.5px; color: var(--ink-2);
+  }
+  .note.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .note strong { color: var(--ink); }
+
+  footer {
+    margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--border);
+    font-size: 13px; color: var(--ink-3);
+  }
+  @media (max-width: 640px) {
+    .cards { grid-template-columns: 1fr; }
+    body { padding: 32px 16px 56px; }
+  }
+</style>
+</head>
+<body data-page-node-id="8fMFRktkUzXvs1FvS4LfbP">
+<div class="wrap" data-page-node-id="5OwREOwjLbIz2d0R2OqLp9">
+
+  <header data-page-node-id="n96UT0gOjSK4l6EefbmZDF">
+    <h1 data-page-node-id="tCGLuGPUb47Mcug6Kwc8TT">远程服务器 Flutter 环境部署与编译验证</h1>
+    <div class="sub" data-page-node-id="latUAZH80SkYpnAolCevBT">
+      目标主机 <code data-page-node-id="qVgGcHwD4pXBafIedpaCZd">172.236.226.132</code>（生产环境）&nbsp;·&nbsp;
+      项目 LuteForMobile &nbsp;·&nbsp; 2026-09-22
+    </div>
+  </header>
+
+  <p data-page-node-id="kLV6FZjvIKx7BOs5lILnL5">
+    起因：本地 Mac 未安装 Flutter SDK，无法对已完成的界面改动执行 <code class="inl" data-page-node-id="UAbX2DtfiklRnrkmpDKzc4">flutter analyze</code>。
+    因此在一台已有的远程服务器上以<strong data-page-node-id="P1Bhpiv2qY2RSocjm30GRZ">完全隔离</strong>的方式安装了 Flutter SDK，并完成了编译验证。
+  </p>
+
+  <div class="cards" data-page-node-id="o2XIqOHmBJpV2YNArJdm6b">
+    <div class="card ok" data-page-node-id="esvECfViuByMo3iep9M5zD">
+      <div class="k" data-page-node-id="fBBrXwUPpOdwGqRGdPBrh4">编译错误</div>
+      <div class="v" data-page-node-id="bFqdB1lNL2vnX3XJHlVnLL">0</div>
+      <div class="n" data-page-node-id="9CeP4lwNpQaXAEKHlFpP1q">error 级别为 0，代码可编译</div>
+    </div>
+    <div class="card ok" data-page-node-id="ev2ZCriaMS4bHhxHmIKH6l">
+      <div class="k" data-page-node-id="1rVYGDxKCqc7JPIiM1c1HU">新增问题</div>
+      <div class="v" data-page-node-id="uXBqfmfHTHMjS8CA3u1J4B">0</div>
+      <div class="n" data-page-node-id="AG3X6nyavkATizrYp1FvBE">相对改动前无任何新增告警</div>
+    </div>
+    <div class="card ok" data-page-node-id="o3EDFN1Z0F6oSfBH9ZJJjq">
+      <div class="k" data-page-node-id="oSxqFHTs4618hDBKY3STxa">系统改动</div>
+      <div class="v" data-page-node-id="YKvjHlT40fPr3CDKKPWCnV">0</div>
+      <div class="n" data-page-node-id="lvIT3CmybTUX5MJRPPTtjK">未安装任何系统软件包，服务全程未重启</div>
+    </div>
+  </div>
+
+  <h2 data-page-node-id="8sWebC8vFOfsG6K0mI1NC5">一、服务器基线（安装前）</h2>
+  <p data-page-node-id="3CZShfbPD2S3k5YCBL8Oit">该机器同时运行着生产服务，因此先记录基线，便于事后核对与回滚。</p>
+  <table class="boxed" data-page-node-id="e4HMJoIqGxlgv5I4aKxl2M">
+    <thead data-page-node-id="Sjf5NIObec76FFEPP29cen">
+      <tr data-page-node-id="ssaoz2uDkIW2fDuNnkqvZ3"><th data-page-node-id="cS5o23csbjCnUox8AbGiEj">项目</th><th data-page-node-id="95vD30zXukYOwAcUaYcEzW">状态</th></tr>
+    </thead>
+    <tbody data-page-node-id="5QGbwhz2EsvQCHBUbpCkXs">
+      <tr data-page-node-id="Pv3rUcnv6SLNwQTKbLWG7a"><td data-page-node-id="UfTRagFDT1bIVXzB8kGTp2"><span class="mono" data-page-node-id="qATZaKO1qJJyCbPsQnBqHD">lute.service</span>（Lute 主服务，端口 5001）</td><td data-page-node-id="xwqCV1uwWw0JDmIoM79xq3"><span class="pill ok" data-page-node-id="aG8pIHOdwLa7HAhh2ohTml">active</span></td></tr>
+      <tr data-page-node-id="ER83dKCM0sh72H5CCw5NQg"><td data-page-node-id="ozYVNHXu7CQELdMFnv0U7N"><span class="mono" data-page-node-id="KWpicLjFg8bzHvfKrIM830">nginx.service</span>（反代，端口 80）</td><td data-page-node-id="KUZu8p3CvMgSQx1BIFBekw"><span class="pill ok" data-page-node-id="EYFOwi62yCTuNwSraF8UpH">active</span></td></tr>
+      <tr data-page-node-id="q5p6rca2pT5n0AgzyDlHME"><td data-page-node-id="waTIF68kztnAX5eLbWWcZK"><span class="mono" data-page-node-id="nggacz6HixYxHN0epuNJ8d">mariadb.service</span>（数据库，端口 3306）</td><td data-page-node-id="DqMJnEhjabev6IpeNbrwgl"><span class="pill ok" data-page-node-id="53UCRNedd6f1Nlx3FLIc3v">active</span></td></tr>
+      <tr data-page-node-id="6XX3KUZbE9xsa4W46OIC8b"><td data-page-node-id="H0LbYu5ruEFhgbD4EGuTva">系统软件包数量</td><td class="num" data-page-node-id="8u85HA8l0G4Adr0biqov8x">608</td></tr>
+      <tr data-page-node-id="htqzWFvlvLddep3QAeiR2L"><td data-page-node-id="LCTPPDOoj7xjTpwg2nZYVt">系统 / 架构</td><td class="mono" data-page-node-id="BxdZ4fNKQGHG4rTGgBjQCp">Debian 12 bookworm · x86_64 · 2 核 / 3.8 GiB</td></tr>
+      <tr data-page-node-id="WMjwA92togfRg6DsPbCWE2"><td data-page-node-id="lxp7WsQB2TcnuOKTzC9wF9">磁盘可用</td><td class="num" data-page-node-id="Tvy1cKj34BxK3RAloafUNg">43 GB</td></tr>
+      <tr data-page-node-id="73e6C4vFMGxUdMYZADgMZv"><td data-page-node-id="3CXqLcz8HIVUuDsc4qsUBP">Flutter / Dart</td><td data-page-node-id="ksl3y6nwqkRl9DLxrrSnbK"><span class="pill no" data-page-node-id="RGp2EkfuO7D41GFGPhpGec">未安装</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2 data-page-node-id="3gr9DsXHnvs0fTxDoLoRi7">二、安装内容</h2>
+  <table class="boxed" data-page-node-id="asphTCEG6m8GPcHfJ3q9LT">
+    <thead data-page-node-id="f3xsH55unu7JbBYHPsjZyz">
+      <tr data-page-node-id="BmwLLdCr9dFCA5uPlqURrR"><th data-page-node-id="SQnRsVUwUCzEGEgMPQCYTT">组件</th><th data-page-node-id="XZGHFblmuXvi3e0QNifc5S">版本</th><th data-page-node-id="8fGGPIMH1pcgtK5XPBfbUh">位置</th></tr>
+    </thead>
+    <tbody data-page-node-id="QAHKTHssdaTQOzI7ztcURj">
+      <tr data-page-node-id="bscPrKX61dJtcOtL92KxgP"><td data-page-node-id="L6hc8BJU431Fx2XNBqtvfb">Flutter SDK</td><td class="mono" data-page-node-id="tNQ0FjN92RA0SvQufms1fj">3.47.5 stable</td><td class="mono" data-page-node-id="EAO7Ex6KAJ8yeqvLtwjBrh">/opt/flutter</td></tr>
+      <tr data-page-node-id="P7Xi3fWscgEhoQpFlYXNEV"><td data-page-node-id="TGICJH1jyHgZGE8xIHm0nH">Dart SDK</td><td class="mono" data-page-node-id="4cMnegZ5I7j4SYXK2zNzYn">3.13.4</td><td class="mono" data-page-node-id="BOphjraAKk7Vrs8NEONPQY">/opt/flutter/bin/cache/dart-sdk</td></tr>
+      <tr data-page-node-id="OHtre0yjArqzeYD8zCr5FB"><td data-page-node-id="2w5XUAECd2K0UFkiriKYQb">Pub 依赖缓存</td><td class="mono" data-page-node-id="e4bEKpVA946P1sU0d67NX0">—</td><td class="mono" data-page-node-id="FsuBU8KqLH5o5jLx2oWyPQ">/opt/flutter/.pub-cache</td></tr>
+      <tr data-page-node-id="Urm5uytEkUhe16SwajNHge"><td data-page-node-id="OhT15QwG0ikbvpxPWVvBOJ">环境变量</td><td class="mono" data-page-node-id="Z1TzQeuqORkP8XVtNviqx2">新增文件</td><td class="mono" data-page-node-id="QH0lWDqDYNEXUX5uKYO0VX">/etc/profile.d/flutter.sh</td></tr>
+      <tr data-page-node-id="5MKwmsdy884xLYy05BE1BI"><td data-page-node-id="o4zJoLhaWLHyGB6pSouHoT">项目源码副本</td><td class="mono" data-page-node-id="vZFF5LsaDBSHIAYb9LKyWB">32 MB</td><td class="mono" data-page-node-id="tItzMQObKm63wHfwGicscq">/opt/lute_mobile_src</td></tr>
+    </tbody>
+  </table>
+  <p data-page-node-id="gjRo2AA6SrccsZkoIngCMT">
+    版本选择依据：项目 <code class="inl" data-page-node-id="Bj1Tdk28sCfMWghZrFUsY7">pubspec.lock</code> 要求 <code class="inl" data-page-node-id="L9culNAO0htnGoKeLwuf4i">flutter &gt;= 3.38.4</code>、
+    <code class="inl" data-page-node-id="Z2IzUCKPFFAuEgjgzhm1if">dart &gt;= 3.11.0</code>，3.47.5 / Dart 3.13.4 满足约束。
+    共占用磁盘约 3.0 GB。
+  </p>
+
+  <h2 data-page-node-id="joq9BcAjpZyBDtb9BU0vYX">三、隔离措施</h2>
+  <p data-page-node-id="bxTytg5rIhLcgsj2WhSfHB">「不污染其他应用」是本次的核心约束，具体落到了以下几点：</p>
+  <table class="boxed" data-page-node-id="5cJIniontI0EuMRoCv05Db">
+    <thead data-page-node-id="eGK5U9Is8THcWiJbzHhKBw">
+      <tr data-page-node-id="6J8TEQzs0LmbnBbpl5D2EB"><th data-page-node-id="gd4az2raDMRnonXUuCzjPc">做法</th><th data-page-node-id="7CUQG2xBCZBPImZA5HBIBG">说明</th></tr>
+    </thead>
+    <tbody data-page-node-id="XhiacK2ncauiUgu80YBhls">
+      <tr data-page-node-id="1md0iCgPxeWqCW5UH0b6Ui">
+        <td data-page-node-id="IffXUUzVcibD23oDEpRbvp"><span class="pill ok" data-page-node-id="HgvtPuGMxv3zgFijDnfpSH">未安装</span> 任何 apt 包</td>
+        <td data-page-node-id="XfwFF24xluqOrTGjszg2VQ">
+          <code class="inl" data-page-node-id="1uBzIfCPnfvWSj9qxXGs4G">flutter analyze</code>、<code class="inl" data-page-node-id="kjn1CMf7WJ1f1WWaH57uUf">pub get</code>、<code class="inl" data-page-node-id="VijfvO9H0vO2zpK1mp08Lq">build apk</code>
+          都不需要 <span class="mono" data-page-node-id="H4IYhqEZ7SQRDF5qVWqkKx">clang</span> / <span class="mono" data-page-node-id="mFOp79IkqcvxKYCdT4ZVP5">cmake</span> / <span class="mono" data-page-node-id="oJlbE4cFlKNCC9NlrZLhCk">ninja</span>
+          （那是 Linux 桌面构建才需要的）。安装前后软件包数量均为 <strong data-page-node-id="eYsVvE5wn3w4q4qeqgzGHa">608</strong>，未变。
+        </td>
+      </tr>
+      <tr data-page-node-id="f6cVO3ogrYQ1bUVtC4GWrD">
+        <td data-page-node-id="VJh3zx14FTRvFGerirR4LK"><span class="pill ok" data-page-node-id="QspoHK1iIi0nBpqiwDQX9r">独立目录</span></td>
+        <td data-page-node-id="QIiDMkHLzYyf4LTVvY4Qwa">SDK 放在 <span class="mono" data-page-node-id="3dIfSAqPv1TB5ebCTgFuv6">/opt/flutter</span>，源码副本放在 <span class="mono" data-page-node-id="a9KVDyCl65WZGWvEBTIajX">/opt/lute_mobile_src</span>，
+          与生产目录 <span class="mono" data-page-node-id="fymO4HC1Y6RuBsYFXhft0m">/opt/lute</span> 完全分离。</td>
+      </tr>
+      <tr data-page-node-id="H6cEt3YHEizLEWJ93hrgFm">
+        <td data-page-node-id="GJhcLKiRpr1e8x27dd4XD1"><span class="pill ok" data-page-node-id="jHL6KlKUTtvhRZzeTOfC6I">仅新增文件</span></td>
+        <td data-page-node-id="ueTlUCGy9RUhdMVNZM8KQL">PATH 通过<strong data-page-node-id="NHa4Hy3CJJ57EfPvmh5Iwf">新建的</strong> <span class="mono" data-page-node-id="oXvhcn7QW0E6LxIRzxgL3w">/etc/profile.d/flutter.sh</span> 暴露，
+          未修改 <span class="mono" data-page-node-id="i1y2pqbIPADfMAlupxGWDo">~/.bashrc</span> 或任何已有配置文件。</td>
+      </tr>
+      <tr data-page-node-id="HFsIuEe0nDSecaAfoYtDXX">
+        <td data-page-node-id="67lYWsJ5WfLu8FgAwBNtjX"><span class="pill ok" data-page-node-id="aU56hUVbC6AyEFzdF7xZ7N">缓存隔离</span></td>
+        <td data-page-node-id="iuFc0s21aQ6z3an0O4ZYGB"><span class="mono" data-page-node-id="AJHthEdEvQeR4YNNuzRSpk">PUB_CACHE</span> 指向 SDK 目录内，不写入 <span class="mono" data-page-node-id="Zh2v8j8KRbuc8mo5Sc1vdj">~/.pub-cache</span>。</td>
+      </tr>
+      <tr data-page-node-id="TEdAHvwPmNlBVzvaQqcset">
+        <td data-page-node-id="cMGa4QjsXG3GBQQ5RXUbRe"><span class="pill ok" data-page-node-id="um9rRPmCRt2ijJdU3tXI7U">未重启服务</span></td>
+        <td data-page-node-id="4U25rsO0IAaEeIUKLT841d">全程未执行任何 <span class="mono" data-page-node-id="9tospjviorGwLslGYqJFP6">systemctl restart</span>；事后复核三个服务仍为 active，
+          端口 5001 / 80 / 3306 监听正常。</td>
+      </tr>
+      <tr data-page-node-id="1E83HC1pHSHWe53wxQANpO">
+        <td data-page-node-id="CclfgDuEI3i0xjiL097iVa"><span class="pill ok" data-page-node-id="Tp80eNrUsEnwK20vubDDjh">关闭遥测</span></td>
+        <td data-page-node-id="zg2k5437AfJbrFUIaf7O21">已执行 <span class="mono" data-page-node-id="JwTI5FiKE3xhRy8AtnjlvX">flutter config --no-analytics</span>，避免额外外发数据。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 data-page-node-id="ZDpJgkvoC91dasCgedIW4u">四、编译验证结果</h2>
+  <p data-page-node-id="RKBam5eEU1DwcYQzDgyDht">
+    验证方式：用 <code class="inl" data-page-node-id="n9k0GHW9rVKDteo4xWL6UE">git archive HEAD</code> 导出<strong data-page-node-id="vWT0M9MgX3IHTitlyW51tS">改动前</strong>的干净代码树，
+    与含本次改动的工作树各跑一次 <code class="inl" data-page-node-id="wNdHapvT5C8dMmDmSSAHpS">flutter analyze</code>，再做逐条比对 ——
+    这样才能证明问题是不是本次改动引入的。
+  </p>
+  <table class="boxed" data-page-node-id="gs1SHAtTdKV03WK1a3f2wC">
+    <thead data-page-node-id="3v72obg34tOvv1QJD8GBza">
+      <tr data-page-node-id="wrnMp705pFh4IdsdXEKG48"><th data-page-node-id="7wHqv6Z1GD70dGkbXVYDZw">版本</th><th class="num" data-page-node-id="QPSnVOWI3whQOxaAOn9Yly">error</th><th class="num" data-page-node-id="3jJnGZRuZ6p6AWglDsu3Ky">warning</th><th class="num" data-page-node-id="edl4gBYT3yrTn3ptMzPcBZ">info</th><th class="num" data-page-node-id="Ae656ANWNPQ3OmvTeFjL5n">合计</th></tr>
+    </thead>
+    <tbody data-page-node-id="6aMO8HROyeE6FIwtWMxPtx">
+      <tr data-page-node-id="tjlcWXQSj0ulBbfIxsaTBP"><td data-page-node-id="fRFLxmZdTPyUWF43dN3KNR">改动前（git HEAD）</td><td class="num" data-page-node-id="cUOlaGLzUoBzQIArwHWFPN">0</td><td class="num" data-page-node-id="CxAvOYry40WgYd36WBq55d">63</td><td class="num" data-page-node-id="w1qhfMV6SjB1hdLtLFoxUJ">144</td><td class="num" data-page-node-id="luo76ZwNptVKQrPcfC7S54">207</td></tr>
+      <tr data-page-node-id="7wrcQQJElDKZGztTLlIB28"><td data-page-node-id="x88p6Aqvs6GH0isqRQ6BUT">改动后（工作树）</td><td class="num" data-page-node-id="qHCI5lteNkb1SZOmKsdhCq">0</td><td class="num" data-page-node-id="5XF1IQEeLAEd9JTHhH9Ycu">63</td><td class="num" data-page-node-id="pYep3Crawk1U94CBlG4SIW">137</td><td class="num" data-page-node-id="HQJB5mQoW0JxFIIHK7SXPB">200</td></tr>
+      <tr data-page-node-id="hsGtIP152ZTP23ZiEZfQly"><td data-page-node-id="7ehR7HHqonIV0btQlIQTN3"><strong data-page-node-id="fFQGpY2LLYPemVHNkkVMuy">差异</strong></td><td class="num" data-page-node-id="iPyjw60nExtdzH9UvLkXTh">0</td><td class="num" data-page-node-id="MCrkc3eYFtBCZl5m1xICLN">0</td><td class="num" data-page-node-id="j4Jowce7K3CSKW8lDlcf5K">−7</td><td class="num" data-page-node-id="KWGYFdqQNIUIcoYDOELldh">−7</td></tr>
+    </tbody>
+  </table>
+  <div class="note" data-page-node-id="ahA9uTJOD0P5srgyRNakx4">
+    <strong data-page-node-id="kYkTPwowydKMnLGbvrldpz">结论：改动没有引入任何新问题。</strong>
+    问题总数反而减少 7 条，来自被删除的旧状态按钮代码。warning 数量与改动前持平。
+  </div>
+  <p data-page-node-id="NQD2dR2S6j0hMn44bEd0Tf">按文件归因，本次编辑的四个文件全部零告警：</p>
+  <table class="boxed" data-page-node-id="ZD645XNuq6N3HA3wVoQAPI">
+    <thead data-page-node-id="hiBPrHDkvLDeLGF0tpoI6H">
+      <tr data-page-node-id="HQfm7MbxriqB2v6aENshcp"><th data-page-node-id="V3vOjpujyTJ4ZnS2uhq8Cl">文件</th><th class="num" data-page-node-id="xmrhcSfbHrnKXfaLsybQqT">改动前</th><th class="num" data-page-node-id="yX9jKpzgcwar16F1bBAmSS">改动后</th></tr>
+    </thead>
+    <tbody data-page-node-id="IsdhgYTd2jbneQVDh9eERo">
+      <tr data-page-node-id="IZRR891iY7yEnQfL7BpTxC"><td class="mono" data-page-node-id="fgr3AYklg2EE74hNAZDYut">lib/shared/theme/theme_presets.dart</td><td class="num" data-page-node-id="zgDH2XVCXcT6uEhrY0ugnw">0</td><td class="num" data-page-node-id="jlRA9r1S6Wi7i7ppXTmr8B">0</td></tr>
+      <tr data-page-node-id="60J92yw0avmW8PURczzwC2"><td class="mono" data-page-node-id="11j4P1oW0ul0J014aAWBQR">lib/features/reader/widgets/term_form.dart</td><td class="num" data-page-node-id="iuqQE3THBk5qJrz9DDG8S7">0</td><td class="num" data-page-node-id="pG2JsITG8zc4XI2vxDSAn8">0</td></tr>
+      <tr data-page-node-id="cKq51RzJOEpDjP02sfF1JB"><td class="mono" data-page-node-id="wXBl9UkarMyX1pa2BTH8tJ">lib/features/reader/widgets/text_display.dart</td><td class="num" data-page-node-id="6EyTFQi72nei0E5FkALwFm">0</td><td class="num" data-page-node-id="0AoHZwC8UM4vdMqvEAu6cr">0</td></tr>
+      <tr data-page-node-id="1PwzHXBSdf10Zu3oKpplOu"><td class="mono" data-page-node-id="BA23I78XlrwETMivPCkdNZ">lib/shared/widgets/app_drawer.dart</td><td class="num" data-page-node-id="RFHkcvfic1bK1kil77nY7F">0</td><td class="num" data-page-node-id="Kq49pVDA5Q26HOiiSfBRMc">0</td></tr>
+      <tr data-page-node-id="HeVH2CXPwhdh3zMVAM1ffk"><td class="mono" data-page-node-id="xTbJLemZVu8WlslkliMjRj">lib/features/reader/widgets/reader_screen.dart</td><td class="num" data-page-node-id="WjXw96jIhQqpGzGGl3NY6P">96</td><td class="num" data-page-node-id="aLMiaNPjK20jBgAmS6fTNj">96</td></tr>
+    </tbody>
+  </table>
+  <p data-page-node-id="A8k6GYEqWQYmzEGswDMjMy">
+    顺带修复：<span class="mono" data-page-node-id="rupwdBIVbdnFhMwrPICowW">reader_screen.dart</span> 里有一行
+    <code class="inl" data-page-node-id="yTumLZX0Bla0As2nOLAtWL">import 'dart:convert';</code> 已成为死代码 ——
+    先前把 Basic Auth 抽到 <span class="mono" data-page-node-id="sdnAd2TaNyORDQoD2CQHIV">session_manager.dart</span> 后，该 import 不再被使用。
+    已移除，未影响其他代码。
+  </p>
+
+  <h2 data-page-node-id="sPK2MmW5nWfKlIWw2qV4wn">五、工具链现状</h2>
+  <table class="boxed" data-page-node-id="2Em3eT9nDkjEdk7Rp7UNSj">
+    <thead data-page-node-id="EBJosFJnLZAl4PHEk72FPY">
+      <tr data-page-node-id="NRqmhRyj4MUhn7VQlSwONf"><th data-page-node-id="nbNEnKfPWBPSM0sHCL8Vxb">检查项</th><th data-page-node-id="LSxHHb5duJGOlA8rCyQf9N">状态</th><th data-page-node-id="YHVqZwx0hKpDBjaJfaFWIL">说明</th></tr>
+    </thead>
+    <tbody data-page-node-id="3Tv5NcmufjWKLQJPoiEhxs">
+      <tr data-page-node-id="Ale4MYNYSnIZBfC3j3stKV"><td data-page-node-id="zmD4Imx6WWHuKTY8AGVbof">Flutter</td><td data-page-node-id="EAAnZWPLnrRICRf1rMc5dF"><span class="pill ok" data-page-node-id="ruTkaiYTZVEshloxtru3CD">就绪</span></td><td data-page-node-id="XE8VBHZCfzLgc7BWlpvZAt">3.47.5 stable</td></tr>
+      <tr data-page-node-id="J4xoN89E03sZsDmTb01WPh"><td data-page-node-id="H5UOdsLqFOXLMKItUgcaNb">Network resources</td><td data-page-node-id="byQG41b3AJ2Yk2zpnS82ul"><span class="pill ok" data-page-node-id="7d25fVc5EWZNsTp3RZ75h9">就绪</span></td><td data-page-node-id="GXFuxQLmXZwG7NOYxelZSl">可访问 pub.dev / Google Storage</td></tr>
+      <tr data-page-node-id="cJcnkDOGoPVXmKxAM7IvLY"><td data-page-node-id="8U7WbK4Xv7NmPqDV9X8Tim">Connected device</td><td data-page-node-id="EKqbhpeJafcekmrFFWoEHz"><span class="pill ok" data-page-node-id="3qkVaezddKhytIKqPWqPao">就绪</span></td><td data-page-node-id="JVd03WT7grKThlYY3AQ0lC">1 个可用目标</td></tr>
+      <tr data-page-node-id="ld8iT2L8sfAGAhQqbYaLth"><td data-page-node-id="dITTNGMRo0bLlX4yGdBKPp">Android SDK</td><td data-page-node-id="rNkEYB568CCmZE5yXJf02I"><span class="pill no" data-page-node-id="dlpyWwmLbbh7zdtISA20ux">未安装</span></td><td data-page-node-id="LB2kdwkiTiVmncd1ngPVVe">仅在需要产出 APK 时才需要</td></tr>
+      <tr data-page-node-id="eUBdq7f7SIZlxc7kwC6eNK"><td data-page-node-id="73SPVSwUMxuQvDI9NGtbrG">Chrome</td><td data-page-node-id="u73BvC7cGmkkOWGUad7IAZ"><span class="pill no" data-page-node-id="wugGsmGGvXaB4ZDH2u3F2Z">未安装</span></td><td data-page-node-id="bYmmqJuMsHfR8jQLhbF7N5">仅 Web 调试需要</td></tr>
+      <tr data-page-node-id="Mkav49oIuOwARLmVoCcFLo"><td data-page-node-id="nuNooBjWqROxVHbYVoiOel">Linux desktop toolchain</td><td data-page-node-id="I1y4LoxAshsTS5PS2xEO6F"><span class="pill no" data-page-node-id="QQMwMIb9o9d3kYHnp8feLZ">未安装</span></td><td data-page-node-id="z7CNm0vpArVCaYj7D6NgD1">clang / cmake / ninja，本次不需要</td></tr>
+    </tbody>
+  </table>
+  <p data-page-node-id="uqSoC2hkWB1lzk4fBARfHc">
+    当前能力足以支撑<strong data-page-node-id="4Fe7FPNWlr2hI9zx27BL55">静态分析</strong>（<code class="inl" data-page-node-id="7PfXVO8YFWDE9WK5HJl96H">flutter analyze</code>）与<strong data-page-node-id="2CCcCihE41WsHiE7umxhUs">依赖解析</strong>
+    （<code class="inl" data-page-node-id="iHpvNYlHkAF6USoQzJy68H">flutter pub get</code>）。若日后要在服务器上直接产出 APK，需另行安装 Android SDK。
+  </p>
+
+  <h2 data-page-node-id="9r8rVxVCJibabiNzq11NTl">六、使用与回滚</h2>
+  <h3 data-page-node-id="baxaEyImB9BBdE5BkoCinr">日常用法</h3>
+  <p data-page-node-id="YNOTPELL1GYgo5T2065ICl">非交互式 SSH 不会自动加载 <span class="mono" data-page-node-id="PWF02e7Jv1M4gyXEV59G4c">profile.d</span>，需显式导出环境变量：</p>
+<pre data-page-node-id="SGDbco665oV9TGZ8lJRkX1"><span class="c" data-page-node-id="9FbOZyyCR1Jp6JX5gOVYlM"># 同步最新源码</span>
+cd /Users/cxi/Documents/lutedev/LuteForMobile
+tar -cf - --exclude='./.git' --exclude='./.dart_tool' --exclude='./dist' \
+    --exclude='./.workbuddy-ai' --exclude='./build' --exclude='.DS_Store' . \
+  | ssh root@172.236.226.132 \
+    'rm -rf /opt/lute_mobile_src; mkdir -p /opt/lute_mobile_src; tar -xf - -C /opt/lute_mobile_src'
+
+<span class="c" data-page-node-id="Sfpgq7Bx2PnH1vDxe9TaDH"># 静态分析</span>
+ssh root@172.236.226.132 \
+  'export FLUTTER_HOME=/opt/flutter; export PUB_CACHE=/opt/flutter/.pub-cache;
+   export PATH="$FLUTTER_HOME/bin:$FLUTTER_HOME/bin/cache/dart-sdk/bin:$PATH";
+   cd /opt/lute_mobile_src &amp;&amp; flutter pub get &amp;&amp; flutter analyze'</pre>
+
+  <h3 data-page-node-id="lMkIb12rhEg2Ha98HnIa7k">完整回滚</h3>
+  <p data-page-node-id="tGr4RkTC1Elk9VlwHmnZAO">本次所有改动都集中在下面几处，删除即可完全还原，不影响任何生产服务：</p>
+<pre data-page-node-id="TEqs4tJreWZnC2dUJJKuG2">rm -rf /opt/flutter /opt/lute_mobile_src
+rm -f /etc/profile.d/flutter.sh</pre>
+
+  <div class="note warn" data-page-node-id="vIruXXPu1vdMFiD44V3aWd">
+    <strong data-page-node-id="B78dazqpjUR2jUXXPwssFB">提示：</strong>本文档包含服务器地址，若本仓库为公开仓库，请勿将
+    <span class="mono" data-page-node-id="U74QrrIGlVpTTrGReHKNoe">docs/</span> 目录下的此文件提交到远端。
+  </div>
+
+  <footer data-page-node-id="5gSCTMTLndykgLwu9leM8P">
+    验证工具：Flutter 3.47.5 · Dart 3.13.4 · flutter analyze &nbsp;|&nbsp;
+    全部服务在操作前后均保持 active，系统软件包数量保持 608 未变。
+  </footer>
+
+</div>
+</body>
+</html>

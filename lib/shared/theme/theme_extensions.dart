@@ -20,6 +20,32 @@ extension BuildContextExtension on BuildContext {
   Color get audioError => appColorScheme.audio.error;
   Color get audioErrorBackground => appColorScheme.audio.errorBackground;
 
+  /// Background of the line the player is currently reading, drawn in the
+  /// reading text itself so the reader can follow along there and not only in
+  /// the player bar.
+  ///
+  /// A tint of [audioBookmark] composited over the page background rather
+  /// than a translucent colour: the block has to be one solid mark (a word's
+  /// own status colour is replaced by it), and compositing here is what lets
+  /// [playingLineText] be picked against the real thing.  Amber on the colour
+  /// themes, grey on the monochrome one.  At 28% the block sits ~27 ΔE from
+  /// the light page background, ~33 from the dark one and ~20 from the
+  /// monochrome one -- see test/palette_contrast_test.dart.
+  Color get playingLineHighlight => Color.alphaBlend(
+    audioBookmark.withValues(alpha: 0.28),
+    appColorScheme.background.background,
+  );
+
+  /// Text colour for words on the playing line.
+  ///
+  /// The per-word status text colours are chosen against the status swatches,
+  /// which the playing block replaces: the dark theme's status text is
+  /// near-black and its block is mid-brown, so a status word left alone would
+  /// go dark-on-dark.  The page's own text colour is legible on all three
+  /// themes' blocks (>= 4.5:1), and the whole line reading in one colour is
+  /// what makes the mark read as a single line.
+  Color get playingLineText => appColorScheme.text.primary;
+
   Color get status1 => appColorScheme.status.status1;
   Color get status2 => appColorScheme.status.status2;
   Color get status3 => appColorScheme.status.status3;

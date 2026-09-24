@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:lute_for_mobile/app.dart';
 import 'package:lute_for_mobile/core/providers/initial_providers.dart';
 import 'package:lute_for_mobile/core/network/api_service.dart';
+import 'package:lute_for_mobile/core/network/session_manager.dart';
 import 'package:lute_for_mobile/core/services/server_health_service.dart';
 import 'package:lute_for_mobile/core/services/termux_service.dart';
 import 'package:lute_for_mobile/shared/providers/server_status_provider.dart';
@@ -34,6 +35,10 @@ void main() async {
 
   ServerStatusManager.setConnecting();
 
+  // Restore the multi-user session cookie and Basic Auth credentials for
+  // the effective server URL before any network activity.
+  await SessionManager.hydrate(serverUrl);
+
   Future<bool>? androidHealthCheck;
   if (useTermux && serverUrl == Settings.termuxUrl) {
     androidHealthCheck = TermuxService.isServerRunning(serverUrl);
@@ -44,13 +49,29 @@ void main() async {
     print('main.dart: Android server check: $isRunning');
     ServerStatusManager.setReachable(isRunning);
   } else if (serverUrl.isNotEmpty) {
-    final isServerReachable = await ServerHealthService.isReachable(
-      serverUrl,
-      username: basicAuthUser,
-      password: basicAuthPassword,
+    final health = await ServerHealthService.check(serverUrl);
+    print(
+      'main.dart: Server health check: ok=${health.ok} '
+      'requiresLogin=${health.requiresLogin} ${health.message}',
     );
-    print('main.dart: Server health check result: $isServerReachable');
-    ServerStatusManager.setReachable(isServerReachable);
+    if (health.ok) {
+      ServerStatusManager.setReachable(true);
+    } else if (health.requiresLogin) {
+      // The server answers but the multi-user session is gone. Try a
+      // silent re-login with remembered credentials first; otherwise keep
+      // the server "reachable" so the UI surfaces the login-required state
+      // instead of a misleading offline warning.
+      final recovered = await SessionManager.tryAutoRelogin();
+      final recheck = recovered
+          ? await ServerHealthService.check(serverUrl)
+          : health;
+      ServerStatusManager.setReachable(recheck.ok);
+      if (!recheck.ok) {
+        SessionManager.markLoginRequired();
+      }
+    } else {
+      ServerStatusManager.setReachable(false);
+    }
   } else {
     ServerStatusManager.setReachable(false);
   }

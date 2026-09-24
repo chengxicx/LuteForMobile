@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="0spAWqqOouabuXhGKf44pR">
+<head data-page-node-id="2fVNr73j283Edu0TjVBlGF">
+<meta charset="UTF-8" data-page-node-id="jcjZNxwS7ktz48DJqzaEpP">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="dHCoBvFFTF83sXDmwv0TRj">
+<title>朗读失败诊断：Empty audio returned from Edge TTS server</title>
+<style>
+  :root {
+    --bg: #FAF9F7;
+    --surface: #FFFFFF;
+    --border: #E4E1DC;
+    --ink: #1F1D1B;
+    --ink-2: #55514C;
+    --ink-3: #8A857E;
+    --accent: #2F5C99;
+    --accent-soft: #EDF2FA;
+    --good: #2E7D46;
+    --good-soft: #ECF6EF;
+    --warn: #A8541A;
+    --warn-soft: #FBF1E7;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 48px 24px 72px;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 29px; line-height: 1.3; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-3); font-size: 14.5px; }
+  .sub code { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+
+  h2 {
+    font-size: 19px; margin: 44px 0 16px; letter-spacing: -0.01em;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 15.5px; margin: 26px 0 10px; }
+  p { margin: 0 0 14px; color: var(--ink-2); }
+  ul { margin: 0 0 14px; padding-left: 22px; color: var(--ink-2); }
+  li { margin-bottom: 7px; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 22px 0 8px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  .card .k { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .card .v { font-size: 25px; font-weight: 650; margin: 6px 0 4px; letter-spacing: -0.02em; color: var(--good); }
+  .card .v.warn { color: var(--warn); }
+  .card .n { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 8px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  td { color: var(--ink-2); }
+  tr:last-child td { border-bottom: none; }
+  table.boxed { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table.boxed th { background: #F5F3F0; }
+  td.mono, span.mono { font-family: var(--mono); font-size: 13px; }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+  .pill.ok { background: var(--good-soft); color: var(--good); }
+  .pill.wait { background: var(--warn-soft); color: var(--warn); }
+
+  pre { background: #2B2926; color: #EDEAE5; border-radius: 10px; padding: 15px 18px;
+        overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.65; margin: 14px 0; }
+  code.inl { font-family: var(--mono); font-size: 13.5px; background: #F2F0ED;
+             padding: 1px 6px; border-radius: 5px; color: var(--ink); }
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent);
+          border-radius: 0 10px 10px 0; padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--ink-2); }
+  .note.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .note strong { color: var(--ink); }
+
+  .flow { display: grid; gap: 0; margin: 18px 0; }
+  .step { display: grid; grid-template-columns: 34px 1fr; gap: 14px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
+  .step:last-child { border-bottom: none; }
+  .step .num { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+               font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 3px; }
+  .step .body { color: var(--ink-2); font-size: 14.5px; }
+  .step .body b { color: var(--ink); }
+
+  footer { margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--border);
+           font-size: 13px; color: var(--ink-3); }
+  @media (max-width: 700px) { .cards { grid-template-columns: repeat(2, 1fr); } body { padding: 32px 16px 56px; } }
+</style>
+</head>
+<body data-page-node-id="7zerubk3DfqdUChWsThsNY">
+<div class="wrap" data-page-node-id="dpXocEkE8RbnpzztGtTwp3">
+
+  <header data-page-node-id="HcVDZp8ICIzEarGvOKXUxL">
+    <h1 data-page-node-id="GJPAuPNfQWIm1mrWuNcGnj">朗读失败：<code data-page-node-id="QtagaDib8fij3M0jJNcYCP">Empty audio returned from Edge TTS server</code></h1>
+    <div class="sub" data-page-node-id="0O1VGwNIk5QEnoGBusne5K">
+      客户端 <code data-page-node-id="BVGGLMDH1y6zIxRO0k8FNQ">LuteForMobile</code> &nbsp;·&nbsp; 服务端 <code data-page-node-id="A0kd9mAwBSRYgdyKflPzuv">lute-v3</code> &nbsp;·&nbsp; 2026-09-23
+    </div>
+  </header>
+
+  <p data-page-node-id="5sll48kvsWpTR11kH4QSho">
+    阅读器顶部一直挂着一条红色错误横幅，点进去看是
+    <code class="inl" data-page-node-id="eN8MItSUy8iBJiBRcdTvbP">Empty audio returned from Edge TTS server</code>。
+    它不是网络问题，也不是偶发抖动 —— 在默认设置下，<b data-page-node-id="lImCnIYswK20N9xxZ0iADU">任何日文书的朗读都必然失败</b>，
+    而且失败一次之后会被永久缓存。下面是完整链路。
+  </p>
+
+  <div class="cards" data-page-node-id="CUV8Zyn5vsL8qwzNo6LqdB">
+    <div class="card" data-page-node-id="ERo0HDWIItNCkNSK57tavY"><div class="k" data-page-node-id="Q7x6DtpsGNSkUhfGOErv1Q">根因</div><div class="v warn" data-page-node-id="VzpySwHBbEiLVz4FARiLdM">4 处</div><div class="n" data-page-node-id="jcBRrWD0FcWTqRQ2RPA4eq">2 处客户端 + 2 处服务端</div></div>
+    <div class="card" data-page-node-id="ZvACX9JZiAHVLF37sZMi0S"><div class="k" data-page-node-id="mGmxjveaH9PlCVUbUEXJeN">顺带修掉</div><div class="v" data-page-node-id="nWAD2Gk55UFEdE7SbDBJzL">4 处</div><div class="n" data-page-node-id="4rCuocpevrg33QAWSgWCLe">语言→语音映射缺口</div></div>
+    <div class="card" data-page-node-id="Y9cCT4jNMQHB0QFl1iXOOu"><div class="k" data-page-node-id="A2buYMPXRf0I0E67X0FA2A">静态分析</div><div class="v" data-page-node-id="FjcFNYdOxnCtF3k7E6nlrR">0</div><div class="n" data-page-node-id="dnOQuOgtwEsjCmtk36O91G">新增 issue / 0 error</div></div>
+    <div class="card" data-page-node-id="eVk7M77a50TqYHgT4bLKfh"><div class="k" data-page-node-id="fylOVfOXLSuiuBo0b8PLVj">单元测试</div><div class="v" data-page-node-id="S33ktllBWJqe2nbQtwN3Wq">20</div><div class="n" data-page-node-id="3C6kqnKqn1RUDGcniW4KVQ">全部通过（含 8 项新契约测试）</div></div>
+  </div>
+
+  <h2 data-page-node-id="VWib3RpARkDHwXntIFkDep">一、根因链路</h2>
+
+  <div class="flow" data-page-node-id="rESlravWcRVoY2SDSAMZ74">
+    <div class="step" data-page-node-id="F2kZfVENkyffz58QnUu44M"><div class="num" data-page-node-id="naOVdNzNYO3ZuEs7wudd6n">1</div><div class="body" data-page-node-id="SuTWG1PHT1wmF7h5GTD9HG">
+      客户端把 Edge TTS 的语言<b data-page-node-id="1HKY5qDs4ONqdoOhDxMHNx">写死在设置里</b>：<span class="mono" data-page-node-id="kbfUhhFDrKJPEZC0TSpcK2">TTSProvider.edgeTTS: TTSSettingsConfig(languageCode: 'en')</span>。
+      于是朗读请求永远是 <span class="mono" data-page-node-id="HIaDUmGD5kKnCtITKCBnGE">/tts/<b data-page-node-id="80jaKAabZfmYeInh6FhXYW">en</b>/&lt;text&gt;</span>，与正在读的书无关。
+    </div></div>
+    <div class="step" data-page-node-id="UdxwYwFFCQAqW7lciElj6o"><div class="num" data-page-node-id="GfLbWe6VG6LAWBtpssSx3t">2</div><div class="body" data-page-node-id="XAF7xdQRdu9S24Lwi68OSG">
+      服务端 <span class="mono" data-page-node-id="yVxn13Wq0Tbg5yfSkQXpFl">voice_for_tag("en")</span> 选中 <b data-page-node-id="V77JhXYpkW0D0S1YxUPysH">en-US-AvaNeural</b>（英文语音），
+      却拿到了日文文本。edge-tts 对语种不匹配的输入抛 <span class="mono" data-page-node-id="RXrkSGz0G5ifDRvZe98Q3s">NoAudioReceived</span>。
+    </div></div>
+    <div class="step" data-page-node-id="Oa0LKjIAAApsXIuWvBiKTX"><div class="num" data-page-node-id="tCgG5EynHFTjEX5H0VfBvi">3</div><div class="body" data-page-node-id="igkBQbr8vAFFyt3csq8V6T">
+      <span class="mono" data-page-node-id="wQRp8QG8BGBhFa6LrgqrI7">communicate.save(filepath)</span> 是<b data-page-node-id="wpLDoDPvebsmStpsXbCOp5">先创建目标文件、再联网合成</b>。
+      抛异常时文件已经建好了 —— 于是磁盘上留下一个 <b data-page-node-id="lgQcIDZwAiEGH5kb1HBcgM">0 字节的 mp3</b>。
+    </div></div>
+    <div class="step" data-page-node-id="vGFeaDoXTM0N4sPi6qc2F2"><div class="num" data-page-node-id="Pl93yfNifzJcvW2P3mXrK6">4</div><div class="body" data-page-node-id="yriiTSWQpQ8srPHGtBji4I">
+      路由的缓存判断只看 <span class="mono" data-page-node-id="fh0Z6pobt1N39CoXQ0Q5eI">os.path.exists(filepath)</span>，
+      0 字节文件被当成<b data-page-node-id="pbzetL1oT75LmXeHG3DAfc">缓存命中</b>，直接 <span class="mono" data-page-node-id="AiSXmxdLKNaCw7sn5IHfDq">send_file</span> 出去：
+      <b data-page-node-id="py5DpzMa5M8nF6pF7c4TbJ">HTTP 200 + 空响应体</b>，还带着 <span class="mono" data-page-node-id="5ZMecfvTnGwKupTTYqEBH3">Cache-Control: immutable, max-age=31536000</span>。
+    </div></div>
+    <div class="step" data-page-node-id="CQHAbs7yfqJK2WL1mQ63de"><div class="num" data-page-node-id="dCIWKTv9FFeUzVKuSncnAN">5</div><div class="body" data-page-node-id="PtntH2eeUhMzAMRw4DFso5">
+      客户端拿到 200，但 <span class="mono" data-page-node-id="NfXIZaAJCwATwQVKPBWU7K">bytes.isEmpty</span> 成立 →
+      抛 <span class="mono" data-page-node-id="8ZOk5e3vbNO6fyeGEvnork">TTSException('Empty audio returned from Edge TTS server')</span>。
+      <b data-page-node-id="KJqCAZriuLBfqdYbyvULya">因为第 4 步永久缓存，这个失败再也无法自愈。</b>
+    </div></div>
+  </div>
+
+  <div class="note warn" data-page-node-id="vDiIz6UfAa1ouMvhkBbdp4">
+    <strong data-page-node-id="kcox4v9TErfOT38KGL4Dlq">核心问题不是「选错了语音」，而是「失败被当成了成功并永久保存」。</strong>
+    第 3、4 步让任何一次瞬时失败都会变成长久故障 —— 这才是这条错误横幅一直消不掉的原因。
+  </div>
+
+  <h3 data-page-node-id="epX8or0OG1h5Cf8RaN2dfr">第 4 处：修好「跟随书的语言」之后，真机上照样失败</h3>
+
+  <p data-page-node-id="xvNMmILIrOf2pmqjPhYjdp">
+    把第 1 步改成「朗读语言跟随当前书」之后，装到真机上点播放，
+    <b data-page-node-id="7HwybJ4mUzyi8lSFk4n00E">错误横幅原封不动</b>。抓服务端日志看到的请求依然是：
+  </p>
+
+  <pre data-page-node-id="LjkF6PK4WstfgAcT7d5gA5">GET /tts/<b data-page-node-id="rszpKO8wUZJAyVQXCrLW8i">en</b>/%E3%80%90%E4%B8%80%E3%80%91  200  0 字节</pre>
+
+  <p data-page-node-id="1EhxdTlIdR49phs86EZvCz">
+    原因是：<b data-page-node-id="luLACKITn6HQQgqaML81Ui">「当前书的语言」这个 provider 在最常见的场景下根本是空的。</b>
+  </p>
+
+  <table class="boxed" data-page-node-id="YvBTfWm7ZI8KkMbh7czupk">
+    <thead data-page-node-id="boa0Dj4NIaFSfzBVPA4zBK"><tr data-page-node-id="ExIDuc6AA4Eg2nnmvzS3sQ"><th data-page-node-id="9w3MtNKemaO2KJqSWQ0Lgb">打开书的方式</th><th data-page-node-id="BxSgcXsYMkRqtHiBu6OLES">是否写入 currentBookProvider</th><th data-page-node-id="D5CuKUUESepnDYcZDVtmyE">朗读语言</th></tr></thead>
+    <tbody data-page-node-id="GRfBMkbXzjlcnbIgt5zUaG">
+      <tr data-page-node-id="EsNZtipAE5AHIcAnqiHgBt"><td data-page-node-id="NmlGRC5eWotgHhtdaMFC8A">从书架点一本书<br data-page-node-id="fmi2eMemkZLEQP6ov7TVnr"><span class="mono" data-page-node-id="Cv5ea7uFIxltzBmQygSNDO">_handleNavigateToReader()</span></td>
+        <td data-page-node-id="fXSMeR3itamxE086gZgFv7"><span class="pill ok" data-page-node-id="UHFHlEDS2fyeyVE554W9Dq">是</span> 调用 <span class="mono" data-page-node-id="4AywvYT194ynIvE7fxbaIu">setBook()</span></td>
+        <td data-page-node-id="nPqgFRf4G2B6aC9Gqwb1Qx">正确（ja-JP）</td></tr>
+      <tr data-page-node-id="yXmUPn6yPcfhvr4pM1tv5q"><td data-page-node-id="rXMc756wOKPRiigkFOCpXX"><b data-page-node-id="ClIBYdcmePjbWpoCBlB3Mn">启动 App 时恢复上次在读的书</b><br data-page-node-id="G1HggWcMEJ9jFaXs8YZoM9"><span class="mono" data-page-node-id="as41hVF9uCkvMSA9yIancF">_loadLastReadBook()</span></td>
+        <td data-page-node-id="WA1BpmAbkYUu5EccjOvqBN"><span class="pill wait" data-page-node-id="yMUj0GJ508aevcZdpoW630">否</span> 只调 <span class="mono" data-page-node-id="uAfqBoDKIgDfQqVtpeV95z">loadBook(bookId)</span></td>
+        <td data-page-node-id="rBNh29MPvkk7qYlWhx0QjD"><b data-page-node-id="ZwhE9xZElwGU2SKUQIkY3y">退回 en</b></td></tr>
+    </tbody>
+  </table>
+
+  <p data-page-node-id="AYu4VJigousyfSLDLkJyhQ">
+    恢复路径绕过正常入口，<span class="mono" data-page-node-id="qG2qLTCO3HsuowMRPJgvIA">currentBookProvider</span> 一直是空的，
+    于是 <span class="mono" data-page-node-id="FG18lgMUVGtQeoGfHG2aji">_resolveEdgeLanguageCode()</span> 里的
+    <span class="mono" data-page-node-id="i6WFXLNTJc06gisqBoSprP">languageName</span> 为 null，只能落到设置页的兜底值 <span class="mono" data-page-node-id="VpMMgfMJ6h8GHrQXqeOTTD">'en'</span> ——
+    绕了一圈还是英文语音。
+  </p>
+
+  <div class="note" data-page-node-id="mWTfdbXiqVNZIEAxBqm2Pc">
+    <strong data-page-node-id="siafYj7pzVa6vYO31E5RB3">一个容易踩的细节：</strong>
+    <span class="mono" data-page-node-id="zd9l33CbmaBQxZzOcKeXqf">Book.language</span> 来自 <span class="mono" data-page-node-id="tcpDTPHgHrggNX6dsDrG8A">json['LgName'] ?? ''</span>，
+    缺失时是<b data-page-node-id="bargKvCv3n1heh5Fo9EJJ4">空串</b>而不是 null。而判断用的是
+    <span class="mono" data-page-node-id="FFrMvyDLPDXqO96JDI5zab">languageName.trim().isNotEmpty</span>，
+    空串会静默滑到兜底值，不会报错、也不会有任何日志。
+  </div>
+
+  <h2 data-page-node-id="cG0tEaoSNf1ZgRT5mH6Oqd">二、证据</h2>
+
+  <h3 data-page-node-id="xIj0k4Gkk8AGDU1SsCEGfP">nginx 访问日志（生产机实测）</h3>
+  <pre data-page-node-id="VQczAiUJ1flT5Au0Iu8dxZ">172.64.217.217 [23/Sep/2026:01:42:13] "GET /tts/en/%E3%80%90%E4%B8%80%E3%80%91" 500 52641  "Dart/3.13"
+172.64.217.216 [23/Sep/2026:01:43:39] "GET /tts/en/%E3%80%90%E4%B8%80%E3%80%91" 200 <b data-page-node-id="3RjYC1DrkNcdGxDKyDW22F">0</b>      "Dart/3.13"
+172.64.217.216 [23/Sep/2026:01:44:27] "GET /tts/en/%E3%80%90%E4%B8%80%E3%80%91" 200 <b data-page-node-id="5xBToElC3Wz4AvPCczqCui">0</b>      "Dart/3.13"
+172.64.217.217 [23/Sep/2026:01:53:37] "GET /tts/en/%E3%80%90%E4%B8%80%E3%80%91" 200 <b data-page-node-id="ILBsEyTkatBDoJ2jUemYFN">0</b>      "Dart/3.13"</pre>
+
+  <p data-page-node-id="sGzo33oAAgZojrZOvFuiAI">
+    <span class="mono" data-page-node-id="2WichAYCd6PAdxA1kpWNqh">%E3%80%90%E4%B8%80%E3%80%91</span> 解码就是 <b data-page-node-id="kwt9FKXnqLWqy2TOm7vo6a">【一】</b> ——
+    正文里的小标题。第一次合成失败返回 500，之后全部变成 200 + 0 字节，且再没有恢复。
+  </p>
+
+  <h3 data-page-node-id="ZswuzDNLIrxPRrTNVfjPeS">服务端缓存目录</h3>
+  <pre data-page-node-id="F1I60Y6yThrl5DqzUxWXOK">/opt/lute/lute_data/users/chengxi/tts_cache/
+  163082a5664bd2733b902141647d0c79.mp3   16704 B   Sep 23 01:41
+  92423466db22346e71df1b5051caa9b8.mp3       <b data-page-node-id="3S1TkjOsx3ztpPKsctj76b">0 B</b>   Sep 23 01:42   &lt;-- 就是它</pre>
+
+  <p data-page-node-id="tF4jehSivhcrdbk9Rf9Sc5">
+    文件名是 <span class="mono" data-page-node-id="xAylQPnZqJJFkdsXgDTjou">md5(f"{lang}_{voice}_{text}")</span>。校验：
+  </p>
+
+  <pre data-page-node-id="P3vdb6Bcy3BZNA76p3ncPN">md5("en_en-US-AvaNeural_【一】") = 92423466db22346e71df1b5051caa9b8   <span style="color:#8fd694" data-page-node-id="vrAEwrL5qn4k5KwBPTY67k">完全吻合</span></pre>
+
+  <h3 data-page-node-id="u5AHmLkGrFAGiP2EYAxHjP">复现实验（在生产机上直接调 edge-tts）</h3>
+
+  <table class="boxed" data-page-node-id="aDX0T9Ymv9k4SkI3872xmJ">
+    <thead data-page-node-id="GS6AFYtGcU0Ekc4WDyVre9"><tr data-page-node-id="n2rO5WKUn5AvvFr8VtxVoU"><th data-page-node-id="Fz6y6qQNXBWx1gkg4pU7KT">文本</th><th data-page-node-id="gK2L5BbPJltkRxSHHv2lGR">语音</th><th data-page-node-id="yc8N6nrPmyAsE30huEKX5m">结果</th></tr></thead>
+    <tbody data-page-node-id="QATTn44EmaHiSymU97V8dk">
+      <tr data-page-node-id="YNmiwoe4rhtPGUNOExWcQo"><td class="mono" data-page-node-id="Exf2BbS5bzN0n94Vcs1RxI">【一】</td><td class="mono" data-page-node-id="TIruoGVw0C2qEfNjC2nVA5">en-US-AvaNeural</td>
+        <td data-page-node-id="v11jYcfwfWfU40l1EyNDvb"><span class="pill wait" data-page-node-id="qPCk8zE6xbkwwWv1mztb6w">NoAudioReceived</span> 且<b data-page-node-id="ORJbMlnUyo7Q3QRBngDnhv">残留 0 字节文件</b></td></tr>
+      <tr data-page-node-id="HgDaPODu1U95zjWqlHzSQg"><td data-page-node-id="ASWnnKQOzUQ5zM7AEpAOTR">日文整句</td><td class="mono" data-page-node-id="Vu20RA8LWAvLURQFXTWZjQ">en-US-AvaNeural</td>
+        <td data-page-node-id="e7CxqUvUJoBp4M5H88UAdM"><span class="pill wait" data-page-node-id="LYDQlNJiMzwF81OCvl55Rb">NoAudioReceived</span> 且<b data-page-node-id="x4QeIrSnvNzVeexHTkx9N1">残留 0 字节文件</b></td></tr>
+      <tr data-page-node-id="9OywAfHZQiZsIVEtoYP0fn"><td class="mono" data-page-node-id="bCMlRTXO8BvCAXONvxYeer">【一】</td><td class="mono" data-page-node-id="3KraR46AyOtFGa0DO9B1UU">ja-JP-NanamiNeural</td>
+        <td data-page-node-id="ffSjaahZAXvwUZXsKMXRWi"><span class="pill ok" data-page-node-id="hjgg48EkNMVDG5fLxm2K7J">OK</span> 11232 字节</td></tr>
+      <tr data-page-node-id="nm9sMB3FCmgAiVBuB6a6mK"><td data-page-node-id="MZGATAaCnLz9sjqeMzQPN0">拉丁文整句</td><td class="mono" data-page-node-id="Gtuql3951pHcDwU1nVY2qe">en-US-AvaNeural</td>
+        <td data-page-node-id="nAiC0u6InyCGwub4A6AppD"><span class="pill ok" data-page-node-id="Ni1kcL8O6PAWOJ3ZOdaqoG">OK</span> 19296 字节（说明 Latin 的退回是良性）</td></tr>
+    </tbody>
+  </table>
+
+  <p data-page-node-id="L31il7OtjVZBtCiwZyeYQ3">结论：这是<b data-page-node-id="hGJJbPeoIxYjqh1Ic4VT9C">确定性</b>故障 —— 只要语言发错，就一定失败；而失败一定留下毒缓存。</p>
+
+  <div class="note warn" data-page-node-id="cC8bo4ExApi9pEF6sBeVXI">
+    <strong data-page-node-id="jrDLMjnyvFfiBxvRVk7XGL">这不是偶发：毒缓存已经静默存在一个月了。</strong>
+    除今天这个 <span class="mono" data-page-node-id="DDVlND4hEVlFc5mz312z3W">92423466…</span> 之外，还存在第二个 0 字节文件
+    <span class="mono" data-page-node-id="R04H6buUPCVzpqk9QMXJWb">ba0de43326d99f63339d7fe75690ae23.mp3</span>，时间戳是
+    <b data-page-node-id="RWtmHrmGyXFthAcUu3Cv4p">2026-08-23 21:42</b> —— 比本次报障早整整一个月，位于另一条缓存目录下。
+    说明这个 bug 一直在悄悄污染缓存，只是这次正好被一本日文书撞上才暴露出来。
+    <br data-page-node-id="3orsGf5aZHdcQMnE2sLhwK"><br data-page-node-id="mfHh8gJmWZoV6XoGguUJrp">
+    由此也可以确定：<b data-page-node-id="xX8APRLjt9vcM7B1HeekHN">只修客户端并不能根治</b>。任何一次合成失败（网络抖动、
+    edge-tts 接口变更、生僻文本）都会再造一个永久的 0 字节缓存，因此
+    <b data-page-node-id="PBZ0TokYlvGZbJ6ygdjRqY">服务端「0 字节不算缓存命中 + 先写 .part 再原子 rename」这两处必须一起部署</b>。
+  </div>
+
+  <h2 data-page-node-id="hHfatXbKIaEnIPQHaQEfsY">三、修复</h2>
+
+  <h3 data-page-node-id="GVr7v6V1qJHICYShyDiDFx">客户端（真正让朗读能用起来的那一步）</h3>
+
+  <table class="boxed" data-page-node-id="6aS0jOtNBFNdTxTfKO7S5c">
+    <thead data-page-node-id="K5EQJ6pdAdxKG3Z0oQhkwF"><tr data-page-node-id="zfwj3IZTjgNzdfDnLQSWQG"><th data-page-node-id="u1jDpCh2ovkEavaMCNaj1Y">文件</th><th data-page-node-id="WGKUu95zogCsTzwvMTMuEv">改动</th></tr></thead>
+    <tbody data-page-node-id="hg960QwdKxczH23totXAmr">
+      <tr data-page-node-id="1EKtI9mmqrszM1GcV3Ig1Y">
+        <td class="mono" data-page-node-id="C2bNL9H2YaPArQ3VatmyRv">shared/utils/tts_language_mapper.dart<br data-page-node-id="bHooFvfoipIL5BZ3HKoMFR"><span class="pill ok" data-page-node-id="8eKrfxRZHW9wIForUFt3MM">新文件</span></td>
+        <td data-page-node-id="IoAgXr9N9QclCgtBHwhxqo">语言名 → BCP-47 标签映射，与服务端 <span class="mono" data-page-node-id="MzARFcF8MihabMullL1OFz">LANG_NAME_TO_CODE</span> 对齐；
+          另含各语种的测试例句。<b data-page-node-id="LyEZwBiaqJS70XeiBt15bP">公开导出</b>以便测试遍历校验。</td>
+      </tr>
+      <tr data-page-node-id="aFu1fMrmCmskqSdgJEUD6p">
+        <td class="mono" data-page-node-id="ROPC7EVpDfTwcSdjpk79Tj">core/providers/tts_provider.dart</td>
+        <td data-page-node-id="LkwuMbeGT9S3F4SYmffMqW">朗读语言改为<b data-page-node-id="FphefOBVYMVfA0tb7vW7es">跟随当前书的语言</b>（监听 <span class="mono" data-page-node-id="2sPmSzWmyVevhy1fJFvkgD">currentBookProvider.languageName</span>），
+          书未打开时才退回设置页里的兜底语言码。</td>
+      </tr>
+      <tr data-page-node-id="kg7aLnpZB0NZ2z02C70Kms">
+        <td class="mono" data-page-node-id="YqTn3AF3plzalAOa4dRSk9">core/network/tts_service.dart</td>
+        <td data-page-node-id="HKCnPln5Lkip7EBISI6Vby"><span class="mono" data-page-node-id="q1eGCCV2S3tQTLJv5LwbmS">EdgeTTSService.setLanguage()</span> 原本是<b data-page-node-id="ewLqXu5QugbCSHWOMuNBPF">空实现</b>（全项目无人调用），
+          改为真正切换语言；<span class="mono" data-page-node-id="VUZryFFBvaCzJMrWTfHwW3">languageCode</span> 由 final 改为可变。</td>
+      </tr>
+      <tr data-page-node-id="I8nkrQCMmDGL4XhxcsRV5T">
+        <td class="mono" data-page-node-id="vwC7pvQEeIqReXJr4ayQwR">features/settings/.../tts_settings_section.dart</td>
+        <td data-page-node-id="nquxZf8i9BBzNse5xGJxTh">字段更名「Fallback Language Code」并说明用途；<b data-page-node-id="hUjobN5ZNUGltirKNTzCm9">Test Speech 按钮改用同语种例句</b> ——
+          否则它会拿英文句子去喂日文语音，自己制造一条毒缓存。</td>
+      </tr>
+      <tr data-page-node-id="vE8UKbeTAgA5Dy835TjI9W">
+        <td class="mono" data-page-node-id="xMdWwVV77CaKLHCYPBYEOa">test/tts_language_mapper_test.dart<br data-page-node-id="Ot7PbG9eD5nBgwTp2cVuny"><span class="pill ok" data-page-node-id="VgGjarv29xtv3uMSUWA6BP">新文件</span></td>
+        <td data-page-node-id="mJI0YdoWoYGSF3Y150IOEG">8 项契约测试：遍历映射表，逐个断言服务端 VOICE_MAP 里真有对应语音。
+          <b data-page-node-id="aHeRcbOxCdNqZ5BETQg2rW">这是最容易静默腐化的地方</b> —— 对不上不会报错，只会没声音。</td>
+      </tr>
+      <tr data-page-node-id="bTEQznZc9FFk5wscroKeGQ">
+        <td class="mono" data-page-node-id="sYHMlsGm8aiJv6wsbzkvDC">features/reader/providers/current_book_provider.dart</td>
+        <td data-page-node-id="kExF0WUNyf3ck8rDE6qO8x">新增 <span class="mono" data-page-node-id="p6AIu9mv3n3JoExmqoi9wZ">setBookLanguage(bookId, langId)</span>：
+          先到书架列表里找（Book 自带 <span class="mono" data-page-node-id="wM47K9aAGGZ6A2vHawD4xH">LgName</span>），
+          找不到再用 <span class="mono" data-page-node-id="W9CLyOIcjvFF7YyZtzuLVh">getLanguageById(langId)</span> 补。</td>
+      </tr>
+      <tr data-page-node-id="5JV7WzGROhF0Awmy7BNhgI">
+        <td class="mono" data-page-node-id="Ger1QAASA2sHxSy5Bjh30s">features/reader/widgets/reader_screen.dart</td>
+        <td data-page-node-id="ULAyQUkckSYUoVj7ktyGwU"><span class="mono" data-page-node-id="Qyz2rB9M4yp9PrVUHZPVOY">loadBook()</span> 拿到 pageData 后调用上面的方法 ——
+          <b data-page-node-id="92z5Hm1NMcBD2cQ3HSk4B6">修的正是「启动时恢复上次在读的书」这条路径</b>，它此前完全不写语言，
+          让上面所有改动在真机上失效。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 data-page-node-id="gHhHWknhDmQdHJkHWmSZlh">服务端（防止失败被永久固化）</h3>
+
+  <table class="boxed" data-page-node-id="QZDYObQJ67QGAHmXOlGj3N">
+    <thead data-page-node-id="1PTqtgiFbolhHt8B8klWON"><tr data-page-node-id="07Wda4cpfkMSuIS0li1gZ6"><th data-page-node-id="hwZvLoFwMJM1FxU46dc2Tr">位置</th><th data-page-node-id="KBBSDK59Jnaxw3uH9y8NCA">改动</th></tr></thead>
+    <tbody data-page-node-id="E0FCVOZ1YOH7A0wJAH1eyt">
+      <tr data-page-node-id="vPOwXxT4ify0FyOu1bsQJ9">
+        <td class="mono" data-page-node-id="WVewt660CYyxpWtygIHPzc">lute/tts/routes.py<br data-page-node-id="un251k5AeWJAhTBTeOIqZC">tts_speak()</td>
+        <td data-page-node-id="O5nKUyLZeBTh5vd8W0ZYkN">0 字节文件<b data-page-node-id="L37c30NS0HqPJpXoAgrZg2">不再算缓存命中</b>，先删掉再重新合成；合成失败返回
+          <b data-page-node-id="znNN87G70HVg0jNGhygPxj">502 + JSON</b>（原来是 500 + Werkzeug 报错页）。</td>
+      </tr>
+      <tr data-page-node-id="NPA349fHuWn0B11veMrmEp">
+        <td class="mono" data-page-node-id="dHPEd7OhdK9mE2FRV5j0PO">lute/tts/routes.py<br data-page-node-id="qbO3ch1MZUaC2oJxHiv9MZ">_generate_audio()</td>
+        <td data-page-node-id="j4PlgENrOU7IG9JvvrWAu7">改为<b data-page-node-id="UydrVFOIf9E6aLFQEQvFOh">先写 .part 临时文件、成功后再原子 rename</b>。这样任何失败都不会在目标路径留下文件。
+          顺带修掉原来「返回 error tuple 但调用方忽略返回值」的失效分支。</td>
+      </tr>
+      <tr data-page-node-id="DqGkmvZ9ENW0HeCpXvIRqF">
+        <td class="mono" data-page-node-id="8BN1QAr2vKHETiVVuZtykW">lute/tts/routes.py<br data-page-node-id="fbY3QnI1PwQyhFoukG5MeZ">VOICE_MAP</td>
+        <td data-page-node-id="T2m7ys0bi9jxP5HaVSGBxf">补 4 个缺口：<span class="mono" data-page-node-id="Mw7vWKEfl43VIFxIB06g2e">nb</span>（挪威语，原映射到 nb-NO 但表里只有 no）、
+          <span class="mono" data-page-node-id="jIKR0jGF6UMBr2I76ybEgy">fa</span>、<span class="mono" data-page-node-id="JiLXD6Zwh7YdK9B2RkPRmt">ms</span>、<span class="mono" data-page-node-id="XUQW5Fe0N8wSFEqWvhn2nQ">tl</span>。
+          这四个语种原本会静默退回英文语音，和本次故障同源。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note" data-page-node-id="l8HrcdsmpkJEx4gKTbNcC3">
+    <strong data-page-node-id="WtvBbZCV9dk4AEMeV3NZGW">刻意没有改 <span class="mono" data-page-node-id="fI9BLCEBWbJuynqnuYSKLa">LANG_NAME_TO_CODE</span>。</strong>
+    它不只喂 TTS —— <span class="mono" data-page-node-id="GDCGkffb9OHpMQ8KzBkQgL">read/routes.py</span> 把它传给阅读模板，
+    <span class="mono" data-page-node-id="Ubwa9Yk7qHg53AHkgmXNa7">_translate_via_mymemory()</span> 拿它当翻译语言码。
+    菲律宾语的语音虽然叫 <span class="mono" data-page-node-id="WP2OdeJtBcxqTAcCsOjUBl">fil-PH-*</span>，但翻译接口要的是
+    <span class="mono" data-page-node-id="kM23pCBoFZDDBI1OhKqDJQ">tl</span>；所以修在只被 <span class="mono" data-page-node-id="2XNo74X5XuhsbEMSCuyJYI">/tts/</span> 消费的
+    <span class="mono" data-page-node-id="u9PQbyacIULc6mTK2YNh50">VOICE_MAP</span> 里，<b data-page-node-id="KQhKxDZsC8CPBnhAUGIGne">web 侧行为零变化</b>。
+  </div>
+
+  <h3 data-page-node-id="SizKkwMmlYhqWcX2qS494n">映射修复效果（直接调服务端函数实测）</h3>
+
+  <pre data-page-node-id="5PQVarCSmt4bf59HExVzBg">japanese             ja-JP  -> ja-JP-NanamiNeural
+norwegian            nb-NO  -> nb-NO-PernilleNeural      <span style="color:#8fd694" data-page-node-id="QmlrnDIRgHhlJ4b7vCZiSY">修复前退回英文</span>
+persian              fa     -> fa-IR-DilaraNeural        <span style="color:#8fd694" data-page-node-id="OPnZM8wsCHP7DDyhV5bxD8">修复前退回英文</span>
+malay                ms-MY  -> ms-MY-YasminNeural        <span style="color:#8fd694" data-page-node-id="eIKMVqmZGxRSCRev8KdP1t">修复前退回英文</span>
+tagalog              tl     -> fil-PH-BlessicaNeural     <span style="color:#8fd694" data-page-node-id="hSh1481NNAlXzGyD53zdvY">修复前退回英文</span>
+latin                la     -> en-US-AvaNeural           <span style="color:#e0a86a" data-page-node-id="SZOcURxoMkkf89WAA2AnZn">已知例外：edge-tts 无拉丁语语音</span>
+traditional chinese  zh-TW  -> zh-TW-HsiaoChenNeural
+cantonese            zh-HK  -> zh-HK-HiuMaanNeural
+
+LANG_NAME_TO_CODE["tagalog"] 仍为 "tl"  <span style="color:#8fd694" data-page-node-id="af5SLV9WcizJa4AoY1ZQIY">翻译侧未受影响</span></pre>
+
+  <h2 data-page-node-id="2wYeht0qgaHfIG8tEQfcqY">四、验证</h2>
+
+  <table class="boxed" data-page-node-id="v1qdpZjG1iHgVTGae1EcUa">
+    <thead data-page-node-id="9LhwwxAJA26zD7ajKMqksl"><tr data-page-node-id="KHKXKC2AFDmzgjsE4OR3jf"><th data-page-node-id="9vdhqq8d6A5Z1abnWMAqPv">验证项</th><th data-page-node-id="VxQcDohMcrsBdl2leH1NBn">方法</th><th data-page-node-id="vXsksCGtGrgIc8dYZNwq6r">结果</th></tr></thead>
+    <tbody data-page-node-id="0D3n7NoWfAySwPi3ovdkSR">
+      <tr data-page-node-id="RUJCfJ3vJrFzcEVqL1G06h">
+        <td data-page-node-id="53veISRfm4rDSL70sdEC7p">客户端静态分析无回归</td>
+        <td data-page-node-id="CVCJTsXySGLojlLv8ah2yx">远端 <span class="mono" data-page-node-id="4ykS0pGeqJ1p8DFoYwDmze">flutter analyze</span>，与改动前逐条 diff</td>
+        <td data-page-node-id="o0JdXmXRPa7pucsVkR72xb"><span class="pill ok" data-page-node-id="CbhCbFxeVJqcAhSdRo6n52">0 新增 / 0 error</span>（200 issues）</td>
+      </tr>
+      <tr data-page-node-id="mZU2d3YBRpfUaGeNonAifg">
+        <td data-page-node-id="4KPfKoUxtmOz2XV9baTrve">映射契约</td>
+        <td data-page-node-id="iYfakJJPW9WZggXDkla2fy"><span class="mono" data-page-node-id="cKKi5oiCLirP6ugyvzcOY2">flutter test test/tts_language_mapper_test.dart</span></td>
+        <td data-page-node-id="ZsOfiK51LleCfq8Vj2advy"><span class="pill ok" data-page-node-id="OU0kcdOUWzedzrAk81E2d8">8 / 8 通过</span></td>
+      </tr>
+      <tr data-page-node-id="feCtQC5DESFWh4qpCnI5Xo">
+        <td data-page-node-id="JvNTEk5fxAq8VH0Mn9anEl">既有测试无回归</td>
+        <td data-page-node-id="CItHU8MNgxaUQTURcCnrlJ"><span class="mono" data-page-node-id="p1JOiOqkjnAyw2DDpDcbQX">flutter test test/book_series_parse_test.dart</span></td>
+        <td data-page-node-id="NewDSMrwPwYZMY3UkfmVAT"><span class="pill ok" data-page-node-id="AgceXs1ZfbRa5f03E4rgaZ">12 / 12 通过</span></td>
+      </tr>
+      <tr data-page-node-id="6m6iqbZTxeFAHF6mHQE9FW">
+        <td data-page-node-id="vW00NMLvjK2lv9KiQ5YtNf">原子写补丁行为</td>
+        <td data-page-node-id="Jt6DrFzfQE6HfsWOSEPrjz">直接调 <span class="mono" data-page-node-id="LXNmU5WfG8JkcQSDryODTU">_generate_audio()</span>：坏输入应抛错且<b data-page-node-id="EplIv5arsYFBk6t3oTjjTC">不留任何文件</b>；好输入应落盘</td>
+        <td data-page-node-id="itHj91cYd50H93Zqv3US7M"><span class="pill ok" data-page-node-id="Ja5nv1URbbkpWoGuDDkMUa">通过</span> 失败时目标文件与 .part 均不存在</td>
+      </tr>
+      <tr data-page-node-id="d4JmLk8bFhqK2aAzILMPy6">
+        <td data-page-node-id="KEYymx3TKfF4qsQPnIPb19">服务端既有测试无回归</td>
+        <td data-page-node-id="h3SAlc094co66sq5zOXTJh"><span class="mono" data-page-node-id="3G0GUa6USZ64UMAAzmqsZF">pytest tests/unit/read tests/unit/language</span></td>
+        <td data-page-node-id="P9wZuma2dVJqcM2BiOTT5v"><span class="pill ok" data-page-node-id="7G9bDIAJNBSs0EIR6fCHFH">115 通过</span><br data-page-node-id="s69GsGgFB3JOL4dlWspt3T"><span style="font-size:12.5px" data-page-node-id="keAJq8ZXZPODqXXE4jB7T1">1 个 error 是本地沙箱 tmp_path 权限问题，与改动无关</span></td>
+      </tr>
+      <tr data-page-node-id="h13aP9m4g0rB4GEQ4sUXmh">
+        <td data-page-node-id="0Hv5JaEX9KqLbq8Fya4SLM">服务端测试（TTS 语言标签）</td>
+        <td data-page-node-id="LyIEBQjhG4AzNktaCd9D1I"><span class="mono" data-page-node-id="gxoHEFII4OJtu7C9aDEp2A">pytest tests/unit/read/test_tts_lang_tags.py</span></td>
+        <td data-page-node-id="1gT5RltWziQefUimtqH6dS"><span class="pill ok" data-page-node-id="y4jwIqlrvUAI5T5CHXJVNG">16 / 16 通过</span></td>
+      </tr>
+      <tr data-page-node-id="XDqEEvplPJaRSeyrts4uHD">
+        <td data-page-node-id="Gi0NVIlwjgR2RSOGNwMngc"><b data-page-node-id="5AC5uw5aOpSP5UU8DCaJwB">真机朗读</b></td>
+        <td data-page-node-id="oOFoWOX5nHhKx8qIfmCig9">装到手机上打开日文书《横浜のアパートの惨劇》，点播放，对照服务端 nginx 日志</td>
+        <td data-page-node-id="wNlXzDCBQh7y3D918PpKsK"><span class="pill ok" data-page-node-id="F70Z2bBOfqGROQ3k4hpblg">出声</span> 进度走到 <b data-page-node-id="LJbYk1iIX6lLAZIsScFCtz">00:29 / 02:47 · 7/33</b>，错误横幅消失</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 data-page-node-id="mypqjIgKyJKqGArOocWxfL">真机验证的关键证据</h3>
+
+  <p data-page-node-id="fQAOix7fESacvw6KjiCsUT">修复前后，同一个「点播放」动作在服务端留下的日志：</p>
+
+  <pre data-page-node-id="iCDfQpbX8fHnl4l4Kpxm43">修复前   GET /tts/<b data-page-node-id="0uQS9BGyDhAgab4aQqJXIT">en</b>/%E3%80%90%E4%B8%80%E3%80%91        200  <b data-page-node-id="iaeNcDCeAEh1FLD15FiWBX">0 字节</b>   &lt;-- 毒缓存
+修复后   GET /tts/<b data-page-node-id="Ssy3cTvYlXkkYY4iWTDasX">ja-JP</b>/%E3%80%8C%E7%A7%81%E3%81%AE%E8%B6%A3%E5%91%B3...  200  20304 字节</pre>
+
+  <p data-page-node-id="3O0nRaBiYvrTf21l5K0Ie1">
+    修复后新落盘的缓存文件：<b data-page-node-id="WyU6WS9xViubGYoG5B2NaS">20304 / 21744 / 11232 / 22896 字节</b> —— 都是真实音频。
+    这也从服务端反向印证了：客户端确实改发了 <span class="mono" data-page-node-id="T0EMm4CLtehcjvlaPHSIAZ">ja-JP</span>。
+  </p>
+
+  <div class="note wait" data-page-node-id="x1kfr3EZA4DT6l1nvX92ll">
+    <strong data-page-node-id="GdPgQPBfWznkGMoZYWx6A0">但同一次朗读里仍然产生了 1 个 0 字节文件。</strong>
+    有一句被切成只剩 <span class="mono" data-page-node-id="7TjOxA3ctJ24x0e80cP1Uj">」</span>（一个右引号），服务端对这条请求返回了
+    <b data-page-node-id="yNmsseZzdn5LTiXp8WugUv">500</b>，然后照例留下 0 字节缓存 —— 这个键从此永久失败。
+    <br data-page-node-id="xkRfiA0LrrrWAACEaKm9hX"><br data-page-node-id="UzykNAVllO9C49AJd9UVqr">
+    这不阻碍朗读（播放照常往下走），但它说明：<b data-page-node-id="PpxPuTNO6SCTPQjgOrRBru">只要服务端不修，
+    毒缓存每天都会新增</b>。客户端改对了语言，只是让「必然失败」变回「偶发失败」。
+  </div>
+
+  <h3 data-page-node-id="zXjBeZb9GgD48f8F3kSqcA">第 5 处：服务端 502 后变成了更丑的 UI 错误</h3>
+
+  <p>
+    部署服务端补丁后，<span class="mono" data-page-node-id="7TjOxA3ctJ24x0e80cP1Uj">」</span>
+    那句不再留下毒缓存，但是变成另一种更难看的故障：服务端返回
+    <b data-page-node-id="yNmsseZzdn5LTiXp8WugUv">502 + JSON</b>，客户端把它当成"服务器挂了"，
+    把整段 DioException 文案（连 Mozilla 文档链接都打出来）甩到 UI 上 —— 比之前的
+    "Empty audio"横幅更糟。
+  </p>
+
+  <p>
+    根因：阅读器走的是 <span class="mono">EdgeTTSService.getAudioBytes()</span> 路径，
+    而我上一轮只改了 <span class="mono">speak()</span>。同一个服务端类有两个公开方法，
+    <span class="mono">speak()</span> 和 <span class="mono">getAudioBytes()</span>，都会调用
+    <span class="mono">_fetchAudio()</span>。
+    <br><br>
+    修法：把「该片段无法合成」抽成一个专用类型
+    <span class="mono">TTSUnpronounceableFragmentException extends TTSException</span>，
+    <span class="mono">_fetchAudio()</span> 检测到 502 + marker 时抛它。
+    <span class="mono">getAudioBytes()</span> 直接透传，上游
+    <span class="mono">sentence_tts_provider.speakSentence</span> 捕获后静默重置 state；
+    <span class="mono">speak()</span> 则让异常向外传播（它本身就是
+    <span class="mono">TTSException</span>，会被末尾的
+    <span class="mono">catch (e) { if (e is TTSException) rethrow; }</span> 原样抛出），
+    由调用方 <span class="mono">tts_player_provider._speakCurrent</span> 用
+    <span class="mono">on TTSUnpronounceableFragmentException { _onServiceCompleted(); }</span>
+    直接当成「这一句播完、跳下一句」处理。
+    <br><br>
+    <b data-page-node-id="vZ2BoZQAOhF8uR6D9C8TDi">为什么不再用 <span class="mono">speak()</span> 里补
+    <span class="mono">PlayerState.completed</span> 的老做法：</b>那是把合成事件塞进 service 的
+    broadcast stream，若调用方在「emit」与「delivery」之间重新订阅（如
+    <span class="mono">_onServiceCompleted</span> 里又调 <span class="mono">_speakCurrent</span> →
+    <span class="mono">_subscribeService</span> 取消旧订阅），该事件会被丢掉，朗读就卡在不可发音的那句。
+    改成调用方直接捕获异常来推进，不依赖任何 stream 事件，最稳。
+    <br><br>
+    <b data-page-node-id="fG1NbDmGk1D9zR6Cn3nLp2">教训：</b>同一个服务的「失败处理」逻辑要在
+    <b>所有公开方法</b>上保持一致；且「推进到下句」这种控制流应由阅读器自己掌握，
+    不要靠往音频播放器的状态流里注入假事件。
+  </p>
+
+  <h2 data-page-node-id="3VPaeAJHdAhg2xCH87vWRB">五、遗留与未覆盖</h2>
+
+  <ul data-page-node-id="CJHT9PCaplf9AdrOuZlIoj">
+    <li data-page-node-id="r2yaKTRiGytHnKnwrkmOSB">
+      <b data-page-node-id="jjR5tg8Q7ceHHwMEwneiOm">服务端已部署、已提交、已推送。</b>
+      补丁 commit <span class="mono">88a04efa</span>（<span class="mono">fix(tts): stop caching a failed
+      synthesis as an empty mp3</span>）已推到 <span class="mono">my/all-features-combine</span>
+      （chengxicx/Song）。生产机 <span class="mono" data-page-node-id="TNp94vp9ZZ5Wll8JdOgl1d">/opt/lute</span>
+      已 fast-forward 到同一 commit，工作区恢复干净 ——
+      <b>不会再被下一次同步冲掉</b>。
+      原文件备份在 <span class="mono">/opt/routes.py.bak.*</span>，3 个历史 0 字节毒缓存已清理。
+    </li>
+    <li data-page-node-id="uxrq62h5QBAvXZTH1DCGN8">
+      <b data-page-node-id="GlOBItDaAfUYsyfArSKbys">毒缓存已停止增长（部署后复测）。</b>
+      修复前那句被切成只剩 <span class="mono" data-page-node-id="1b6JHAAvYXmnSO5R8P2NXA">」</span> 的请求
+      会返回 500 并留下永久 0 字节文件；部署后同一请求返回
+      <b>502 + JSON</b>，且复测后 <b>现存 0 字节缓存 = 0</b>。
+      即：失败不再被误当成缓存命中，也不再留下痕迹。
+    </li>
+    <li data-page-node-id="GxehEOwneLzas3X8TbNJTi">
+      <b data-page-node-id="kD3F2VGGQqDlt8H99A9ySW">服务端有 per-language 的 <span class="mono" data-page-node-id="zLR6ToD11F4Oy1zuSamOAc">tts_lang</span> 覆盖设置</b>
+      （在语言编辑页），web 侧会用它；客户端读不到这个字段，目前只按语言名推导。
+      若你给某个语言设了自定义 <span class="mono" data-page-node-id="H88KdWuc78m1Gzdw6K7UJF">tts_lang</span>，手机端不会跟随。
+    </li>
+    <li data-page-node-id="rQse9PmAv1FUVMbG5Zrjmp">
+      <b data-page-node-id="4l04tkQf4nAKW3f0sYlQsy">Latin 是「良性退回」，不是缺陷。</b>edge-tts 不提供拉丁语语音，
+      <span class="mono" data-page-node-id="SR6LiBMOz6rAszGCuAyQT0">la</span> 只能退回英文语音；实测英文语音读拉丁文<b data-page-node-id="jvHomVt2Z4tpu2Hzvwx3wg">能正常出声</b>
+      （19296 / 20880 字节），所以不会触发毒缓存。已在契约测试里显式列为已知例外，
+      避免它掩盖新出现的漂移。
+    </li>
+    <li data-page-node-id="ksrYCul7Aa6WUmOfKDljgw">
+      <b data-page-node-id="QdimvkLHB3SEeBhvLoNn2I">服务端 <span class="mono" data-page-node-id="uMr8FhgUV6HUxAU1YpOTuE">/tts/</span> 需要登录</b>（未带会话会 302 到
+      <span class="mono" data-page-node-id="iXGd7kn9Vf919PfUBzDqqC">/login</span>），所以无法用 curl 直接做端到端验证；
+      本轮的服务端验证是直接调 <span class="mono" data-page-node-id="RjUz5A0BhBBDwZkGFXjMD1">voice_for_tag()</span> 与
+      <span class="mono" data-page-node-id="z8RaRihbEFG06rjUgVWopU">edge_tts.Communicate</span> 完成的。
+    </li>
+    <li data-page-node-id="MXJxbyCCq4Y0kQpan2lk1t">
+      <b data-page-node-id="6xxlZBGE2xeTDDVbnuysJS">真机复验已完成（仅客户端部分）。</b>APK
+      <span class="mono" data-page-node-id="cysyvB72RW2pA2MF7K3auA">sha256 135aca03…</span> 装到手机上，日文书朗读正常出声，
+      <b data-page-node-id="NTdg2mrGsWqBKS78B4bApX">但目前这台机器上跑的仍是未打补丁的服务端</b>，
+      所以「失败会留下永久毒缓存」这一点在真机上依旧成立。
+    </li>
+  </ul>
+
+  <h2>六、补充定案（第二轮）：真正的拦路虎是 Cloudflare</h2>
+
+  <p>
+    上一轮把失败信号定为「<b>502 + <span class="mono">{"error":"tts synthesis failed"}</span></b>」，
+    客户端靠匹配这个 JSON 标记来识别「这句念不出来」。<b>这个约定在公网侧从来没有生效过</b> ——
+    因为生产站走 Cloudflare，而 <b>CF 会把源站 5xx 的响应体整个替换掉</b>。
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>路径</th><th>状态</th><th>体积</th><th>Content-Type</th><th>响应体</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>直连源站（<span class="mono">:80</span> + <span class="mono">Host</span> 头）</td>
+        <td>502</td><td><b>33 B</b></td><td class="mono">application/json</td>
+        <td class="mono">{"error":"tts synthesis failed"}</td>
+      </tr>
+      <tr>
+        <td>经 Cloudflare</td>
+        <td>502</td><td><b>16 B</b></td><td class="mono">text/plain</td>
+        <td class="mono">error code: 502 &nbsp;<b>（Server: cloudflare）</b></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <ul>
+    <li>
+      <b>后果</b>：<span class="mono">_fetchAudio</span> 里
+      <span class="mono">text.contains('"tts synthesis failed"')</span> 恒为 false ⇒
+      抛通用 <span class="mono">TTSException('Edge TTS request failed: …')</span> ⇒
+      播放条置 <span class="mono">error</span>，弹出<b>红色横幅（内容是 Dio 的原始异常文本）</b>，
+      朗读<b>停在《横浜のアパートの惨劇》第 7/33 句</b>（被切成只剩一个 <span class="mono">」</span> 的碎片）不再前进。
+      用项目自带 dio 在生产机上复现，客户端视角确为
+      <span class="mono">status=502 / containsMarker=false / server=cloudflare</span>。
+    </li>
+    <li>
+      <b>订正上文的结论</b>：第五节「红色错误横幅已消失」<b>不成立</b>，横幅一直都在，
+      只是它位于播放条<b>顶部</b>，截图区域偏低就会看不见。
+      同理，当时猜的「APK 滞后」与「另一条路径不补发 completion」两个方向也都不成立：
+      已装 APK 的 <span class="mono">libapp.so</span> 里能 <span class="mono">strings</span> 到修复字面量，
+      且 <span class="mono">_speakCurrent</span> 本来就有
+      <span class="mono">on TTSUnpronounceableFragmentException → _onServiceCompleted()</span>。
+    </li>
+    <li>
+      <b>修法（服务端）</b>：合成失败改回 <b>422</b> —— 4xx 的响应体 CF 不改写，状态码本身也稳定保留。
+      commit <span class="mono">45041f19</span>
+      （<span class="mono">fix(tts): answer 422, not 502, for an unsynthesizable fragment</span>），
+      已推 <span class="mono">my/all-features-combine</span> 并 fast-forward 到生产
+      <span class="mono">/opt/lute</span>、已 <span class="mono">systemctl restart lute</span>。
+    </li>
+    <li>
+      <b>修法（客户端）</b>：新增 <span class="mono">EdgeTTSService.isSynthesisFailureResponse()</span>
+      作为这条契约的唯一判定点 —— <b>422 → 跳过</b>；502 则再嗅 JSON 标记（兼容未升级的旧服务端）；
+      其余一律仍按真实错误上报（<b>不透明 502 不会被当成可跳过</b>，避免服务真挂时静默读完整本书）。
+      顺手订正了旧注释里写死的「502」。
+    </li>
+    <li>
+      <b>验证</b>：经 CF 实测 <span class="mono">422 · 33 B · application/json</span>、
+      正常句仍 <span class="mono">200 · audio/mpeg</span>（ja / en / ko / zh 均回归通过）；
+      <span class="mono">flutter analyze</span> 0 error；
+      新增 7 项测试全绿（<span class="mono">test/tts_synthesis_failure_test.dart</span> 5 项契约 +
+      <span class="mono">test/tts_player_fragment_skip_test.dart</span> 2 项状态机：
+      遇碎片须推进、遇真实错误须停住并报错）。
+    </li>
+    <li>
+      <b>真机验证（已通过 ✅）</b>：新 APK（<span class="mono">sha256 72fc1d5c…</span>）装到手机后，
+      打开《横浜のアパートの惨劇》点播放，整页读完 ——
+      播放条终态 <b><span class="mono">02:47 / 02:47 · 33/33</span></b>、中间按钮回到播放三角（正常收尾）、
+      <b>全程无红色横幅</b>。服务端侧该次播放共 <b>33 条请求 = 30×200 + 3×422、其它错误 0</b>；
+      碎片 <span class="mono">」</span> 只产生 1 次 422，随即跳到下一句 ——
+      <b>原来必断在第 7 句，现在完全跳过并读完全页</b>。
+    </li>
+    <li>
+      <b>顺带记下的取证手法</b>（release APK 的 <span class="mono">debugPrint</span> 不进 logcat，
+      所以日志指望不上）：用 nginx <span class="mono">access.log</span> 看「请求跑到第几句后断流」；
+      用 <span class="mono">adb shell pm path</span> + <span class="mono">pull</span> +
+      <span class="mono">strings lib/arm64-v8a/libapp.so</span> 证明某个修复是否真的在已装的包里；
+      截图裁剪用 <span class="mono">sips -c H W --cropOffset Y X</span>。
+    </li>
+    <li>
+      <b>仍遗留（本轮未动）</b>：播放中点「下一句」会跳两句 ——
+      <span class="mono">next()</span> 里的 <span class="mono">_stopService()</span> 会让服务流发出
+      <span class="mono">PlayerState.stopped</span>，而监听把它也当成「播完」（此刻
+      <span class="mono">_advanceOnComplete</span> 仍为 true、<span class="mono">status</span>
+      已是 <span class="mono">loading</span>）⇒ 多推进一次。
+    </li>
+  </ul>
+
+  <footer data-page-node-id="BxFBZ5OsiDChvrGFQF6Vxc">
+    根因 4 处（客户端语言写死 · 服务端 0 字节毒缓存 · 失败返回 500 报错页 ·
+    <b>Cloudflare 改写 5xx 响应体使修复信号失效</b>）·
+    顺带修掉 4 处语言→语音映射缺口 · 客户端 0 新增 issue / 0 error ·
+    服务端 115 项测试通过 · 客户端新增 7 项 TTS 测试通过 · web 侧行为未改动
+  </footer>
+
+</div>
+</body>
+</html>

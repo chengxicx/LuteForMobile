@@ -24,17 +24,19 @@ import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
 import '../providers/audio_player_provider.dart';
+import '../providers/sentence_tts_provider.dart';
 import '../providers/tts_player_provider.dart';
 import '../providers/current_book_provider.dart';
+import '../utils/playing_line.dart';
 import '../widgets/term_tooltip.dart';
 import 'text_display.dart';
 import 'term_form.dart';
 import 'sentence_translation.dart';
 import 'book_completion_celebration_dialog.dart';
 import '../../../core/network/dictionary_service.dart';
+import '../../../core/network/session_manager.dart';
 import 'audio_player.dart';
 import 'package:lute_for_mobile/app.dart';
-import 'dart:convert';
 import 'manga_page_view.dart';
 import 'youtube_player_view.dart';
 import 'tts_player_widget.dart';
@@ -121,7 +123,10 @@ class _PageTransitionState extends State<_PageTransition>
                     ).animate(
                       CurvedAnimation(
                         parent: _controller,
-                        curve: Curves.easeInOut,
+                        // 旧页滑出：翻页是用户甩动之后发生的，
+                        // easeInOut 的「慢开头」会让人觉得迟钝，
+                        // 换成 easeOutCubic 立即起步、平滑收尾。
+                        curve: Curves.easeOutCubic,
                       ),
                     ),
                 child: _oldChild,
@@ -136,7 +141,8 @@ class _PageTransitionState extends State<_PageTransition>
                   ).animate(
                     CurvedAnimation(
                       parent: _controller,
-                      curve: Curves.easeInOut,
+                      // 新页滑入：与旧页同一条曲线，保持两张页面同步。
+                      curve: Curves.easeOutCubic,
                     ),
                   ),
               child: _currentChild,
@@ -161,6 +167,26 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   int? _highlightedOrder;
   TextItem? _originalTextItem;
   bool _isMultiTermSelecting = false;
+
+  /// Bumped on every word tap.  _handleTap has to await a fetch before it can
+  /// show the card, and the second tap of a double tap can land inside that
+  /// window: the stale response then re-opens the card on top of whatever the
+  /// second tap produced.  Capturing the sequence at entry and comparing it
+  /// after the await lets the late response bow out.  onTap fires immediately
+  /// (text_display.dart:285), so this is the normal case, not a rare race.
+  int _tooltipSeq = 0;
+
+  /// Per-word chain of status writes.  Cycling is a read-modify-write -- fetch
+  /// the term form, change its status, post it back -- so two overlapping cycles
+  /// on the same word can both read the same starting status and write the same
+  /// result: the reader taps 1 -> 3 -> 99 and lands on 3.  One write in flight
+  /// per word; different words still run in parallel.
+  final Map<int, Future<void>> _statusWrites = {};
+
+  /// Statuses a double tap cycles through, matching the web reader's
+  /// _quick_cycle_status (lute-touch.js).  2/4/5 are skipped so the gesture
+  /// stays a predictable three-way toggle.
+  static const List<String> _statusCycle = ['1', '3', '99'];
   ScrollController _scrollController = ScrollController();
   double _lastScrollPosition = 0.0;
   bool _isLastPageMarkedDone = false;
@@ -175,6 +201,33 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   bool _checkServerPageInProgress = false;
   int? _lastAudioBookId;
   String? _lastTtsPageKey;
+
+  /// Cue the online video player's playhead is on, or -1 when it is outside
+  /// every cue.  Reported by [YoutubePlayerView]; the player outlives a page
+  /// turn (it is keyed by book, not page), so this is deliberately not reset
+  /// when the page changes -- a cue that is not on the new page simply marks
+  /// nothing.
+  int _activeCueIndex = -1;
+
+  // --- 拖动跟手翻页 ---
+  /// 水平拖动位移（像素）。正数 = 往右拖（看上一页），负数 = 往左拖（下一页）。
+  double _dragOffset = 0.0;
+  /// 是否正在水平拖动中。用于在「跟手（0ms）」与「回弹（200ms）」之间切换过渡时长。
+  bool _isDragActive = false;
+
+  /// 当前是否允许左右滑动翻页。
+  /// 与滑动翻页原有的前置判断保持一致，避免在漫画页、多选模式、
+  /// 或关闭了滑动翻页时仍然跟着手指移动。
+  bool _canSwipePages(PageData? pageData) {
+    if (_isMultiTermSelecting) return false;
+    if (pageData == null || pageData.pageCount <= 1) return false;
+    // 漫画页用 InteractiveViewer 缩放/平移，翻页走屏幕控件
+    if (pageData.isManga) return false;
+    if (!ref.read(textFormattingSettingsProvider).swipeNavigationEnabled) {
+      return false;
+    }
+    return true;
+  }
 
   Future<void> _loadLanguageMapping() async {
     if (_languageIdToName.isNotEmpty) return;
@@ -414,11 +467,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
   /// Whether the TTS read-aloud player should be shown for the current page.
   /// Mirrors the web reader: a full timeline player bar is shown for plain text
-  /// pages (no uploaded audio, no manga/image, no youtube) once a TTS provider
-  /// is configured.  Audio books keep the MP3 player instead.
+  /// pages (no uploaded audio, no manga/image, no online video) once a TTS
+  /// provider is configured.  Audio books keep the MP3 player instead.
   bool _showTtsPlayer(PageData? pageData, Settings settings) {
     if (pageData == null || !settings.showAudioPlayer) return false;
-    if (pageData.hasAudio || pageData.isManga || pageData.isYoutube) return false;
+    if (pageData.hasAudio || pageData.isManga || pageData.isVideoBook) {
+      return false;
+    }
     final ttsSettings = ref.read(ttsSettingsProvider);
     return ttsSettings.provider != TTSProvider.none;
   }
@@ -430,6 +485,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final settings = ref.read(settingsProvider);
     if (!_showTtsPlayer(pageData, settings)) {
       _lastTtsPageKey = null;
+      _stopStaleTtsPlayer();
       return;
     }
     final key = '${pageData.bookId}-${pageData.currentPage}';
@@ -437,6 +493,43 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     _lastTtsPageKey = key;
     final sentences = _sentencesForPage(pageData);
     ref.read(ttsPlayerProvider.notifier).loadPage(sentences);
+  }
+
+  /// Stops the read-aloud player when the page in front of the reader is not
+  /// its page.
+  ///
+  /// [TTSPlayerState] carries no book, and [loadPage] is the only thing that
+  /// clears it -- but a page that does not show the player (a media book, no
+  /// configured provider, the bar switched off) never calls [loadPage].  The
+  /// player then keeps the last book's sentence, and since sentence ids are
+  /// per book, that id matches a line here: the page marks a sentence nobody
+  /// is reading *and* stops following the player that is actually running,
+  /// because the stale line is still in the highlighted set.
+  void _stopStaleTtsPlayer() {
+    if (ref.read(ttsPlayerProvider).status == TTSPlayerStatus.idle) return;
+    unawaited(ref.read(ttsPlayerProvider.notifier).stop());
+  }
+
+  /// Cue the audio book's playhead is on, or -1 when there is none.
+  ///
+  /// An audio book's player carries a single book-wide position while the
+  /// page shows a slice of the transcript, so the cue is what ties the two
+  /// together -- the same link the web player's `ytCueIndex` makes.
+  ///
+  /// Selected rather than watched whole: the player state ticks with the
+  /// playhead (a few times a second) and rebuilding this page's hundreds of
+  /// word spans that often would be felt.  Only a change of cue may rebuild.
+  int _audioCueIndex(PageData pageData) {
+    final cues = pageData.cues;
+    if (cues.isEmpty) return -1;
+    return ref.watch(
+      audioPlayerProvider.select(
+        (player) => PlayingLine.cueIndexAt(
+          cues,
+          player.position.inMilliseconds / 1000.0,
+        ),
+      ),
+    );
   }
 
   /// Groups the page's text items into whole sentences (preserving order).
@@ -507,6 +600,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       final pageData = ref.read(readerProvider).pageData;
       if (pageData != null) {
         final langId = _findLangId(pageData);
+
+        // 按 id 直接加载时（启动时恢复上次在读的书）没有 Book 对象，
+        // currentBookProvider 会一直是空的，朗读语言只能退回设置里的兜底
+        // 语言码 —— 日文书因此被丢给英文语音，彻底没有声音。
+        // 详见 CurrentBookNotifier.setBookLanguage。
+        unawaited(
+          ref
+              .read(currentBookProvider.notifier)
+              .setBookLanguage(pageData.bookId, langId),
+        );
 
         if (langId != null) {
           unawaited(_ensureLanguageDirectionLoaded(langId));
@@ -885,12 +988,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   }
 
   Map<String, String>? _mangaImageHeaders(Settings settings) {
-    if (settings.basicAuthUser.isEmpty) return null;
-    final credentials =
-        '${settings.basicAuthUser}:${settings.basicAuthPassword}';
-    return {
-      'Authorization': 'Basic ${base64Encode(utf8.encode(credentials))}',
-    };
+    final headers = SessionManager.authHeaders();
+    if (headers.isEmpty) return null;
+    return headers;
   }
 
   Widget _buildBody(bool isLoading, String? errorMessage, PageData? pageData) {
@@ -1003,6 +1103,48 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     }
 
     final hasGestureNav = MediaQuery.of(context).systemGestureInsets.bottom > 0;
+
+    // Sentence the read-aloud player is on, marked in the page text the way
+    // the web reader does it (LutePlayingLine).  Selected rather than watched
+    // whole: the player state ticks every 250 ms with the playhead, and
+    // rebuilding this page's hundreds of word spans that often would be
+    // felt.  Only a sentence change, or the player starting/stopping, may
+    // rebuild.  Nothing is marked while the player is idle or failed --
+    // there is no line being read then.
+    final ttsSentenceId = ref.watch(
+      ttsPlayerProvider.select((player) {
+        switch (player.status) {
+          case TTSPlayerStatus.playing:
+          case TTSPlayerStatus.loading:
+          case TTSPlayerStatus.paused:
+            return player.currentSnippet?.sentenceId;
+          case TTSPlayerStatus.idle:
+          case TTSPlayerStatus.error:
+            return null;
+        }
+      }),
+    );
+
+    // The media players (MP3 / YouTube / Bilibili) do not speak sentences:
+    // they play subtitle cues, and what gets marked is the *line* holding the
+    // cue the playhead is on -- the web reader's `ytMarkPlayingLine`, resolved
+    // against the same `LUTE_PAGE_CUE_MAP` the server renders with the page.
+    // A cue that is not on the page being read marks nothing, which is the
+    // honest answer while the reader is somewhere else in the book.
+    final playingCueIndex = pageData.isVideoBook
+        ? _activeCueIndex
+        : _audioCueIndex(pageData);
+    final highlightedSentenceIds = <int>{
+      ?ttsSentenceId,
+      if (playingCueIndex >= 0 && playingCueIndex < pageData.cues.length)
+        ...PlayingLine.sentenceIdsForCue(
+          paragraphs: pageData.paragraphs,
+          pageCueMap: pageData.pageCueMap,
+          cueIndex: playingCueIndex,
+          cueText: pageData.cues[playingCueIndex].text,
+        ),
+    };
+
     final textDisplay = TextDisplay(
       key: _pageKey,
       paragraphs: pageData.paragraphs,
@@ -1039,6 +1181,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       highlightedWordId: _highlightedWordId,
       highlightedParagraphId: _highlightedParagraphId,
       highlightedOrder: _highlightedOrder,
+      highlightedSentenceIds: highlightedSentenceIds,
     );
 
     final mangaPage = pageData.mangaPage;
@@ -1067,23 +1210,34 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           )
         : textDisplay;
 
-    // YouTube player: rendered above the subtitle text and kept outside the
-    // page-transitioned subtree (keyed by book id) so it keeps playing while
-    // the user turns pages.  The position is saved to the server on a timer.
+    // Online video player (YouTube or Bilibili): rendered above the
+    // subtitle text and kept outside the page-transitioned subtree (keyed
+    // by book id) so it keeps playing while the user turns pages.  The
+    // position is saved to the server on a timer.
     final youtube = pageData.youtube;
-    final youtubePlayer = youtube != null
+    final bilibili = pageData.bilibili;
+    final youtubePlayer = (youtube != null || bilibili != null)
         ? Padding(
             padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
             child: YoutubePlayerView(
               key: ValueKey('yt-${pageData.bookId}'),
-              videoId: youtube.videoId,
-              startPos: youtube.startPos,
+              videoId: youtube?.videoId,
+              startPos: youtube?.startPos ?? bilibili?.startPos ?? 0,
               bookId: pageData.bookId,
+              cues: youtube?.cues ?? bilibili?.cues ?? const [],
+              bilibili: bilibili,
+              serverUrl: settings.serverUrl,
               onPositionChanged: (bookId, position) {
                 ref
                     .read(readerRepositoryProvider)
                     .contentService
                     .saveYoutubePlayerData(bookId, position);
+              },
+              onActiveCueChanged: (cueIndex) {
+                if (cueIndex == _activeCueIndex) return;
+                setState(() {
+                  _activeCueIndex = cueIndex;
+                });
               },
             ),
           )
@@ -1116,50 +1270,91 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 }
               }
             },
+            onHorizontalDragStart: (details) {
+              if (!_canSwipePages(pageData)) return;
+              _isDragActive = true;
+            },
+            onHorizontalDragUpdate: (details) {
+              if (!_isDragActive) return;
+              setState(() {
+                _dragOffset += details.delta.dx;
+              });
+            },
+            onHorizontalDragCancel: () {
+              if (!_isDragActive) return;
+              setState(() {
+                _isDragActive = false;
+                _dragOffset = 0;
+              });
+            },
             onHorizontalDragEnd: (details) async {
-              if (_isMultiTermSelecting) return;
-              if (pageData.pageCount <= 1) return;
-              // Manga pages are zoomed/panned with InteractiveViewer;
-              // page turns go through the on-screen controls.
-              if (pageData.isManga) return;
+              final wasDragging = _isDragActive;
+              _isDragActive = false;
+              final dragOffset = _dragOffset;
+              // 先归零，触发平滑回弹/滑出（见下方 TweenAnimationBuilder）。
+              if (dragOffset != 0) {
+                setState(() {
+                  _dragOffset = 0;
+                });
+              }
+              if (!wasDragging) return;
+              if (!_canSwipePages(pageData)) return;
 
               final currentTextSettings = ref.read(
                 textFormattingSettingsProvider,
               );
 
-              if (!currentTextSettings.swipeNavigationEnabled) return;
-
               final velocity = details.primaryVelocity ?? 0;
               const minSwipeVelocity = 300.0;
+              // 位移阈值：屏宽的 18%。
+              // 原先只看甩动速度，导致「慢慢拖过半个屏幕再松手」也不翻页，
+              // 与直觉严重不符 —— 这是翻页手感生硬的主要原因之一。
+              final distanceThreshold = MediaQuery.sizeOf(context).width * 0.18;
 
-              if (velocity.abs() < minSwipeVelocity) return;
+              // 方向判定：优先看甩动速度；速度不足时退回看拖动位移。
+              int direction = 0;
+              if (velocity.abs() >= minSwipeVelocity) {
+                direction = velocity > 0 ? 1 : -1;
+              } else if (dragOffset.abs() >= distanceThreshold) {
+                direction = dragOffset > 0 ? 1 : -1;
+              }
+              if (direction == 0) return;
 
-              if (velocity > 0) {
+              if (direction > 0) {
                 if (pageData!.currentPage > 1) {
+                  HapticFeedback.lightImpact();
                   _loadPageWithoutMarkingRead(pageData!.currentPage - 1);
                 }
-              } else if (velocity < 0) {
+              } else {
                 if (pageData!.currentPage < pageData.pageCount) {
-                  final currentTextSettings = ref.read(
-                    textFormattingSettingsProvider,
-                  );
-
+                  HapticFeedback.lightImpact();
                   if (currentTextSettings.swipeMarksRead) {
                     ref
                         .read(readerProvider.notifier)
                         .markPageRead(pageData!.bookId, pageData!.currentPage);
                   }
-
                   _loadPageWithoutMarkingRead(pageData!.currentPage + 1);
                 }
               }
             },
-            child: settings.pageTurnAnimations
-                ? _PageTransition(
-                    isForward: _isNavigatingForward,
-                    child: content,
-                  )
-                : content,
+            child: TweenAnimationBuilder<double>(
+              // 拖动中 duration 为 0（立即跟手），松手后 200ms 平滑回弹/滑出。
+              tween: Tween<double>(begin: 0, end: _dragOffset),
+              duration: _isDragActive
+                  ? Duration.zero
+                  : const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              builder: (context, value, child) => Transform.translate(
+                offset: Offset(value, 0),
+                child: child,
+              ),
+              child: settings.pageTurnAnimations
+                  ? _PageTransition(
+                      isForward: _isNavigatingForward,
+                      child: content,
+                    )
+                  : content,
+            ),
           ),
         ),
             ),
@@ -1191,10 +1386,18 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   void _handleTap(TextItem item, BuildContext context) async {
     if (item.isSpace) return;
 
+    // Answer the finger before the network does.  The card cannot be shown
+    // until a fetch returns, and the buzz used to happen only after that fetch
+    // (or not at all when it failed), which is what made a tap read as ignored.
+    // The web reader has the same rule: _tap_press answers on touchstart.
+    HapticFeedback.lightImpact();
+
     TermTooltipClass.close();
 
     try {
       if (item.wordId == null) return;
+
+      final seq = ++_tooltipSeq;
 
       final renderBox = context.findRenderObject() as RenderBox;
       final termRect = renderBox.localToGlobal(Offset.zero) & renderBox.size;
@@ -1202,52 +1405,142 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       final termTooltip = await ref
           .read(readerProvider.notifier)
           .fetchTermTooltip(item.wordId!);
+      // Superseded while we waited: a second tap began a double tap (which runs
+      // its own feedback and closes this card), or moved on to another word.
+      // Drawing now would stack this card on top of the newer gesture.
+      if (seq != _tooltipSeq) return;
       if (termTooltip != null && termTooltip.hasData && mounted) {
-        TermTooltipClass.show(context, termTooltip, termRect);
+        final langId = item.langId;
+        // Auto pronounce (Settings -> Reading): read the term as the card opens,
+        // so the reader does not have to reach for the speaker button.
+        if (ref.read(settingsProvider).autoPronounceOnTap) {
+          unawaited(
+            ref
+                .read(sentenceTTSProvider.notifier)
+                .speakSentence(termTooltip.term, 0),
+          );
+        }
+        TermTooltipClass.show(
+          context,
+          termTooltip,
+          termRect,
+          onSpeak: () => unawaited(
+            ref
+                .read(sentenceTTSProvider.notifier)
+                .speakSentence(termTooltip.term, 0),
+          ),
+          onSentenceTranslation: langId == null
+              ? null
+              : () => _translateSentenceFromCard(item, langId),
+        );
       }
     } catch (e) {
       return;
     }
   }
 
-  void _handleDoubleTap(TextItem item) async {
+  /// Sentence translation, entered from the button on the word card.
+  ///
+  /// The card goes first: the translation is a modal sheet, and a card left
+  /// behind in the overlay would float above it.
+  void _translateSentenceFromCard(TextItem item, int langId) {
+    final sentence = _extractSentence(item);
+    if (sentence.isEmpty) return;
+    TermTooltipClass.close();
+    _showSentenceTranslation(sentence, langId);
+  }
+
+  /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.
+  ///
+  /// Mirrors the web reader's Quick Set Status Mode double tap
+  /// (_quick_cycle_status in lute-touch.js).  A word that is not on the cycle yet
+  /// -- status 0, or one of the skipped 2/4/5 -- enters at 1, as the web does.
+  void _handleDoubleTap(TextItem item) {
+    final wordId = item.wordId;
+    if (wordId == null) return;
+
+    // Supersede the card the pair's first tap may still be fetching (see
+    // _tooltipSeq): otherwise it lands on top of the status change.
+    _tooltipSeq++;
     TermTooltipClass.close();
 
-    // Only handle double tap for terms from the server (items with wordId)
-    if (item.wordId == null) return;
-    if (item.langId == null) return;
+    final current =
+        RegExp(r'status(\d+)').firstMatch(item.statusClass)?.group(1) ?? '0';
+    final idx = _statusCycle.indexOf(current);
+    final next = idx == -1
+        ? _statusCycle.first
+        : _statusCycle[(idx + 1) % _statusCycle.length];
 
-    // Store original identifiers before opening term form
-    _originalTextItem = item;
-    _highlightedWordId = null;
-    _highlightedParagraphId = null;
-    _highlightedOrder = null;
+    // Same guard as the web: a word already carrying this status gets no write.
+    if (next == current) return;
+
+    HapticFeedback.mediumImpact();
 
     ApiLogger.logState(
       '_handleDoubleTap',
-      details: 'wordId=${item.wordId}, langId=${item.langId}',
+      details: 'wordId=$wordId, $current -> $next',
     );
 
+    // Repaint immediately.  The write below is a fetch-then-post, far too slow to
+    // gate the colour on, and the web reader's status swap is just as eager.
+    unawaited(
+      ref.read(readerProvider.notifier).updateTermStatus(wordId, next),
+    );
+
+    _originalTextItem = item;
+    _triggerWordGlow();
+
+    // Serialise writes per word: cycling is a read-modify-write, so two
+    // overlapping cycles can read the same starting status and collapse into one
+    // step (tap 1 -> 3 -> 99 and land on 3).
+    final previousWrite = _statusWrites[wordId] ?? Future<void>.value();
+    _statusWrites[wordId] = previousWrite.then(
+      (_) => _persistStatus(wordId, next, current),
+    );
+  }
+
+  /// Post [status] for one word, undoing the optimistic update if the write does
+  /// not stick.
+  ///
+  /// Goes through the term form instead of sending the status alone: the only
+  /// write endpoint, `/read/edit_term/<id>`, submits a whole term, so a bare
+  /// status would blank that term's other fields.
+  Future<void> _persistStatus(
+    int wordId,
+    String status,
+    String previous,
+  ) async {
     try {
       final termForm = await ref
           .read(readerProvider.notifier)
-          .fetchTermFormById(item.wordId!);
-      if (termForm != null && mounted) {
-        ApiLogger.logState(
-          '_handleDoubleTap',
-          details: 'termId=${termForm.termId}',
-        );
-        _showTermForm(
-          termForm,
-          sentence: _extractSentence(item),
-          initialReaderStatus: RegExp(
-            r'status(\d+)',
-          ).firstMatch(item.statusClass)?.group(1),
-        );
+          .fetchTermFormById(wordId);
+      if (termForm == null) {
+        await _revertStatus(wordId, previous);
+        return;
       }
+      final success = await ref
+          .read(readerProvider.notifier)
+          .saveTerm(termForm.copyWith(status: status));
+      if (!success) await _revertStatus(wordId, previous);
     } catch (e) {
-      ApiLogger.logError('_handleDoubleTap', e);
-      return;
+      ApiLogger.logError('_persistStatus', e, details: 'wordId=$wordId');
+      await _revertStatus(wordId, previous);
+    }
+  }
+
+  Future<void> _revertStatus(int wordId, String previous) async {
+    try {
+      // updateTermStatus also pushes the change into the sentence view.
+      await ref.read(readerProvider.notifier).updateTermStatus(wordId, previous);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not update status'),
+          duration: Duration(milliseconds: 1500),
+        ),
+      );
+    } catch (e) {
+      ApiLogger.logError('_revertStatus', e, details: 'wordId=$wordId');
     }
   }
 
@@ -1279,14 +1572,38 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     });
   }
 
+  /// Long press on a single word opens its term edit form.
+  ///
+  /// This is the web reader's Quick Set Status Mode gesture
+  /// (show_term_edit_form in lute-touch.js): a long press is what reaches the
+  /// form.  Reached from the reader text, the manga overlay, and the end of a
+  /// one-word multi-select.
   void _handleLongPress(TextItem item) {
-    // Long press release on a single term opens sentence translation.
-    if (item.wordId == null) return;
-    if (item.langId == null) return;
+    _openTermForm(item);
+  }
 
-    final sentence = _extractSentence(item);
-    if (sentence.isNotEmpty) {
-      _showSentenceTranslation(sentence, item.langId!);
+  /// Fetch a word's term data and open the edit form for it.
+  ///
+  /// The form is built from what the server returns, so a round trip happens
+  /// before the sheet appears; the long-press haptics in text_display.dart cover
+  /// that wait.
+  Future<void> _openTermForm(TextItem item) async {
+    final wordId = item.wordId;
+    if (wordId == null) return;
+    try {
+      final termForm = await ref
+          .read(readerProvider.notifier)
+          .fetchTermFormById(wordId);
+      if (termForm == null || !mounted) return;
+      _showTermForm(
+        termForm,
+        sentence: _extractSentence(item),
+        initialReaderStatus: RegExp(
+          r'status(\d+)',
+        ).firstMatch(item.statusClass)?.group(1),
+      );
+    } catch (e) {
+      ApiLogger.logError('_openTermForm', e, details: 'wordId=$wordId');
     }
   }
 
@@ -1705,6 +2022,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     });
   }
 
+  /// Sentence translation sheet.  Reached from the word card's Sentence button
+  /// (see _translateSentenceFromCard).
   void _showSentenceTranslation(String sentence, int languageId) {
     final repository = ref.read(readerRepositoryProvider);
 

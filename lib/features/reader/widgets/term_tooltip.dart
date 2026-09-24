@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/term_tooltip.dart';
 import '../../../shared/theme/theme_extensions.dart';
+import '../../../core/network/session_manager.dart';
 import '../../settings/providers/settings_provider.dart';
 
 String _formatTranslation(String? translation) {
@@ -31,11 +32,19 @@ class _AnimatedTermTooltip extends StatefulWidget {
   final Offset position;
   final Key? widgetKey;
 
+  /// Read the term aloud.  Null hides the button.
+  final VoidCallback? onSpeak;
+
+  /// Show the translation of the sentence the term sits in.  Null hides it.
+  final VoidCallback? onSentenceTranslation;
+
   const _AnimatedTermTooltip({
     required this.termTooltip,
     required this.onClose,
     required this.position,
     this.widgetKey,
+    this.onSpeak,
+    this.onSentenceTranslation,
   });
 
   @override
@@ -55,10 +64,13 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
       duration: const Duration(milliseconds: 100),
       vsync: this,
     );
+    // 缩放用 easeOutBack：轻微过冲，让弹窗「弹」出来而不是匀速放大，
+    // 更有生命感。起点从 0.9 收到 0.92、配合 100ms 时长，过冲幅度很小。
     _scaleAnimation = Tween<double>(
-      begin: 0.9,
+      begin: 0.92,
       end: 1.0,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
+    // 淡入保持 easeOut，避免与缩放叠加后显得晃。
     _fadeAnimation = Tween<double>(
       begin: 0.0,
       end: 1.0,
@@ -84,7 +96,11 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
           opacity: _fadeAnimation,
           child: ScaleTransition(
             scale: _scaleAnimation,
-            child: _TooltipContent(termTooltip: widget.termTooltip),
+            child: _TooltipContent(
+              termTooltip: widget.termTooltip,
+              onSpeak: widget.onSpeak,
+              onSentenceTranslation: widget.onSentenceTranslation,
+            ),
           ),
         ),
       ),
@@ -94,8 +110,14 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
 
 class _TooltipContent extends ConsumerWidget {
   final TermTooltip termTooltip;
+  final VoidCallback? onSpeak;
+  final VoidCallback? onSentenceTranslation;
 
-  const _TooltipContent({required this.termTooltip});
+  const _TooltipContent({
+    required this.termTooltip,
+    this.onSpeak,
+    this.onSentenceTranslation,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -138,6 +160,7 @@ class _TooltipContent extends ConsumerWidget {
                       termTooltip.imageUrl!,
                       ref.read(settingsProvider).serverUrl,
                     ),
+                    headers: SessionManager.authHeaders(),
                     fit: BoxFit.cover,
                     errorBuilder: (context, error, stackTrace) =>
                         const SizedBox.shrink(),
@@ -203,8 +226,63 @@ class _TooltipContent extends ConsumerWidget {
                 ),
               ),
             ],
+            if (onSpeak != null || onSentenceTranslation != null) ...[
+              const SizedBox(height: 6),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (onSpeak != null)
+                    _TooltipAction(
+                      icon: Icons.volume_up,
+                      label: 'Pronounce',
+                      onPressed: onSpeak!,
+                    ),
+                  if (onSpeak != null && onSentenceTranslation != null)
+                    const SizedBox(width: 2),
+                  if (onSentenceTranslation != null)
+                    _TooltipAction(
+                      icon: Icons.translate,
+                      label: 'Sentence',
+                      onPressed: onSentenceTranslation!,
+                    ),
+                ],
+              ),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A compact action button for the tooltip card.
+///
+/// A tap lands here rather than on the card's own close handler: a child
+/// recogniser wins the gesture arena, so pressing a button never dismisses the
+/// card.
+class _TooltipAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  const _TooltipAction({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        textStyle: const TextStyle(fontSize: 12),
       ),
     );
   }
@@ -235,8 +313,10 @@ class TermTooltipClass {
   static void show(
     BuildContext context,
     TermTooltip termTooltip,
-    Rect termRect,
-  ) {
+    Rect termRect, {
+    VoidCallback? onSpeak,
+    VoidCallback? onSentenceTranslation,
+  }) {
     close();
     _makeVisibleRequested = false;
 
@@ -252,6 +332,8 @@ class TermTooltipClass {
           onClose: close,
           position: Offset.zero,
           widgetKey: _tooltipKey,
+          onSpeak: onSpeak,
+          onSentenceTranslation: onSentenceTranslation,
         ),
       ),
     );
@@ -291,6 +373,8 @@ class TermTooltipClass {
             onClose: close,
             position: _tooltipPosition,
             widgetKey: _tooltipKey,
+            onSpeak: onSpeak,
+            onSentenceTranslation: onSentenceTranslation,
           ),
         );
         Overlay.of(context).insert(_currentEntry!);

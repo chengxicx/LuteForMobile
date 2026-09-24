@@ -73,6 +73,32 @@ class ReaderNotifier extends Notifier<ReaderState> {
   // and don't overlap (prevents duplicate fetches for shared terms)
   Future<void>? _prefetchQueue;
 
+  /// Parsed term tooltips, keyed by word id.
+  ///
+  /// Deliberately independent of `enableTooltipCaching` -- that switch governs
+  /// the on-disk cache ("prefetch a whole page, keep it 48 hours") and is off by
+  /// default, which left every single tap on a word as a bare network round
+  /// trip.  This layer only has to make a tap instant, so it is unconditional.
+  /// Entries are dropped when a term changes (see _forgetTooltip); the rest die
+  /// with the notifier, so nothing needs invalidating across pages.
+  final Map<int, TermTooltip> _tooltipMemory = {};
+  static const int _tooltipMemoryMax = 300;
+
+  void _rememberTooltip(int termId, TermTooltip tooltip) {
+    if (!_tooltipMemory.containsKey(termId) &&
+        _tooltipMemory.length >= _tooltipMemoryMax) {
+      // Map preserves insertion order, so this drops the oldest entry.
+      _tooltipMemory.remove(_tooltipMemory.keys.first);
+    }
+    _tooltipMemory[termId] = tooltip;
+  }
+
+  /// Drop a term's cached tooltip.  Must run whenever a term's status or content
+  /// changes, or the card keeps showing the pre-edit version.
+  void _forgetTooltip(int termId) {
+    _tooltipMemory.remove(termId);
+  }
+
   @override
   ReaderState build() {
     return const ReaderState();
@@ -638,6 +664,11 @@ class ReaderNotifier extends Notifier<ReaderState> {
   }
 
   Future<TermTooltip?> fetchTermTooltip(int termId) async {
+    // Memory first: the only path with no I/O at all, and the one that makes a
+    // tap on an already-seen word instant.
+    final memo = _tooltipMemory[termId];
+    if (memo != null) return memo;
+
     final settings = ref.read(settingsProvider);
 
     // If tooltip caching is enabled, check the cache first
@@ -653,6 +684,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
           final tooltip = contentService.parser.parseTermTooltip(
             cachedEntry.tooltipHtml,
           );
+          _rememberTooltip(termId, tooltip);
           return tooltip;
         }
       } catch (e) {
@@ -682,6 +714,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
           }
         }
 
+        _rememberTooltip(termId, tooltip);
         return tooltip;
       }
 
@@ -752,6 +785,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
   Future<bool> editTerm(int termId, Map<String, dynamic> data) async {
     try {
       await _repository.editTerm(termId, data);
+      _forgetTooltip(termId);
 
       // Invalidate tooltip cache for this term if caching is enabled
       final settings = ref.read(settingsProvider);
@@ -778,6 +812,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
     try {
       if (termForm.termId != null) {
         await _repository.editTerm(termForm.termId!, termForm.toFormData());
+        _forgetTooltip(termForm.termId!);
         await updateTermStatus(termForm.termId!, termForm.status);
 
         // No longer needed - getPageContent handles caching when fresh data is loaded
@@ -815,6 +850,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
             for (final parent in termForm.parents) {
               if (parent.id != null) {
                 await tooltipCacheService.removeFromCache(parent.id!);
+                _forgetTooltip(parent.id!);
               }
             }
           } catch (e) {
@@ -835,6 +871,11 @@ class ReaderNotifier extends Notifier<ReaderState> {
   }
 
   Future<void> updateTermStatus(int termId, String status) async {
+    // The card's content depends on the term's status, so expire it even when the
+    // term is not on the current page -- the memory cache is shared with the
+    // sentence view and with pages fetched later.
+    _forgetTooltip(termId);
+
     final currentPageData = state.pageData;
     if (currentPageData == null) {
       return;

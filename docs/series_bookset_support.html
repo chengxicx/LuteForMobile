@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="VvxM6cACUzdKbaJ626pCb1">
+<head data-page-node-id="5JoHLNZCcHzNCiBPU39MY7">
+<meta charset="UTF-8" data-page-node-id="eLvB2FkTmpiShesZrkhU5Y">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="QIqi3Fnmip3HUvtrCsSTHy">
+<title>LuteForMobile Book Set（tag 聚合）支持 · 实施记录</title>
+<style>
+  :root {
+    --bg: #FAF9F7;
+    --surface: #FFFFFF;
+    --border: #E4E1DC;
+    --ink: #1F1D1B;
+    --ink-2: #55514C;
+    --ink-3: #8A857E;
+    --accent: #2F5C99;
+    --accent-soft: #EDF2FA;
+    --good: #2E7D46;
+    --good-soft: #ECF6EF;
+    --warn: #A8541A;
+    --warn-soft: #FBF1E7;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 48px 24px 72px;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 29px; line-height: 1.3; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-3); font-size: 14.5px; }
+  .sub code { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+
+  h2 {
+    font-size: 19px; margin: 44px 0 16px; letter-spacing: -0.01em;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 15.5px; margin: 26px 0 10px; }
+  p { margin: 0 0 14px; color: var(--ink-2); }
+  ul { margin: 0 0 14px; padding-left: 22px; color: var(--ink-2); }
+  li { margin-bottom: 7px; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 22px 0 8px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  .card .k { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .card .v { font-size: 25px; font-weight: 650; margin: 6px 0 4px; letter-spacing: -0.02em; color: var(--good); }
+  .card .n { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 8px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  td { color: var(--ink-2); }
+  tr:last-child td { border-bottom: none; }
+  table.boxed { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table.boxed th { background: #F5F3F0; }
+  td.mono, span.mono { font-family: var(--mono); font-size: 13px; }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+  .pill.ok { background: var(--good-soft); color: var(--good); }
+  .pill.wait { background: var(--warn-soft); color: var(--warn); }
+
+  pre { background: #2B2926; color: #EDEAE5; border-radius: 10px; padding: 15px 18px;
+        overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.65; margin: 14px 0; }
+  code.inl { font-family: var(--mono); font-size: 13.5px; background: #F2F0ED;
+             padding: 1px 6px; border-radius: 5px; color: var(--ink); }
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent);
+          border-radius: 0 10px 10px 0; padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--ink-2); }
+  .note.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .note strong { color: var(--ink); }
+
+  .flow { display: grid; gap: 0; margin: 18px 0; }
+  .step { display: grid; grid-template-columns: 34px 1fr; gap: 14px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
+  .step:last-child { border-bottom: none; }
+  .step .num { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+               font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 3px; }
+  .step .body { color: var(--ink-2); font-size: 14.5px; }
+  .step .body b { color: var(--ink); }
+
+  footer { margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--border);
+           font-size: 13px; color: var(--ink-3); }
+  @media (max-width: 700px) { .cards { grid-template-columns: repeat(2, 1fr); } body { padding: 32px 16px 56px; } }
+</style>
+</head>
+<body data-page-node-id="ujGGu4pXINe8ZCpbGvPlFd">
+<div class="wrap" data-page-node-id="VqzThYAKZlnJi5FqQpP8qX">
+
+  <header data-page-node-id="mjItl5fdelUBDjwSaVFUzA">
+    <h1 data-page-node-id="dnCPyJTXWrLt3M9LTFHifC">Book Set（服务端 tag 聚合）支持</h1>
+    <div class="sub" data-page-node-id="pcaDexh3nUu85uPQRj1iMv">
+      实施记录 · 起因「打不开 ai-story」 &nbsp;·&nbsp;
+      客户端 <code data-page-node-id="wcv2WUmyTJbGnbSF8Gz7gA">lib/</code> &nbsp;·&nbsp; 服务端 <code data-page-node-id="uHukTHY5g4wgASBdR0m13C">lute-v3</code> &nbsp;·&nbsp; 2026-09-23
+    </div>
+  </header>
+
+  <p data-page-node-id="KJIbQ43Mpd0nhi5ESR4LPn">
+    书架上的 <code class="inl" data-page-node-id="ZWGo1HAEcGYOoTmQ8ahKnF">ai-story</code> 点开是空白页。根因不在网络、不在缓存、也不是账号问题，
+    而是**客户端不认识服务端的 tag 聚合行**。本文件记录根因、服务端契约、客户端改动，
+    以及每一项是怎么验证的、哪些还没验证。
+  </p>
+
+  <div class="cards" data-page-node-id="rAOJaVMcJM0f0kjf6bQtV6">
+    <div class="card" data-page-node-id="tqwVLc1apuHI1TGtiYoxmw"><div class="k" data-page-node-id="22OLZuCvVehgOwAM9FxqFK">被隐藏的书</div><div class="v" data-page-node-id="j4DK28aNWXzQ5UkhVfthNq">212</div><div class="n" data-page-node-id="nYuy5o8ZU3U4v2CwoSH14J">原先在 app 里完全看不到</div></div>
+    <div class="card" data-page-node-id="xdMuYLfVqSQJ01DmzL1XLu"><div class="k" data-page-node-id="H2xYXpPFHz30N1i8SIAbxG">Book Set</div><div class="v" data-page-node-id="IljDHpfLVgxYJ9LRnfYugz">8</div><div class="n" data-page-node-id="yOP9RJ1sluw8oyaFnCacqE">服务端 <span class="mono" data-page-node-id="uHS5PWBOxlaGxR05S3v2Gn">book_series_tags</span> 配置</div></div>
+    <div class="card" data-page-node-id="STI1IH2wZ9LT59a5Nkjm3q"><div class="k" data-page-node-id="QrsPNCc7CE2hVwVBncL0Nx">新增告警 / 错误</div><div class="v" data-page-node-id="hwEF37BVRXyO40Bn6uLKg6">0</div><div class="n" data-page-node-id="0zcKwVFIXx7FuqYwZgpomX">与 git HEAD 基线逐条对比</div></div>
+    <div class="card" data-page-node-id="EfK5o8DOIM6uCMJ5FZyslL"><div class="k" data-page-node-id="7n30DIFEoObvmPzHxwfUDa">单元测试</div><div class="v" data-page-node-id="oocfowIURvsKI0A1DOZJje">12</div><div class="n" data-page-node-id="la4gJVWvAZ0QICC7b2BaNv">全部通过</div></div>
+  </div>
+
+  <h2 data-page-node-id="YfL96L7CAV9eAWaCUJn1d3">一、根因</h2>
+
+  <p data-page-node-id="IXqVMdFvQmf6XRKkpvlso3">
+    服务端 Song（lute-v3）有一套「Book Set」机制：某个 tag 被配置成 Book Set 后，
+    它下面的书**不再逐本返回**，而是聚合成一行。
+  </p>
+
+  <pre data-page-node-id="OSqPc0vG893tBFjBLGGY7Q">-- lute/book/datatables.py  _series_union_base_sql()  series_branch
+SELECT
+    NULL AS BkID,              -- ← 聚合行没有自己的书 id
+    agg.lgid AS LgID,
+    L.LgName AS LgName,
+    agg.tagtext AS BkTitle,    -- ← 标题就是 tag 名
+    1 AS PageNum,
+    agg.bookcount AS PageCount,-- ← PageCount 是「书数」，不是页数
+    ...
+    'series' AS BookType,      -- ← 唯一的判别标志
+    agg.tagtext AS SeriesTag,
+    agg.bookcount AS SeriesBookCount,
+    agg.readcount AS SeriesReadCount,
+    agg.statspending AS SeriesStatsPending</pre>
+
+  <p data-page-node-id="mIOhhpQwSprpkpgyoDzf46">客户端此前完全不知道 <code class="inl" data-page-node-id="aJsLTkEjztjyGQ63W9YnXI">BookType='series'</code> 的存在（全项目 grep <span class="mono" data-page-node-id="2apYWF0YJzvADYPXgXnDNk">series</span> 只有一句无关注释），于是这条链路断了：</p>
+
+  <div class="flow" data-page-node-id="8YWZL1diw5QvJppNHke0D0">
+    <div class="step" data-page-node-id="q8OsYt5A0D516MzyXMXUmc"><div class="num" data-page-node-id="YUWhJNNGh2Oqh3Z3xjGSxN">1</div><div class="body" data-page-node-id="3Fw7V9ZdnFuPAZFP3ktUSz">服务端返回聚合行，<b data-page-node-id="xHF9dgmYBQSCgOjZW5EMmi">BkID = NULL</b></div></div>
+    <div class="step" data-page-node-id="m6bsBctfEV7JYErtJsOwQ1"><div class="num" data-page-node-id="qo1MA6u11h5tN1MtKhpoTu">2</div><div class="body" data-page-node-id="SB284JWBlAcGxhSnYbZcab">客户端 <span class="mono" data-page-node-id="Gdq0A8uGmhLmTrThDfiLIf">Book.fromJson</span> 的容错转换把 NULL 变成 <b data-page-node-id="wufcEqYxlKGBUwFeIqZeoh">0</b></div></div>
+    <div class="step" data-page-node-id="8oT44wAbjQqJVsGNvwDGQE"><div class="num" data-page-node-id="2MDxVO2CNBLc52FIuQUgiP">3</div><div class="body" data-page-node-id="tuVTzV3iJUn77V6n5H05UC">被当成一本 id=0 的普通书，卡片显示 <b data-page-node-id="BgMHZU9o1ywZHpAf6UdFwg">「1/12」这种页数式进度</b>（其实 1 是常量、12 是书数）</div></div>
+    <div class="step" data-page-node-id="uzpJfEIlYDZgwiEVM3llfk"><div class="num" data-page-node-id="LgBrnDDpgPwChxWN4ZllK3">4</div><div class="body" data-page-node-id="BLvy0ybgvch4q26lkxssEn">点击 → 请求 <span class="mono" data-page-node-id="UfPuBy6CLoTqro27GIPJpV">/book/edit/0</span> → 服务端 <span class="mono" data-page-node-id="Ziksd7TSHhBlBpDiCmmr0n">ValueError: No book with id 0 found</span> → 阅读器空白</div></div>
+    <div class="step" data-page-node-id="X7CZ32Cr9T3iBoEVncNDIH"><div class="num" data-page-node-id="ZhqEkvZeFvbGm8mOeggp0k">5</div><div class="body" data-page-node-id="1jVdqAGOXFW34lyiKterNL">上一轮为「幽灵书」加的 <span class="mono" data-page-node-id="mBwtCCKDj7vXlV9gK1itdj">id &gt; 0</span> 过滤，恰好把聚合行一并丢掉 —— 书架不再报错，但 <b data-page-node-id="xAFFb5y1nlFs4PrTiNYzzK">212 本书连同 8 个入口一起消失了</b></div></div>
+  </div>
+
+  <div class="note warn" data-page-node-id="88xF85LEPbSa5CZK6ZaTTh">
+    <strong data-page-node-id="ff9NdtyFAQqpZJrx8EgqRI">教训：</strong>容错转换不能把「无效」静默变成「合法值」，尤其不能用于主键。
+    它把「整页崩溃」变成了「单本书静默损坏」，反而更难排查。正确做法是让业务语义
+    （<span class="mono" data-page-node-id="AyjYxPrdJeVkLzUaDOsLuk">isSeries</span>）参与判断，而不是只看 id 的数字。
+  </div>
+
+  <h2 data-page-node-id="lg535w5RFzsrRpKEd7bTnf">二、服务端契约（不需要改服务端）</h2>
+
+  <p data-page-node-id="NOCFDvzYlkCtnYsFFzMHIX">
+    关键发现：服务端的聚合开关是「搜索词或 tag 过滤非空就关闭」，并且已经暴露了
+    <code class="inl" data-page-node-id="LiOVhMGZ9iWDXCMDguJBBy">filtTag</code> 表单字段。这意味着客户端**不需要新增任何服务端接口**
+    就能拿到聚合行背后的成员书。
+  </p>
+
+  <pre data-page-node-id="S0xnKIlc4uGez3849yfGEC"># lute/book/datatables.py
+use_series_aggregation = (
+    len(series_tags) &gt; 0 and not search_value.strip() and not tag_filter
+)</pre>
+
+  <table class="boxed" data-page-node-id="0bzdoTKAuCwzsinK1j2Cka">
+    <thead data-page-node-id="MRpD9Ih2dZDjlfOOhvvBbo"><tr data-page-node-id="ms8sOEGiD7lE7DkspS2clT"><th data-page-node-id="qFpFBBogYQGS2zTw98RdYr">客户端请求</th><th data-page-node-id="1dKmo0Cmyzbhx33OmRMKcT">服务端行为</th><th data-page-node-id="Ci2xlhpAilcV5TZTpFQeKO">用途</th></tr></thead>
+    <tbody data-page-node-id="IgEDMl73vj1ZrH2DqLOohC">
+      <tr data-page-node-id="AnyBcRSBgJg1MJgreGY3qK">
+        <td class="mono" data-page-node-id="HEYVvpaPrljr6qCblLXDnV">POST /book/datatables/active<br data-page-node-id="SkFoonnDlDmH3eY9zU2y1y">（无 filtTag / 无搜索词）</td>
+        <td data-page-node-id="1jTEOejzgFJLaAUb8EisaK">返回 <b data-page-node-id="yjGctrjrLGtZzBVYU63dVi">8 个聚合行 + 57 本扁平书</b></td>
+        <td data-page-node-id="AC4LnScyeOte0CC5bRkFLF">书架列表</td>
+      </tr>
+      <tr data-page-node-id="TcX0JTKxSHUlIK9wKEo7Tj">
+        <td class="mono" data-page-node-id="23pdOtSea0kCB55LN5aSrm">POST /book/datatables/active<br data-page-node-id="bhNTVRy0lFamuBvPiGaXOk">+ <b data-page-node-id="F0aKW3caXTGygEpguo2zH9">filtTag=ai-story</b></td>
+        <td data-page-node-id="Tjiwlvm5g8mRhf48yXMCSK">关闭聚合，返回该 tag 下 <b data-page-node-id="Qc2O2up9Un7pfkAyPiaYsh">12 本扁平书</b></td>
+        <td data-page-node-id="gK29IRufS65ARo3ydZGtKf">Book Set 详情页</td>
+      </tr>
+      <tr data-page-node-id="YyU311PsFIOEyfUDiR4QN0">
+        <td class="mono" data-page-node-id="potyGuo2kLnwhYjoH8sHIg">POST /book/datatables/active<br data-page-node-id="d655M2I6cymGFFl6Q6FWLJ">+ <span class="mono" data-page-node-id="Cj8aMPnjn9oK6BuZ9gdFgh">search[value]=xxx</span></td>
+        <td data-page-node-id="8YchFEdnHhZCNYZfl4E67F">关闭聚合，返回匹配的扁平书</td>
+        <td data-page-node-id="pi57l3eRjpGS5MQ1qzkZt6">搜索（服务端既有行为，客户端未改）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 data-page-node-id="Nlk0zVytbIVJXjGb0nDQIk">三、客户端改动</h2>
+
+  <table class="boxed" data-page-node-id="MssW1hKbSfmfQZ5GIFX1To">
+    <thead data-page-node-id="HmZubhekGp93YEqUxnFVR6"><tr data-page-node-id="PenNaeQIBT1BoImCoE9rv5"><th data-page-node-id="A5MqZxGQThbLKmIi1PPmMn">#</th><th data-page-node-id="ClIKtwedITmJqDV0bBUosZ">改动</th><th data-page-node-id="t1BJ2yFS1BQJLbDRITMBh2">文件</th></tr></thead>
+    <tbody data-page-node-id="pb8RvxqryCkR0v1CnW0HUg">
+      <tr data-page-node-id="w8TNJwWHff24EzqfasWsRE">
+        <td data-page-node-id="ivGX7nvSGjBX7RvFfqdkUi">1</td>
+        <td data-page-node-id="PMwQBhkpPBpP7hJAnLyQoE">新增 <span class="mono" data-page-node-id="mljYrndlwI2IOeIzyoNzwp">bookType / seriesTag / seriesBookCount / seriesReadCount / seriesStatsPending</span> 字段与 <span class="mono" data-page-node-id="2NlzEGbPY3ODyvUYixv7kh">isSeries</span>、<span class="mono" data-page-node-id="vZ226NUJQfhKl02D59x4tT">seriesCount</span>、<span class="mono" data-page-node-id="E3EpH2wVEATMpNoPid9k0P">hasTermCount</span> getter；进度改为「已读/总书数」；<b data-page-node-id="3oG6U5Haeon9DvNIOEDpFM">字段同步进 toJson</b>（否则缓存读回来会退化成幽灵书）</td>
+        <td class="mono" data-page-node-id="HDxA4aR73MJ9Lwgim0XDnV">books/models/book.dart</td>
+      </tr>
+      <tr data-page-node-id="nx226ygQlHnrEXEmxtrA9e">
+        <td data-page-node-id="eYgARr8QV2a9WlNEDsCTbK">2</td>
+        <td data-page-node-id="ey1qpBItHRiBXiz4qvZg9I">书架过滤从 <span class="mono" data-page-node-id="UIBCGe6YPiBd1ATNC3svSb">id &gt; 0</span> 改为 <span class="mono" data-page-node-id="QISCI7e4GeSNWcCaGEimvu">id &gt; 0 || isSeries</span>，抽出共用的 <span class="mono" data-page-node-id="PtUR6MxWb0UvoAUJM9NfCj">_parseBookList</span>；新增 <span class="mono" data-page-node-id="4um7PRY9D7EcDpaDZBZCyb">getSeriesBooks(tag)</span></td>
+        <td class="mono" data-page-node-id="dUHFv6jcsX0AxrGGHvuUCN">core/network/content_service.dart</td>
+      </tr>
+      <tr data-page-node-id="PyfR7Zyuy8yKEcMD1R6FGX">
+        <td data-page-node-id="WF14rQNmUDf7EWMsO5IqYN">3</td>
+        <td data-page-node-id="g7nWwToscHTxee6C8Frgo5"><span class="mono" data-page-node-id="Vm0xeChSKoBLyAAtVYM9DH">getActiveBooks / getArchivedBooks</span> 增加 <span class="mono" data-page-node-id="wMyBJvJ2YipEDeMMUJduUw">tagFilter</span> 参数（映射到服务端 <span class="mono" data-page-node-id="iinUh1CyMIFIz7c2EEYgfS">filtTag</span>）</td>
+        <td class="mono" data-page-node-id="jQhdQtTIluvEojxLhBPZTN">core/network/api_service.dart</td>
+      </tr>
+      <tr data-page-node-id="WdrVlTCakpqo7zXaikslzl">
+        <td data-page-node-id="eWRrnydn93GxoYGTUP1Z4T">4</td>
+        <td data-page-node-id="Y9GqHXEkPWTLvvDaxdJ9k8">仓库层暴露 <span class="mono" data-page-node-id="5w2K76Py55gHJBu7Sozsud">getSeriesBooks(tag, {archived})</span>，复用语言 id 补齐逻辑</td>
+        <td class="mono" data-page-node-id="9EDUqk5wY6CLSouBNzwAsH">books/repositories/books_repository.dart</td>
+      </tr>
+      <tr data-page-node-id="jyxJw6rCFA4xRx2ZRZgRwP">
+        <td data-page-node-id="lR2LhFT59zu8hjcBYJ7NMp">5</td>
+        <td data-page-node-id="5NhOYZ77cP07s4kTnd0VLZ"><b data-page-node-id="dCGhobFnDhUsA4YFybDQ2z">id=0 副作用修复</b>：统计刷新与音频元数据解析都排除聚合行（否则会请求 <span class="mono" data-page-node-id="w0gPlBGZwslWeCrSojEOD6">/book/table_stats/0</span>、<span class="mono" data-page-node-id="t5Nhk5Il16OthezYNMc2Ij">/book/edit/0</span> 并让整批刷新失败）；合并/去重改用 <span class="mono" data-page-node-id="DwavHOIqphGKG07CooKcbs">_bookIdentity()</span>（聚合行以 tag+语言为键），避免多行 id=0 互相串味</td>
+        <td class="mono" data-page-node-id="mYSFMiEM3H5SqwpCAQGJWK">books/providers/books_provider.dart</td>
+      </tr>
+      <tr data-page-node-id="AuDg0EFdkCzaGfE1ECefZi">
+        <td data-page-node-id="owKGzp0BbxjAeeDuzOjfSL">6</td>
+        <td data-page-node-id="K7wahMCQfmBIJi6GNCwXCX">新增 Book Set 详情页：汇总头部（书数 / 已读 / 总词数 / 进度条 / Continue）+ 成员书列表，支持下拉刷新</td>
+        <td class="mono" data-page-node-id="VE7vS3nGz2QyYAhOgSgMIV">books/widgets/series_detail_screen.dart <span class="pill ok" data-page-node-id="KBXbqiNeliUEmGJEhDKeF8">新文件</span></td>
+      </tr>
+      <tr data-page-node-id="5JtNWhzULvj5sJkDNCSUut">
+        <td data-page-node-id="69ux9uv6yMctHPOMbUvYD3">7</td>
+        <td data-page-node-id="9ZvWzS5k7B03NWeQazHZD4">卡片区分两种形态：聚合行用集合图标 + <span class="mono" data-page-node-id="rFVgKMx4ljpqHHO8m0oJ8M">Book Set · N</span> 标签 + 已读进度条，隐藏与标题重复的 tag chip</td>
+        <td class="mono" data-page-node-id="DbJmJNrg7Uh8joOf2o7Abr">books/widgets/book_card.dart</td>
+      </tr>
+      <tr data-page-node-id="mSzCjUhCslJIB3alhLWgU7">
+        <td data-page-node-id="fDKsfFrceUOFv2YEtb13E0">8</td>
+        <td data-page-node-id="hGUnkHLSXALzG8EnXw8oIk">点击聚合行 → push 详情页（而非 Reader）；长按 → 系列信息弹窗（<b data-page-node-id="lVWTnNGykFNETu0D6Eyp9s">不走</b> BookDetailsDialog，避免归档/删除打到 <span class="mono" data-page-node-id="152jBErB6gEnStYrpnZYuJ">/book/archive/0</span>）</td>
+        <td class="mono" data-page-node-id="WsOZtIcOuyr1NgERjwjYS5">books/widgets/books_screen.dart</td>
+      </tr>
+      <tr data-page-node-id="GXythMOlNCvexPI2GqXFVA">
+        <td data-page-node-id="0DKHyIglS1Vqj8R2wWqlhk">9</td>
+        <td data-page-node-id="pje1IwV8aypF2ck7izYog4">导航支持显式传入 <span class="mono" data-page-node-id="Huk9jKYo70g2MpgqZd4IZm">Book</span>（成员书不在书架列表里），并修掉兜底分支伪造 <span class="mono" data-page-node-id="wGD58fJppHIG9wtFALmhUf">langId=0</span> 空壳书、把 <span class="mono" data-page-node-id="BVTJg5TOy4St7dl46u4GhD">currentBookLangId</span> 覆盖成 0 的老问题</td>
+        <td class="mono" data-page-node-id="6iWnw4RlnpglUlIAuHhrLw">app.dart</td>
+      </tr>
+      <tr data-page-node-id="y2KDPP4XkdNcmFG3jhjgfL">
+        <td data-page-node-id="2Eymv7rRpml5WbmZkbGtzN">10</td>
+        <td data-page-node-id="97ZYVctnk7cmfnpt5zFpua">聚合行统计补算：服务端在 <span class="mono" data-page-node-id="atvV6iyzh7nwC3JygZzz5x">SeriesStatsPending</span> 里回传「统计缺失的成员书 id」，客户端据此补算一次再重载列表 —— 否则聚合卡片的词数会一直是 0（对齐网页版 <span class="mono" data-page-node-id="eqgalgCFUi64M7X5wZO3vT">ajax_in_book_stats</span>）</td>
+        <td class="mono" data-page-node-id="lH4JxuyCfjZyTtFShc9bBQ">books/providers/books_provider.dart</td>
+      </tr>
+      <tr data-page-node-id="BivkXHAYFA0EEVfgAyvcpo">
+        <td data-page-node-id="2volzCke7wDeDzsdZPdciw">11</td>
+        <td data-page-node-id="slMGIaYmjtwD3XKrJ6QqcD">新增解析回归测试（12 项）</td>
+        <td class="mono" data-page-node-id="DarCLkeoD9Fiho51R8eNHW">test/book_series_parse_test.dart <span class="pill ok" data-page-node-id="rCpMMXiCrWWdqiGTiluokG">新文件</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 data-page-node-id="fRvmh6z6UxKeRBacTjZ8J9">为什么成员书要单独请求</h3>
+  <p data-page-node-id="VBfBvwB1Mhrlyr0nFNwGfn">
+    聚合态下服务端只回聚合行，成员书**根本不在响应里**。所以详情页必须再发一次带
+    <span class="mono" data-page-node-id="8CX0R6XewxFpNmrDQKJPiK">filtTag</span> 的请求。这比在客户端拿全量书单自己按 tag 过滤更省流量，
+    也和网页版 <span class="mono" data-page-node-id="pZvci0FMtRV77kZTEtLLHu">/book/series/&lt;tag&gt;</span> 的语义一致。
+  </p>
+
+  <h2 data-page-node-id="nnsPzbACangab3DfiqEojS">四、验证</h2>
+
+  <table class="boxed" data-page-node-id="nAcJwfCMZG3vkB0KnaQ14v">
+    <thead data-page-node-id="qZCEaAPx8lKHmoWlGSHT0Y"><tr data-page-node-id="GpW7mp6JNijaka2oCldL6E"><th data-page-node-id="vUMPo5tgJ7tFTaMUTkIEUs">验证项</th><th data-page-node-id="JMh7L4weWie1igpzvTfFVe">方法</th><th data-page-node-id="MXFgnFjWldUsDzIB145uLl">结果</th></tr></thead>
+    <tbody data-page-node-id="QS5HgGMT6D1hIg9HPucqyx">
+      <tr data-page-node-id="Y5LacQNNiRG7dLhnpYNVeB">
+        <td data-page-node-id="5sWXqrDSNiZTF4bG3mIB1K">静态分析无回归</td>
+        <td data-page-node-id="wxCe1OuTxEhUVvO05uQBBR">远端 <span class="mono" data-page-node-id="rfYTExW2GjdjKBvrdoFvMR">flutter analyze</span>，与 <span class="mono" data-page-node-id="CJB7OXlq2ZvTn4quzgdWBg">git HEAD</span> 基线逐条 diff（剥离行列号）</td>
+        <td data-page-node-id="R8pgEzu0DAaYOuGxWrUHNH"><span class="pill ok" data-page-node-id="HCXvNa9VWd0Ut5darde7x0">0 新增 / 0 error</span><br data-page-node-id="PU69GQJR5GpSMMoKpgCMxy"><span class="mono" style="font-size:12.5px" data-page-node-id="EzbI5i344yflpyPHDbsUeW">基线 207 → 改动后 200</span></td>
+      </tr>
+      <tr data-page-node-id="wPWtaHIAQVENSwXZ1yMMm7">
+        <td data-page-node-id="OAntHOuCiKl3s2n8k5Kj9a">解析正确性</td>
+        <td data-page-node-id="hvm6w3lEjslNN0tpjBlMCO"><span class="mono" data-page-node-id="HybNYRoiLo0OFXEQWesSZ0">flutter test test/book_series_parse_test.dart</span>，用服务端真实行字段（含 NULL）构造用例</td>
+        <td data-page-node-id="rSR1FEC3XojqMzG6EsOcsC"><span class="pill ok" data-page-node-id="737A3dw1nhCpyF7kVgMK1D">12 / 12 通过</span></td>
+      </tr>
+      <tr data-page-node-id="Qn5y3owH96ncELDwB31nwl">
+        <td data-page-node-id="BhAxXlNMF1qAHNin9aVtnQ">数据通路（服务端真实 SQL）</td>
+        <td data-page-node-id="QhlRWwtIe8CJqSb8Dj2Bz4">直接调用服务端自己的 <span class="mono" data-page-node-id="iMLzyDWeXK1r3a3gY04bDA">_series_union_base_sql()</span> / <span class="mono" data-page-node-id="SopWPRXCfcFijgqWcHzTLo">_flat_base_sql()</span> 生成 SQL，在只读连接上对生产库执行</td>
+        <td data-page-node-id="6fNciQMHfFCFbSIYEPb17N"><span class="pill ok" data-page-node-id="YBjDITqROWnw3etqlVam7f">通过</span></td>
+      </tr>
+      <tr data-page-node-id="01nHh6zWWosts4JddlUBGL">
+        <td data-page-node-id="FzTNiWnufnZq4vcjBZMCBs">真机 UI</td>
+        <td data-page-node-id="PQw0iwaF6Mmk8kk8ygQd0D">OnePlus 11 实机安装后逐屏截图核对</td>
+        <td data-page-node-id="8Mj6rn8W8pjxNJryr2Jc5d"><span class="pill ok" data-page-node-id="E5OBEENtWtXA0mSncdiOoz">通过</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 data-page-node-id="V6RbaPHDMuF4s0Qq7Xj9GZ">真机实测结果</h3>
+  <p data-page-node-id="seGZIDkoCHDo7IzRsJTO77">安装到 OnePlus 11 后实测：</p>
+  <ul data-page-node-id="ULRhe6eHA0jng0GBmQtCw3">
+    <li data-page-node-id="pkk6S5LZpXBhC4kzL9GHGn"><b data-page-node-id="GZKESPvaiqlRRPjniuELEq">书架：</b><span class="mono" data-page-node-id="7q0HEnT6mF0nXkRFPiQaow">超かぐや姫！</span> 显示「Book Set · 9 / 0/9 books / 54779 words」，
+      <span class="mono" data-page-node-id="4yQacBV37yAJlAAK6yeFGJ">ai-story</span> 显示「Book Set · 12 / 5/12 books / 1363 terms / 1 day ago」，
+      集合图标 + 已读进度条（42%）均正确。</li>
+    <li data-page-node-id="9AN500nWvnlHPZJS6SBWiM"><b data-page-node-id="VTjB4H6mlBCnorxWEcMpiR">详情页：</b>点开 ai-story 进入列表，头部显示「12 books · 5 read (42%) · 3,620 words · 1,363 terms」，
+      Continue 按钮正确指向第一本未读完的《横浜のあかい部屋》，12 本成员书全部可点开。</li>
+    <li data-page-node-id="dR6oYmD6Lov9sYiQKKbKZG"><b data-page-node-id="66Me88viRGHBRar9IOBTG5">聚合词数不再是 0：</b>说明 <span class="mono" data-page-node-id="5J34AXBiz3PoGUtDw83xDV">SeriesStatsPending</span> 补算链路生效。</li>
+  </ul>
+
+  <div class="note warn" data-page-node-id="6UEVEHHyKJb3oXU9690Zyx">
+    <strong data-page-node-id="j24jUCoewP2gDh9bLXDoUG">真机抓到 1 个静态分析发现不了的问题：</strong>
+    聚合行多出一个「Book Set · N」标签后，原本定长的元信息 <span class="mono" data-page-node-id="KfsSsQkRDWtOp4IN7BVXqh">Row</span>
+    被撑爆，右侧的词数/词条被屏幕裁切（真机上显示成 <span class="mono" data-page-node-id="dKrQumeO3nJjOKS1TzObrE">8448 te…</span>）。
+    已改为 <span class="mono" data-page-node-id="gY53n0Sembc2P9e4pgKMdD">Wrap</span>，超出宽度自动换行。
+    <b data-page-node-id="hv01UGZDJ4GxFRvlkcmqST">这正是「静态分析证明不了布局」的实例。</b>
+  </div>
+
+  <h3 data-page-node-id="wDEDc0VJV2BlS9gqMu2MMS">服务端 SQL 验证的实际输出</h3>
+  <pre data-page-node-id="bchuWXzFG1x7cOd5YPJEOO">[聚合态] 总行数=65  聚合行=8  扁平书=57
+   series='ai-story'               书数=12 已读=5 BookType='series'
+   series='Crime and Punishment'   书数=40 已读=0 BookType='series'
+   series='Erin'                   书数=51 已读=0 BookType='series'
+   series='The Shining Girls'      书数=74 已读=0 BookType='series'
+   series='实用日语'                 书数=17 已读=1 BookType='series'
+   series='标日'                    书数=8  已读=1 BookType='series'
+   series='综合日语'                 书数=1  已读=0 BookType='series'
+   series='超かぐや姫！'              书数=9  已读=0 BookType='series'
+
+[filtTag=ai-story] 返回 12 本书，SeriesTag=None（聚合已关闭）
+   id=263 264 266 267 269 271 275 276 277 288 289 290</pre>
+
+  <p data-page-node-id="5stuZkV3GLdJcneNGCMu1j">
+    两点确认：① 聚合行确实是 <span class="mono" data-page-node-id="NSLYCPfBmziVHT01w6MF9c">BookType='series'</span>、<span class="mono" data-page-node-id="76neuA3UAyLccwFO6S9w9p">BkID=NULL</span>，
+    与客户端解析逻辑一致；② <span class="mono" data-page-node-id="ATsF7VLIiOEjH4AXKiD5dK">filtTag=ai-story</span> 返回的 12 本，
+    与聚合行的 <span class="mono" data-page-node-id="NaWVbDsZBBGJjuAs1GV1Yo">SeriesBookCount=12</span> <b data-page-node-id="xoL5NGslPwoXcUwmNfg8oJ">完全吻合</b>，
+    说明详情页拿到的列表和卡片上的数字不会打架。
+  </p>
+
+  <div class="note" data-page-node-id="cB2ucYaJe19tK2YATk1d7g">
+    <strong data-page-node-id="hslmOMUoYCH2hXfzDau114">本次修复的额外收益：</strong>212 本原先在 app 里完全不可见的书（
+    12+40+51+74+17+8+1+9）现在都可以通过 8 个 Book Set 卡片进入。
+    书架卡片数只从 57 变成 65，但可读内容翻了几倍。
+  </div>
+
+  <h2 data-page-node-id="HZ2w96vanDpoHl4nZJakhy">五、未验证 / 已知取舍</h2>
+  <ul data-page-node-id="3ZF8msAfJp9Kt1rBdUf7yS">
+    <li data-page-node-id="uWaMVq10yLi3VliugpJfFf"><b data-page-node-id="pF1e8cw9Ba1uqj0UtVa3PF">真机 UI 已通过截图逐屏核对</b>（书架 + 详情页），但未覆盖：横竖屏切换、
+      超大字号无障碍设置、已归档 Book Set 视图、12 本成员书逐个点开。</li>
+    <li data-page-node-id="c1Jaq41aKjy9tWd9BiLzwB"><b data-page-node-id="o9iHlQcJW44Dp3QwTaXqQG">统计补算是一次性后台任务。</b>每个 Book Set 每个会话只补算一次
+      （用 <span class="mono" data-page-node-id="M8aaEOmIIgpi9NbNbyQgnm">_seriesStatsWarmedSeries</span> 去重），避免服务端始终算不出统计时
+      陷入「补算 → 重载 → 再补算」的死循环。代价是若首次补算失败，本次会话不会再重试。</li>
+    <li data-page-node-id="aBpfa8duaejWNfEkHkhzEA"><b data-page-node-id="E9DlTYEf3voKw2uGOsIQxw">详情页只显示本语言的成员。</b>服务端对同一个 tag 会按语言各出一行聚合行，
+      详情页因此按行语言收敛列表，保证「卡片上的 N」与「列表条数」一致。
+      当前 8 个 Book Set 都是单语言，这条规则暂不产生可见影响。</li>
+    <li data-page-node-id="35JZQH2G7rF6kBNa3EfD3o"><b data-page-node-id="Wm0gOMhDmzeWeiX2tWjaFg">已归档成员书未在详情页展示。</b>聚合行只统计未归档书；归档成员需要走
+      <span class="mono" data-page-node-id="27GJDKXrEycD3FEBpBj4l0">filtTag</span> + archived 接口，本轮未接。</li>
+    <li data-page-node-id="9cVVnFZT575SCJ2NPvYSW5"><b data-page-node-id="1KDdzTEZJI2kWnzdzGfWR3">搜索态会展开聚合。</b>这是服务端既有行为（搜到就能找到），客户端未做干预 ——
+      搜索结果里同一个 tag 的书会逐本出现，聚合卡片同时消失。</li>
+  </ul>
+
+  <h2 data-page-node-id="Wq7mKt2vRtBz9LdNsXpYhA">六、收尾：两条导航链路的修正</h2>
+
+  <p data-page-node-id="Xb3nRc8dFgHj2LmPqSvTwE">
+    上表第 9 项把 <span class="mono" data-page-node-id="Km4pYd7vBsTn1RjCqXwZhF">navigateToReader</span> 改成可以显式接收
+    <span class="mono" data-page-node-id="Ln5qZe8wCtUo2SkDrYxBmG">Book</span>，但当时漏掉了「长按成员书 → 详情弹窗 → Start Reading」
+    这条路径：弹窗里的按钮还在调 <span class="mono" data-page-node-id="Mo6rAf9xDuVp3TlEsZzCiJ">navigateToReader(book.id)</span>，
+    并且只 <span class="mono" data-page-node-id="Np7sBg0yEvWq4UmFtAaDjK">pop()</span> 一层。
+  </p>
+
+  <div class="note warn" data-page-node-id="Oq8tCh1zFwXr5VnGuBbElM">
+    <strong data-page-node-id="Pr9uDi2AGxYs6WoHvCcFmN">两个独立缺陷，静态分析都发现不了：</strong>
+    <ol data-page-node-id="Qs0vEj3BHyZt7XpIwDdGnO">
+      <li data-page-node-id="Rt1wFk4CJzAu8YqBxEeHpM">
+        <b data-page-node-id="Su2xGl5DKbCv9ZrAyFfIiQ">丢标题和语言。</b>成员书被聚合行隐藏，不在书架列表里，
+        <span class="mono" data-page-node-id="Tv3yHm6ELaDn0BsCxGgJkR">_handleNavigateToReader</span> 的兜底分支找不到它，
+        于是阅读器顶部没有书名、<span class="mono" data-page-node-id="Uw4zIn7FMbEo1CtDyHhKlS">currentBookLangId</span> 保持旧值。
+      </li>
+      <li data-page-node-id="Vx5aJo8GNeCp2DuEzIiLmT">
+        <b data-page-node-id="Wy6bKp9HOdDq3EvFaJjMnU">阅读器被盖住。</b>弹窗压在 Book Set 详情页之上，只 pop 掉弹窗的话，
+        阅读器切换发生在下面那一层，用户看到的还是 Book Set 列表 —— 表现就是「点了 Start Reading 没反应」。
+      </li>
+    </ol>
+  </div>
+
+  <table class="boxed" data-page-node-id="Xy7cLq0IPfGr4WtHaKkDnB">
+    <thead data-page-node-id="Yz8dMr1JQgHs5XuIbLlEoC"><tr data-page-node-id="Za9eNs2KRhIt6YvJcMmFpD"><th data-page-node-id="Ab0fOt3LSiJu7ZwKdNnGqE">文件</th><th data-page-node-id="Bc1gPu4MTjKv8AxLeOoHrF">修正</th></tr></thead>
+    <tbody data-page-node-id="Cd2hQv5NUkLw9ByMfPpIsG">
+      <tr data-page-node-id="De3iRw6OVlMx0CzNgQqJtH">
+        <td class="mono" data-page-node-id="Ef4jSx7PWmNy1DaOhRrKuI">books/widgets/book_details_dialog.dart</td>
+        <td data-page-node-id="Fg5kTy8QXnOz2EbPiSsLvJ">Start Reading 改为
+          <span class="mono" data-page-node-id="Gh6lUz9RYoPa3FcQjTtMwK">navigateToReader(book.id, null, book)</span>；
+          关闭方式从 <span class="mono" data-page-node-id="Hi7mVa0SZpQb4GdRkUuNxL">pop()</span> 改为
+          <span class="mono" data-page-node-id="Ij8nWb1TAqRc5HeSlVvOyM">popUntil((route) =&gt; route.isFirst)</span>，
+          把可能压着的详情页一并弹掉，回到主界面后阅读器才可见</td>
+      </tr>
+      <tr data-page-node-id="Jk9oXc2UBrSd6IfTmWwPzN">
+        <td class="mono" data-page-node-id="Kl0pYd3VCsTe7JgUnXxQaO">books/widgets/series_detail_screen.dart</td>
+        <td data-page-node-id="Lm1qZe4WDtUf8KhVoYyRbP">成员书入口的 <span class="mono" data-page-node-id="Mn2rAf5XEuVg9LiWpZzScQ">_openBook</span>
+          由「先 pop 再导航」改为<b data-page-node-id="No3sBg6YFvWh0MjXqAaTdR">先导航再 pop</b>：
+          原顺序会先露出主界面原来的标签页（书架），下一帧才切到阅读器，闪一下</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p data-page-node-id="Op4tCh7ZGwXi1NkYrBbUeS">
+    回归验证：远端 <span class="mono" data-page-node-id="Pq5uDi8AHxYj2OlZsCcVfT">flutter analyze</span> 仍是
+    <span class="pill ok" data-page-node-id="Qr6vEj9BIyZk3PmAtDdWgU">0 新增 / 0 error</span>（200 issues，与改动前一致），
+    <span class="mono" data-page-node-id="Rs7wFk0CJzAl4QnBuEeXhV">flutter test</span> 12/12 通过。这两处属于导航结构改动，
+    只能靠真机复核，已在 OnePlus 11 上逐条走通：
+  </p>
+
+  <table class="boxed" data-page-node-id="St8uFk1CJzAl5QnBuEeXhV">
+    <thead data-page-node-id="Tu9vGl2DKbCv6ZrAyFfIiQ"><tr data-page-node-id="Uv0wHm3ELaDn7BsCxGgJkR"><th data-page-node-id="Vw1xIn4FMbEo8CtDyHhKlS">真机步骤</th><th data-page-node-id="Wx2yJo5GNeCp9DuEzIiLmT">预期</th><th data-page-node-id="Xy3zKp6HOdDq0EvFaJjMnU">实测</th></tr></thead>
+    <tbody data-page-node-id="Yz4ALq7IPfGr1FwHaKkDnB">
+      <tr data-page-node-id="Za5BMr8JQgHs2GxIbLlEoC">
+        <td data-page-node-id="Ab6CNs9KRhIt3HyJcMmFpD">书架 → 点 <span class="mono" data-page-node-id="Bc7DOt0LSiJu4IzKdNnGqE">ai-story</span> 聚合行</td>
+        <td data-page-node-id="Cd8EPu1MTjKv5JxLeOoHrF">进入 Book Set 页</td>
+        <td data-page-node-id="De9FQv2NUkLw6KyMfPpIsG"><span class="pill ok" data-page-node-id="Ef0GRw3OVlMx7LzNgQqJtH">通过</span> 头部「12 books · 5 read (42%) · 3,620 words · 1,363 terms」</td>
+      </tr>
+      <tr data-page-node-id="Fg1HSx4PWmNy8MaOhRrKuI">
+        <td data-page-node-id="Gh2ITy5QXnOz9NbPiSsLvJ">路径 A：直接点成员书卡片</td>
+        <td data-page-node-id="Hi3JUz6RYoPa0OcQjTtMwK">阅读器可见、书目正确</td>
+        <td data-page-node-id="Ij4KVa7SZpQb1PdRkUuNxL"><span class="pill ok" data-page-node-id="Jk5LWb8TAqRc2QeSlVvOyM">通过</span> 《横浜のアパートの惨劇》1/3，Book Set 页已退出</td>
+      </tr>
+      <tr data-page-node-id="Kl6MXc9UBrSd3RfTmWwPzN">
+        <td data-page-node-id="Lm7NYd0VCsTe4SgUnXxQaO">路径 B：长按成员书 → 详情弹窗 → Start Reading</td>
+        <td data-page-node-id="Mn8OZe1WDtUf5ThVoYyRbP">弹窗与 Book Set 页一并关闭，阅读器可见</td>
+        <td data-page-node-id="No9PAf2XEuVg6UiWpZzScQ"><span class="pill ok" data-page-node-id="OpAQBg3YFvWh7VjXqAaTdR">通过</span> 阅读器直接显示《横浜のアパートの惨劇》，不再被压在 Book Set 页下面</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note warn" data-page-node-id="PqBRCh4ZGwXi8WkYrBbUeS">
+    <strong data-page-node-id="QrCSDi5AHxYj9XlZsCcVfT">一条待确认（未定性为缺陷）：</strong>
+    在 <span class="mono" data-page-node-id="RsDTEj6BIyZk0YmAtDdWgU">wm density</span> 被设为 640（大号显示）时，
+    标题折成三行 + 8 行状态分布的<b data-page-node-id="StEUFk7CJzAl1ZnBuEeXhV">最高</b>那种详情弹窗会把
+    Start Reading 按钮推到距屏幕底部约 19dp 处 —— 落进系统手势区（48dp）内。
+    对该位置注入的点击没有生效；但同一时刻设备正在自动锁屏（<span class="mono" data-page-node-id="TuFVGl8DKbCv2ArAyFfIiQ">mWakefulness=Dozing</span>），
+    两个原因无法分离，<b data-page-node-id="UvGWHm9ELaDn3BsCxGgJkR">故未判定为缺陷</b>。
+    若要彻底规避，可给详情弹窗内容加滚动 + 把按钮行固定在底部之外的位置。
+    复测被设备 PIN 锁屏中断，需用户在场时再验。
+  </div>
+
+  <footer data-page-node-id="PTdrHHgoBopSSumEGYTAJF">
+    改动文件 9 个（含 2 个新文件）· 静态分析 0 新增 issue / 0 error · 12 项单元测试通过 ·
+    服务端 SQL 端到端验证通过 · 真机 UI 截图核对通过（并据此修掉 1 处元信息裁切 + 2 处导航缺陷）
+  </footer>
+
+</div>
+</body>
+</html>

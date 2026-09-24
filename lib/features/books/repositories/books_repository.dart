@@ -50,6 +50,23 @@ class BooksRepository {
     }
   }
 
+  /// 拉取某个 Book Set（tag 聚合）下的成员书。
+  ///
+  /// 这些书在书架列表里被聚合行隐藏，只能通过带 `filtTag` 的请求单独取回。
+  /// 返回的书籍会补齐 `langId`，供 Reader 与 Stats/Terms 的语言筛选使用。
+  Future<List<Book>> getSeriesBooks(
+    String tag, {
+    bool archived = false,
+  }) async {
+    try {
+      await _loadLanguageMapping();
+      final books = await contentService.getSeriesBooks(tag, archived: archived);
+      return _enrichBooksWithLanguageIds(books);
+    } catch (e) {
+      throw Exception('Failed to load series books: $e');
+    }
+  }
+
   Future<List<Book>> getArchivedBooks({
     int page = 0,
     int pageSize = 10,

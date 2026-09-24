@@ -79,6 +79,12 @@ class BooksNotifier extends Notifier<BooksState> {
   bool _isResolvingArchivedAudioMetadata = false;
   ProviderSubscription<bool>? _readerReadinessSubscription;
 
+  /// tag 聚合行的统计补算状态。
+  /// 聚合行背后被隐藏的成员书永远拿不到「按书统计刷新」的机会，
+  /// 所以需要单独补算一次（见 _warmSeriesStatsIfNeeded）。
+  bool _isWarmingSeriesStats = false;
+  final Set<String> _seriesStatsWarmedSeries = <String>{};
+
   final int _pageSize = 10;
   int _activePage = 0;
   int _archivedPage = 0;
@@ -277,9 +283,13 @@ class BooksNotifier extends Notifier<BooksState> {
         hours: settings.statsRefreshCooldownHours,
       );
 
+      // tag 聚合行（Book.isSeries）没有自己的 BkID，不能参与「按书」的统计刷新：
+      // 它的 lastStatsRefresh 恒为 null，会被无条件选中，然后对
+      // /book/table_stats/0 发请求并失败，把整批刷新一起拖垮。
+      final refreshable = state.activeBooks.where((book) => !book.isSeries);
       final booksToRefresh = forceRefreshAll
-          ? state.activeBooks
-          : state.activeBooks.where((book) {
+          ? refreshable.toList()
+          : refreshable.where((book) {
               if (book.lastStatsRefresh == null) return true;
               final age = now - book.lastStatsRefresh!;
               return age > perBookCooldown.inMilliseconds;
@@ -559,15 +569,15 @@ class BooksNotifier extends Notifier<BooksState> {
         final serverIds = {for (var b in networkBooks) b.id};
         // Keep only cached books the server still lists as active, plus the
         // fresh search results.
+        //
+        // 搜索态下服务端会关闭 tag 聚合、直接返回扁平书单（连聚合行背后的
+        // 成员书都会出现），因此这里不能保留缓存里的聚合行，否则同一批书
+        // 会以「聚合卡片 + 逐本卡片」两种形态同时出现。
         final merged = [
           ...state.activeBooks.where((b) => serverIds.contains(b.id)),
           ...networkBooks,
         ];
-        final finalActiveBooks = <Book>[];
-        final seen = <int>{};
-        for (final b in merged) {
-          if (seen.add(b.id)) finalActiveBooks.add(b);
-        }
+        final finalActiveBooks = _dedupeByIdentity(merged);
 
         await _repository.saveBooksToCache(
           activeBooks: finalActiveBooks,
@@ -584,6 +594,8 @@ class BooksNotifier extends Notifier<BooksState> {
       }
 
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: true));
+      // 书架里若出现 tag 聚合行且其成员书统计缺失，这里补算一次。
+      unawaited(_warmSeriesStatsIfNeeded());
     } catch (e) {
       state = state.copyWith(isLoading: false, errorMessage: e.toString());
     } finally {
@@ -737,11 +749,36 @@ class BooksNotifier extends Notifier<BooksState> {
         errorMessage: null,
       );
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: true));
+      unawaited(_warmSeriesStatsIfNeeded());
     } catch (e) {
       state = state.copyWith(errorMessage: e.toString());
     } finally {
       _isLoadingFromNetwork = false;
     }
+  }
+
+  /// 书籍的唯一标识。
+  ///
+  /// 普通书用 BkID；tag 聚合行的 BkID 是 NULL（客户端容错后为 0），
+  /// 多个聚合行会全部塌缩成同一个键 `book:0`，必须改用 tag 名区分。
+  /// 同一个 tag 下的书如果跨语言，服务端会按 (tag, 语言) 各出一行
+  /// （见 datatables.py 的 `GROUP BY st.seriestag, b.BkLgID`），
+  /// 所以聚合行的键还要带上语言。
+  String _bookIdentity(Book b) => b.isSeries
+      ? 'series:${b.seriesTag}:${b.langId ?? b.language}'
+      : 'book:${b.id}';
+
+  /// 按 [_bookIdentity] 去重，保留首次出现的条目。
+  ///
+  /// 分页追加与搜索合并都可能重复塞入同一行，普通书靠 BkID 天然唯一，
+  /// 但聚合行 id 全为 0，不去重就会出现多份同样的聚合卡片。
+  List<Book> _dedupeByIdentity(Iterable<Book> books) {
+    final seen = <String>{};
+    final out = <Book>[];
+    for (final b in books) {
+      if (seen.add(_bookIdentity(b))) out.add(b);
+    }
+    return out;
   }
 
   /// Merges the server's authoritative active book list with locally cached
@@ -752,10 +789,14 @@ class BooksNotifier extends Notifier<BooksState> {
     List<Book> serverBooks,
     List<Book> localBooks,
   ) {
-    final existingMap = {for (var b in localBooks) b.id: b};
+    final existingMap = {for (var b in localBooks) _bookIdentity(b): b};
     return serverBooks.map((nb) {
-      final existing = existingMap[nb.id];
+      final existing = existingMap[_bookIdentity(nb)];
       if (existing == null) return nb;
+      // 聚合行没有可继承的本地统计：它的词数/状态分布由服务端 SQL 聚合而来，
+      // 而且所有聚合行 id 都是 0，按 id 匹配会互相串味（A 系列的统计跑到
+      // B 系列卡片上）。直接用服务端的值。
+      if (nb.isSeries) return nb;
       return existing.copyWith(
         title: nb.title,
         language: nb.language,
@@ -793,9 +834,13 @@ class BooksNotifier extends Notifier<BooksState> {
       final networkBooks = await _repository.getArchivedBooks();
       final active = state.activeBooks;
 
-      final existingArchivedIds = {for (var b in state.archivedBooks) b.id};
+      // 用 _bookIdentity 而不是裸 id：归档列表里同样可能有 tag 聚合行，
+      // 它们的 id 全是 0，按 id 判重会把所有聚合行误认为同一行。
+      final existingArchivedKeys = {
+        for (var b in state.archivedBooks) _bookIdentity(b),
+      };
       final newArchivedBooks = networkBooks
-          .where((b) => !existingArchivedIds.contains(b.id))
+          .where((b) => !existingArchivedKeys.contains(_bookIdentity(b)))
           .toList();
 
       final finalArchivedBooks = [...state.archivedBooks, ...newArchivedBooks];
@@ -906,7 +951,7 @@ class BooksNotifier extends Notifier<BooksState> {
         search: state.searchQuery.isEmpty ? null : state.searchQuery,
       );
 
-      final allBooks = [...state.archivedBooks, ...newBooks];
+      final allBooks = _dedupeByIdentity([...state.archivedBooks, ...newBooks]);
       state = state.copyWith(
         archivedBooks: allBooks,
         hasMoreArchived: newBooks.length == _pageSize,
@@ -1053,6 +1098,60 @@ class BooksNotifier extends Notifier<BooksState> {
     await _repository.invalidateLanguageCache(book.language);
   }
 
+  /// 为 tag 聚合行背后「统计缺失或过期」的成员书补算统计。
+  ///
+  /// 被聚合隐藏的书不会作为独立行出现，客户端也就永远没机会为它们调
+  /// `/book/table_stats`，聚合行的词数 / 状态分布会一直停在 0。
+  /// 服务端为此在聚合行里回传 `SeriesStatsPending`（逗号分隔的成员书 id），
+  /// 网页版据此批量补算；这里做同样的事，算完再重载一次让聚合值刷新。
+  Future<void> _warmSeriesStatsIfNeeded() async {
+    if (_isWarmingSeriesStats) return;
+
+    final pending = <int>{};
+    final seriesKeys = <String>{};
+    for (final book in state.activeBooks) {
+      if (!book.isSeries) continue;
+      final ids = book.seriesStatsPending;
+      if (ids == null || ids.isEmpty) continue;
+      seriesKeys.add(_bookIdentity(book));
+      pending.addAll(ids);
+    }
+    // 本会话已补算过的聚合行不再重复：万一某本书的统计服务端始终算不出来，
+    // 不去重就会陷入「补算 → 重载 → 又发现待补算 → 再补算」的死循环。
+    seriesKeys.removeAll(_seriesStatsWarmedSeries);
+    if (seriesKeys.isEmpty || pending.isEmpty) return;
+
+    _seriesStatsWarmedSeries.addAll(seriesKeys);
+    _isWarmingSeriesStats = true;
+    ApiLogger.logBackground(
+      '_warmSeriesStatsIfNeeded',
+      details: '${pending.length} member books, ${seriesKeys.length} series',
+    );
+
+    try {
+      // 设上限，避免某个超大合集一次打出几百个请求。
+      final ids = pending.take(120).toList();
+      await Future.wait(
+        ids.map((id) async {
+          try {
+            await _repository.contentService.getBookStats(
+              id,
+              timeout: const Duration(seconds: 20),
+            );
+          } catch (e) {
+            ApiLogger.logError('_warmSeriesStatsIfNeeded($id)', e);
+          }
+        }),
+      );
+      // 聚合值是服务端 SQL 现算的，必须重新拉一次列表才会更新。
+      await loadBooks(forceRefresh: true, skipExpiredBookRefresh: true);
+    } catch (e) {
+      ApiLogger.logError('_warmSeriesStatsIfNeeded', e);
+    } finally {
+      _isWarmingSeriesStats = false;
+    }
+  }
+
   Future<void> _resolveMissingAudioMetadataInBackground({
     required bool activeBooks,
   }) async {
@@ -1068,8 +1167,9 @@ class BooksNotifier extends Notifier<BooksState> {
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
       final sourceBooks = activeBooks ? state.activeBooks : state.archivedBooks;
+      // 聚合行没有真实 BkID，解析音频元数据会打到 /book/edit/0 上，直接跳过。
       final unresolvedBooks = sourceBooks
-          .where((book) => !book.audioMetadataResolved)
+          .where((book) => !book.isSeries && !book.audioMetadataResolved)
           .toList();
 
       if (unresolvedBooks.isEmpty) return;

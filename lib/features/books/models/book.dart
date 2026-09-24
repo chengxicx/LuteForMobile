@@ -1,6 +1,14 @@
 import 'dart:convert';
 
 class Book {
+  /// 服务端用来标记「tag 聚合行」的 BookType 取值。
+  ///
+  /// 当某个 tag 被配置成 Book Set（UserSetting `book_series_tags`）后，
+  /// 服务端不再把该 tag 下的每本书单独返回，而是聚合成**一行**：
+  /// `BkID = NULL`、`BkTitle = tag 名`、`BookType = 'series'`、
+  /// `PageCount = 该 tag 下的书数`（见 lute/book/datatables.py 的 series_branch）。
+  static const String seriesBookType = 'series';
+
   final int id;
   final String title;
   final String language;
@@ -19,7 +27,41 @@ class Book {
   final bool audioMetadataResolved;
   final int? lastStatsRefresh;
 
+  /// 服务端 `BookType` 字段（`''` / `'manga'` / `'series'` / …）。
+  final String bookType;
+
+  /// 聚合行的 tag 名；普通书的该字段为 null。
+  final String? seriesTag;
+
+  /// 聚合行包含的书数（只统计未归档的）。
+  final int? seriesBookCount;
+
+  /// 聚合行中「已读完」的书数。
+  final int? seriesReadCount;
+
+  /// 聚合行中统计缺失或过期的成员书 id。
+  ///
+  /// 被聚合隐藏的书不会作为独立行出现，客户端需要主动为这些 id 拉一次统计，
+  /// 否则聚合行会一直显示 0 词。与网页版 `ajax_in_book_stats` 的行为一致。
+  final List<int>? seriesStatsPending;
+
+  /// 是否是 tag 聚合行。聚合行没有自己的 BkID，不能当普通书打开。
+  bool get isSeries =>
+      bookType == seriesBookType ||
+      (seriesTag != null && seriesTag!.isNotEmpty);
+
+  /// 聚合行代表的书数。服务端把书数放在 PageCount 里，这里优先用显式字段。
+  int get seriesCount => seriesBookCount ?? totalPages;
+
   bool get hasStats => distinctTerms != null && statusDistribution != null;
+
+  /// 是否有可展示的词数。
+  ///
+  /// 不能直接用 [hasStats]：聚合行的 `StatusDistribution` 恒为 NULL
+  /// （服务端只聚合词数，不聚合状态分布），但它确实带了有效的
+  /// `DistinctCount`，用 hasStats 判断会让聚合卡片显示「— terms」。
+  bool get hasTermCount => distinctTerms != null;
+
   bool get hasAudio => audioFilename != null && audioFilename!.isNotEmpty;
   bool get isStatsExpired {
     if (lastStatsRefresh == null) return true;
@@ -47,6 +89,11 @@ class Book {
     this.audioFilename,
     this.audioMetadataResolved = false,
     this.lastStatsRefresh,
+    this.bookType = '',
+    this.seriesTag,
+    this.seriesBookCount,
+    this.seriesReadCount,
+    this.seriesStatsPending,
   });
 
   String? get formattedLastRead {
@@ -98,14 +145,24 @@ class Book {
   }
 
   factory Book.fromJson(Map<String, dynamic> json) {
-    final isCompleted = json['IsCompleted'] == 1;
+    // 容错取整。服务器可能对某些字段返回 null（例如尚未生成统计的书、
+    // 或 PageNum/PageCount 的 SQL 表达式算出 NULL），
+    // 原先的 `as int` 强转会让整页书架直接抛异常打不开。
+    int asInt(dynamic v, [int fallback = 0]) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? fallback;
+      return fallback;
+    }
+
+    final isCompleted = asInt(json['IsCompleted']) == 1;
     final distinctCount = json['DistinctCount'];
     final unknownPercent = json['UnknownPercent'];
     final statusDist = json['StatusDistribution'];
     final tagList = json['TagList'];
     final lastOpened = json['LastOpenedDate'];
-    final pageCount = json['PageCount'] as int;
-    final pageNum = json['PageNum'] as int;
+    final pageCount = asInt(json['PageCount']);
+    final pageNum = asInt(json['PageNum']);
     final audioFilename =
         (json['audio_filename'] ??
                 json['audioFilename'] ??
@@ -129,17 +186,34 @@ class Book {
       parsedTags = tagList.split(',').map((t) => t.trim()).toList();
     }
 
-    final percent = pageCount > 0 ? ((pageNum / pageCount) * 100).round() : 0;
+    final bookType = (json['BookType'] as String?)?.trim() ?? '';
+    final seriesTag = json['SeriesTag'] as String?;
+    final seriesBookCount = json['SeriesBookCount'] == null
+        ? null
+        : asInt(json['SeriesBookCount']);
+    final seriesReadCount = json['SeriesReadCount'] == null
+        ? null
+        : asInt(json['SeriesReadCount']);
+    final seriesStatsPending = _parseIdList(json['SeriesStatsPending']);
+    final isSeriesRow =
+        bookType == seriesBookType ||
+        (seriesTag != null && seriesTag.isNotEmpty);
+
+    // 聚合行的 PageNum/PageCount 是「已读书数 / 总书数」，不是页码，
+    // 直接套用页数公式会得到 1/N 这种荒唐进度，所以改用服务端语义。
+    final percent = isSeriesRow
+        ? _seriesPercent(seriesReadCount, seriesBookCount ?? pageCount)
+        : (pageCount > 0 ? ((pageNum / pageCount) * 100).round() : 0);
 
     return Book(
-      id: json['BkID'] as int,
-      title: json['BkTitle'] as String,
-      language: json['LgName'] as String,
+      id: asInt(json['BkID']),
+      title: json['BkTitle'] as String? ?? '',
+      language: json['LgName'] as String? ?? '',
       langId: (json['LgID'] as num?)?.toInt(),
       totalPages: pageCount,
       currentPage: pageNum,
       percent: percent,
-      wordCount: json['WordCount'] as int,
+      wordCount: asInt(json['WordCount']),
       distinctTerms: (distinctCount is int) ? distinctCount : null,
       unknownPct: (unknownPercent is num) ? unknownPercent.toDouble() : null,
       statusDistribution: parsedStatusDist,
@@ -151,7 +225,39 @@ class Book {
       audioFilename: audioFilename,
       audioMetadataResolved: audioMetadataResolved,
       lastStatsRefresh: json['lastStatsRefresh'] as int?,
+      bookType: bookType,
+      seriesTag: seriesTag,
+      seriesBookCount: seriesBookCount,
+      seriesReadCount: seriesReadCount,
+      seriesStatsPending: seriesStatsPending,
     );
+  }
+
+  /// 聚合行的完成度 = 已读书数 / 总书数，四舍五入到整数百分比。
+  static int _seriesPercent(int? readCount, int bookCount) {
+    if (bookCount <= 0) return 0;
+    final read = readCount ?? 0;
+    return ((read * 100) / bookCount).round().clamp(0, 100);
+  }
+
+  /// 解析服务端用逗号拼接的 id 列表（如 `SeriesStatsPending = "3,7,12"`）。
+  static List<int>? _parseIdList(dynamic raw) {
+    if (raw is List) {
+      final ids = raw
+          .map((e) => e is int ? e : int.tryParse(e.toString()))
+          .whereType<int>()
+          .toList();
+      return ids.isEmpty ? null : ids;
+    }
+    if (raw is String && raw.isNotEmpty && raw != 'null') {
+      final ids = raw
+          .split(',')
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toList();
+      return ids.isEmpty ? null : ids;
+    }
+    return null;
   }
 
   Map<String, dynamic> toJson() {
@@ -172,6 +278,13 @@ class Book {
       'LastOpenedDate': lastRead,
       'lastStatsRefresh': lastStatsRefresh,
       'TagList': tags,
+      // 聚合行字段也要落缓存，否则读回来 isSeries 变成 false，
+      // BkID=0 的聚合行会被当成「幽灵书」重新出现在书架上。
+      'BookType': bookType,
+      'SeriesTag': seriesTag,
+      'SeriesBookCount': seriesBookCount,
+      'SeriesReadCount': seriesReadCount,
+      'SeriesStatsPending': seriesStatsPending,
     };
   }
 
@@ -208,7 +321,10 @@ class Book {
     return 0;
   }
 
-  String get pageProgress => '$currentPage/$totalPages';
+  /// 书架卡片右侧的进度徽标。聚合行显示「已读/总书数」而不是页码。
+  String get pageProgress => isSeries
+      ? '${seriesReadCount ?? 0}/$seriesCount books'
+      : '$currentPage/$totalPages';
 
   Book copyWith({
     int? id,
@@ -228,6 +344,11 @@ class Book {
     String? audioFilename,
     bool? audioMetadataResolved,
     int? lastStatsRefresh,
+    String? bookType,
+    String? seriesTag,
+    int? seriesBookCount,
+    int? seriesReadCount,
+    List<int>? seriesStatsPending,
   }) {
     return Book(
       id: id ?? this.id,
@@ -248,6 +369,11 @@ class Book {
       audioMetadataResolved:
           audioMetadataResolved ?? this.audioMetadataResolved,
       lastStatsRefresh: lastStatsRefresh ?? this.lastStatsRefresh,
+      bookType: bookType ?? this.bookType,
+      seriesTag: seriesTag ?? this.seriesTag,
+      seriesBookCount: seriesBookCount ?? this.seriesBookCount,
+      seriesReadCount: seriesReadCount ?? this.seriesReadCount,
+      seriesStatsPending: seriesStatsPending ?? this.seriesStatsPending,
     );
   }
 }

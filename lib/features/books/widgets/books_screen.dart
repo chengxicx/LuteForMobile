@@ -11,6 +11,7 @@ import '../models/book.dart';
 import 'book_card.dart';
 import 'book_details_dialog.dart';
 import 'add_book_dialog.dart';
+import 'series_detail_screen.dart';
 import 'package:lute_for_mobile/app.dart';
 import '../../../shared/theme/theme_extensions.dart';
 
@@ -245,7 +246,7 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
           final book = books[index];
           return BookCard(
             book: book,
-            onTap: () => _navigateToReader(context, book),
+            onTap: () => _openBook(context, book),
             onLongPress: () => _showBookDetails(context, book),
           );
         } else {
@@ -258,8 +259,22 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
     );
   }
 
-  void _navigateToReader(BuildContext context, Book book) {
-    ref.read(navigationProvider).navigateToReader(book.id, null);
+  /// 卡片点击入口。
+  ///
+  /// Book Set 聚合行没有自己的 BkID，点开它只会去请求 /book/edit/0 然后
+  /// 打开空白阅读器；所以聚合行改为进入系列列表页。
+  void _openBook(BuildContext context, Book book) {
+    if (book.isSeries) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => SeriesDetailScreen(series: book),
+        ),
+      );
+      return;
+    }
+    // 显式把 Book 传下去：系列列表页打开成员书时它并不在书架列表里，
+    // 不传就会退化成一本没有标题和语言的空壳书。
+    ref.read(navigationProvider).navigateToReader(book.id, null, book);
   }
 
   Future<void> _showAddBookDialog() async {
@@ -285,12 +300,61 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
   }
 
   void _showBookDetails(BuildContext context, Book book) {
+    // 聚合行不能走 BookDetailsDialog：那里的归档/删除按钮会打到
+    // /book/archive/0、/book/delete/0 上，而聚合行根本没有 BkID。
+    if (book.isSeries) {
+      _showSeriesDetails(context, book);
+      return;
+    }
+
     final state = ref.read(booksProvider);
     final isArchived = state.archivedBooks.any((b) => b.id == book.id);
     showDialog(
       context: context,
       builder: (context) =>
           BookDetailsDialog(book: book, isArchived: isArchived),
+    );
+  }
+
+  void _showSeriesDetails(BuildContext context, Book book) {
+    final read = book.seriesReadCount ?? 0;
+    final total = book.seriesCount;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(book.title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Book Set · $total books'),
+            const SizedBox(height: 4),
+            Text('$read of $total read'),
+            const SizedBox(height: 4),
+            Text('${book.wordCount} words in total'),
+            const SizedBox(height: 12),
+            Text(
+              'Tap "Browse" to see the books in this set.',
+              style: Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
+                color: context.appColorScheme.text.secondary,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _openBook(context, book);
+            },
+            child: const Text('Browse'),
+          ),
+        ],
+      ),
     );
   }
 }

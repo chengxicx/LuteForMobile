@@ -20,7 +20,8 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace = "com.schlick7.luteformobile"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // ndkVersion = flutter.ndkVersion  // No native code is compiled; keeps
+    // local debug builds working without a multi-GB NDK install.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

@@ -35,6 +35,7 @@ class Settings {
   final TTSProvider? ttsProvider;
   final AIProvider? aiProvider;
   final bool enableTripleTapToMarkKnown;
+  final bool autoPronounceOnTap;
   final bool enablePagePreload;
   final bool termuxIntegrationEnabled;
   final int statsCalcSampleSize;
@@ -79,6 +80,7 @@ class Settings {
     this.ttsProvider,
     this.aiProvider,
     this.enableTripleTapToMarkKnown = false,
+    this.autoPronounceOnTap = true,
     this.enablePagePreload = false,
     this.termuxIntegrationEnabled = false,
     this.statsCalcSampleSize = 5,
@@ -124,6 +126,7 @@ class Settings {
     TTSProvider? ttsProvider,
     AIProvider? aiProvider,
     bool? enableTripleTapToMarkKnown,
+    bool? autoPronounceOnTap,
     bool? enablePagePreload,
     bool? termuxIntegrationEnabled,
     int? statsCalcSampleSize,
@@ -181,6 +184,7 @@ class Settings {
       aiProvider: aiProvider ?? this.aiProvider,
       enableTripleTapToMarkKnown:
           enableTripleTapToMarkKnown ?? this.enableTripleTapToMarkKnown,
+      autoPronounceOnTap: autoPronounceOnTap ?? this.autoPronounceOnTap,
       enablePagePreload: enablePagePreload ?? this.enablePagePreload,
       termuxIntegrationEnabled:
           termuxIntegrationEnabled ?? this.termuxIntegrationEnabled,
@@ -231,6 +235,7 @@ class Settings {
       ttsProvider: TTSProvider.onDevice,
       aiProvider: AIProvider.none,
       enableTripleTapToMarkKnown: false,
+      autoPronounceOnTap: true,
       enablePagePreload: false,
       termuxIntegrationEnabled: false,
       statsCalcSampleSize: 5,
@@ -280,6 +285,7 @@ class Settings {
         other.ttsProvider == ttsProvider &&
         other.aiProvider == aiProvider &&
         other.enableTripleTapToMarkKnown == enableTripleTapToMarkKnown &&
+        other.autoPronounceOnTap == autoPronounceOnTap &&
         other.enablePagePreload == enablePagePreload &&
         other.termuxIntegrationEnabled == termuxIntegrationEnabled &&
         other.statsCalcSampleSize == statsCalcSampleSize &&
@@ -324,6 +330,7 @@ class Settings {
     ttsProvider,
     aiProvider,
     enableTripleTapToMarkKnown,
+    autoPronounceOnTap,
     enablePagePreload,
     termuxIntegrationEnabled,
     statsCalcSampleSize,

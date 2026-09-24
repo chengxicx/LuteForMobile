@@ -6,6 +6,7 @@ import 'package:lute_for_mobile/core/services/backup_service.dart';
 import 'package:lute_for_mobile/shared/providers/server_status_provider.dart';
 import 'queued_dio_interceptor.dart';
 import 'api_request_queue.dart';
+import 'session_manager.dart';
 
 class ApiService {
   final Dio _dio;
@@ -32,6 +33,7 @@ class ApiService {
       basicAuthPassword: basicAuthPassword,
     );
     _dio.interceptors.add(QueuedDioInterceptor(_requestQueue));
+    _addSessionInterceptor();
     _addRetryInterceptor();
     _addLoggingInterceptor();
     _addStatusInterceptor();
@@ -67,11 +69,118 @@ class ApiService {
           return handler.next(response);
         },
         onError: (error, handler) {
+          if (error.error is ServerLoginRequiredException) {
+            // Server answered; the session just needs a re-login.
+            return handler.next(error);
+          }
           ServerStatusManager.markError();
           return handler.next(error);
         },
       ),
     );
+  }
+
+  /// Attaches the multi-user session cookie and Basic Auth headers to every
+  /// request, and handles 3xx responses (the Dio client runs with
+  /// followRedirects=false): a redirect to /login means the lute multi-user
+  /// session is missing or expired.
+  void _addSessionInterceptor() {
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          final authHeaders = SessionManager.authHeaders();
+          if (authHeaders.isEmpty) {
+            options.headers.remove('Authorization');
+            options.headers.remove('Cookie');
+          } else {
+            options.headers.addAll(authHeaders);
+          }
+          return handler.next(options);
+        },
+        onResponse: (response, handler) async {
+          final statusCode = response.statusCode ?? 0;
+          if (statusCode < 300 || statusCode >= 400) {
+            return handler.next(response);
+          }
+          final location =
+              response.headers.value('location') ?? '';
+          if (_isLoginRedirect(location)) {
+            await _handleLoginRedirect(response, handler);
+            return;
+          }
+          if (response.requestOptions.method == 'GET' &&
+              location.isNotEmpty &&
+              (response.requestOptions.extra['redirectHops'] ?? 0) < 3) {
+            try {
+              final followed = await _followGetRedirect(
+                response.requestOptions,
+                location,
+              );
+              return handler.resolve(followed);
+            } catch (e) {
+              return handler.reject(
+                DioException(
+                  requestOptions: response.requestOptions,
+                  error: e,
+                  type: DioExceptionType.badResponse,
+                ),
+              );
+            }
+          }
+          return handler.next(response);
+        },
+      ),
+    );
+  }
+
+  bool _isLoginRedirect(String location) {
+    if (location.isEmpty) return false;
+    final path = location.startsWith('http')
+        ? Uri.tryParse(location)?.path ?? location
+        : location;
+    return path == '/login' || path.startsWith('/login?') || path.startsWith('/login/');
+  }
+
+  Future<void> _handleLoginRedirect(
+    Response response,
+    ResponseInterceptorHandler handler,
+  ) async {
+    final requestOptions = response.requestOptions;
+    if (requestOptions.extra['reloginRetry'] != true) {
+      final recovered = await SessionManager.tryAutoRelogin();
+      if (recovered) {
+        try {
+          final retryOptions = requestOptions.copyWith();
+          retryOptions.extra['reloginRetry'] = true;
+          retryOptions.headers.addAll(SessionManager.authHeaders());
+          final retryResponse = await _dio.fetch(retryOptions);
+          return handler.resolve(retryResponse);
+        } catch (_) {
+          // Fall through to the login-required error below.
+        }
+      }
+    }
+    SessionManager.markLoginRequired();
+    return handler.reject(
+      DioException(
+        requestOptions: requestOptions,
+        response: response,
+        type: DioExceptionType.badResponse,
+        error: const ServerLoginRequiredException(),
+      ),
+    );
+  }
+
+  Future<Response<dynamic>> _followGetRedirect(
+    RequestOptions original,
+    String location,
+  ) {
+    final nextUri = original.uri.resolve(location);
+    final options = original.copyWith(path: nextUri.toString());
+    options.extra['redirectHops'] =
+        ((original.extra['redirectHops'] ?? 0) as int) + 1;
+    options.headers.addAll(SessionManager.authHeaders());
+    return _dio.fetch(options);
   }
 
   void _addRetryInterceptor() {
@@ -341,11 +450,18 @@ class ApiService {
     return await _dio.get<String>(path);
   }
 
+  /// 拉取未归档书籍（服务端 `/book/datatables/active`）。
+  ///
+  /// [tagFilter] 对应服务端的 `filtTag` 表单字段。服务端只要收到非空的
+  /// `filtTag`（或搜索词），就会**关闭 tag 聚合**、返回扁平书单
+  /// （见 lute/book/datatables.py 的 `use_series_aggregation`）。
+  /// 这正是客户端读取某个 Book Set 成员书的入口。
   Future<Response<String>> getActiveBooks({
     int draw = 1,
     int start = 0,
     int length = 100,
     String? search,
+    String? tagFilter,
   }) async {
     final data = {
       'draw': draw,
@@ -401,6 +517,7 @@ class ApiService {
       'columns[7][search][regex]': 'false',
       'search[value]': search ?? '',
       'search[regex]': 'false',
+      if (tagFilter != null && tagFilter.isNotEmpty) 'filtTag': tagFilter,
     };
 
     final response = await _dio.post<String>(
@@ -411,11 +528,14 @@ class ApiService {
     return response;
   }
 
+  /// 拉取已归档书籍（服务端 `/book/datatables/Archived`）。
+  /// [tagFilter] 语义同 [getActiveBooks]。
   Future<Response<String>> getArchivedBooks({
     int draw = 1,
     int start = 0,
     int length = 100,
     String? search,
+    String? tagFilter,
   }) async {
     final data = {
       'draw': draw,
@@ -471,6 +591,7 @@ class ApiService {
       'columns[7][search][regex]': 'false',
       'search[value]': search ?? '',
       'search[regex]': 'false',
+      if (tagFilter != null && tagFilter.isNotEmpty) 'filtTag': tagFilter,
     };
 
     final response = await _dio.post<String>(
@@ -827,6 +948,49 @@ class ApiService {
 
   Future<Response<String>> getStatsData() async {
     return await _dio.get('/stats/data');
+  }
+
+  /// Term-trend / heatmap / summary data behind the web stats page's term
+  /// charts.  [period] is one of `today`, `7days`, `monthly`; [langId] null
+  /// means "all active languages".
+  Future<Response<String>> getTermStatsData({
+    required String period,
+    int? langId,
+  }) async {
+    return await _dio.get<String>(
+      '/stats/term_data',
+      queryParameters: {
+        'period': period,
+        if (langId != null) 'lang_id': langId.toString(),
+      },
+    );
+  }
+
+  /// One vocabulary-progress report (`jlpt`, `cefr`, `topik`, `dele`,
+  /// `russian`, `german`, `thai`, `french`, `arabic`, `hsk2`, `hsk3`).
+  Future<Response<String>> getLevelReportData({
+    required String kind,
+    required int langId,
+  }) async {
+    return await _dio.get<String>(
+      '/stats/${kind}_data',
+      queryParameters: {'lang_id': langId.toString()},
+    );
+  }
+
+  /// Grammar points detected on a reading page.  [text] is the page text the
+  /// reader is showing; the server analyses the whole page when it is empty.
+  Future<Response<String>> getGrammarAnalysis({
+    required int bookId,
+    required int pageNum,
+    String? text,
+  }) async {
+    return await _dio.get<String>(
+      '/read/grammar_analysis/$bookId/$pageNum',
+      queryParameters: {
+        if (text != null && text.trim().isNotEmpty) 'text': text,
+      },
+    );
   }
 
   Future<Response<String>> fetchAllTerms({

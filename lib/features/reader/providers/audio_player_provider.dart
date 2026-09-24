@@ -1,7 +1,11 @@
 import 'package:audioplayers/audioplayers.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import '../../../core/network/content_service.dart';
+import '../../../core/network/session_manager.dart';
 import 'reader_provider.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 
@@ -70,6 +74,18 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   int _page = 0;
   late ContentService _contentService;
   String? _previousServerUrl;
+
+  /// audioplayers 6.x cannot send request headers for remote sources, so
+  /// when the server requires auth (session cookie / Basic Auth) the audio
+  /// is streamed into a cache file and played back from disk instead.
+  static final Dio _audioDio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(minutes: 5),
+      followRedirects: false,
+      validateStatus: (status) => status != null && status < 400,
+    ),
+  );
 
   StreamSubscription? _playerStateSubscription;
   StreamSubscription? _positionSubscription;
@@ -240,7 +256,13 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       state = state.copyWith(bookmarkDurations: bookmarkDurations);
 
       await _audioPlayer!.stop();
-      await _audioPlayer!.setSourceUrl(audioUrl);
+      final authHeaders = SessionManager.authHeaders();
+      if (authHeaders.isEmpty) {
+        await _audioPlayer!.setSourceUrl(audioUrl);
+      } else {
+        final audioFile = await _ensureLocalAudioFile(audioUrl, authHeaders);
+        await _audioPlayer!.setSourceDeviceFile(audioFile.path);
+      }
 
       if (audioCurrentPos != null && audioCurrentPos > Duration.zero) {
         await _audioPlayer!.seek(audioCurrentPos);
@@ -377,6 +399,108 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       await _audioPlayer!.play(source);
     } catch (e) {
       state = state.copyWith(errorMessage: e.toString());
+    }
+  }
+
+  /// Returns a local copy of [audioUrl], downloading it (streaming to disk)
+  /// with the session auth headers when the cached copy does not match the
+  /// remote size.
+  Future<File> _ensureLocalAudioFile(
+    String audioUrl,
+    Map<String, String> authHeaders,
+  ) async {
+    final cacheDir = await getApplicationCacheDirectory();
+    final audioDir = Directory('${cacheDir.path}/audiobooks');
+    await audioDir.create(recursive: true);
+    final cacheFile = File(
+      '${audioDir.path}/audiobook_${_bookId}_${audioUrl.hashCode.abs()}.audio',
+    );
+
+    final remoteSize = await _probeAudioSize(audioUrl, authHeaders);
+    if (remoteSize != null) {
+      final localSize = await cacheFile.exists()
+          ? await cacheFile.length()
+          : -1;
+      if (localSize == remoteSize) {
+        return cacheFile;
+      }
+    }
+
+    await _downloadAudioToFile(audioUrl, authHeaders, cacheFile);
+    return cacheFile;
+  }
+
+  Future<int?> _probeAudioSize(
+    String url,
+    Map<String, String> authHeaders,
+  ) async {
+    try {
+      final response = await _audioDio.get<ResponseBody>(
+        url,
+        options: Options(
+          headers: {...authHeaders, 'Range': 'bytes=0-0'},
+          responseType: ResponseType.stream,
+        ),
+      );
+      final status = response.statusCode ?? 0;
+      if (status == 206) {
+        final contentRange = response.headers.value('content-range') ?? '';
+        final match = RegExp(r'/(\d+)$').firstMatch(contentRange);
+        return match != null ? int.tryParse(match.group(1)!) : null;
+      }
+      if (status == 200) {
+        final contentLength = response.headers.value('content-length');
+        return contentLength != null ? int.tryParse(contentLength) : null;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _downloadAudioToFile(
+    String url,
+    Map<String, String> authHeaders,
+    File target, {
+    bool retriedAfterLogin = false,
+  }) async {
+    final tmp = File('${target.path}.part');
+    IOSink? sink;
+    try {
+      final response = await _audioDio.get<ResponseBody>(
+        url,
+        options: Options(
+          headers: authHeaders,
+          responseType: ResponseType.stream,
+        ),
+      );
+      final status = response.statusCode ?? 0;
+      if (status >= 300 && status < 400) {
+        // Redirected (e.g. to /login): the multi-user session is gone.
+        if (!retriedAfterLogin && await SessionManager.tryAutoRelogin()) {
+          await _downloadAudioToFile(
+            url,
+            SessionManager.authHeaders(),
+            target,
+            retriedAfterLogin: true,
+          );
+          return;
+        }
+        throw const ServerLoginRequiredException();
+      }
+      sink = tmp.openWrite();
+      await sink.addStream(response.data!.stream);
+      await sink.flush();
+      await sink.close();
+      sink = null;
+      await tmp.rename(target.path);
+    } catch (_) {
+      try {
+        sink ??= tmp.openWrite();
+        await sink.close();
+      } catch (_) {}
+      if (await tmp.exists()) await tmp.delete();
+      rethrow;
     }
   }
 

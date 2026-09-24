@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="GLDHO5XfoQ4CGrv5YISsBW">
+<head data-page-node-id="m1Au3D5rlO4hGq5XSAe7EC">
+<meta charset="UTF-8" data-page-node-id="HOU2v2pTO6ojRKeoELjJQi">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="9NobPA0VQgDC8IvAFZG327">
+<title>LuteForMobile 手感与选项分布改造 · 实施记录</title>
+<style>
+  :root {
+    --bg: #FAF9F7;
+    --surface: #FFFFFF;
+    --border: #E4E1DC;
+    --ink: #1F1D1B;
+    --ink-2: #55514C;
+    --ink-3: #8A857E;
+    --accent: #2F5C99;
+    --good: #2E7D46;
+    --good-soft: #ECF6EF;
+    --warn: #A8541A;
+    --warn-soft: #FBF1E7;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 48px 24px 72px;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 29px; line-height: 1.3; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-3); font-size: 14.5px; }
+  .sub code { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+
+  h2 {
+    font-size: 19px; margin: 44px 0 16px; letter-spacing: -0.01em;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  }
+  p { margin: 0 0 14px; color: var(--ink-2); }
+  ul { margin: 0 0 14px; padding-left: 22px; color: var(--ink-2); }
+  li { margin-bottom: 7px; }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 22px 0 8px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  .card .k { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .card .v { font-size: 25px; font-weight: 650; margin: 6px 0 4px; letter-spacing: -0.02em; color: var(--good); }
+  .card .n { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 8px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  td { color: var(--ink-2); }
+  tr:last-child td { border-bottom: none; }
+  table.boxed { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table.boxed th { background: #F5F3F0; }
+  td.mono, span.mono { font-family: var(--mono); font-size: 13.5px; }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; line-height: 1.6; }
+  .pill.ok { background: var(--good-soft); color: var(--good); }
+  .pill.wait { background: var(--warn-soft); color: var(--warn); }
+
+  pre { background: #2B2926; color: #EDEAE5; border-radius: 10px; padding: 15px 18px;
+        overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.65; margin: 14px 0; }
+  code.inl { font-family: var(--mono); font-size: 13.5px; background: #F2F0ED;
+             padding: 1px 6px; border-radius: 5px; color: var(--ink); }
+  .note { background: var(--accent-soft, #EDF2FA); border-left: 3px solid var(--accent);
+          border-radius: 0 10px 10px 0; padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--ink-2); }
+  .note.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .note strong { color: var(--ink); }
+  footer { margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--border);
+           font-size: 13px; color: var(--ink-3); }
+  @media (max-width: 640px) { .cards { grid-template-columns: 1fr; } body { padding: 32px 16px 56px; } }
+</style>
+</head>
+<body data-page-node-id="YKfOCpF0u7ORbGyTCjooQ4">
+<div class="wrap" data-page-node-id="H0saMDmPRJWUJncGMiuMsy">
+
+  <header data-page-node-id="aDRw1sU6yNXFlBcr61lSXB">
+    <h1 data-page-node-id="ANqqgyBCPFAn3eRIXJJmAG">LuteForMobile 手感与选项分布改造</h1>
+    <div class="sub" data-page-node-id="67StP36BSJiykkarDuHs1p">
+      实施记录 · 共 11 项改动 &nbsp;·&nbsp;
+      源码 <code data-page-node-id="dG32acbv7EWHfbWXINrLNS">lib/</code> &nbsp;·&nbsp; 2026-09-22 ～ 23
+    </div>
+  </header>
+
+  <p data-page-node-id="iRP7vb8f6oHDpAAr7HRVIq">
+    起因是「app 手感很差、选项分布也很差」。先做了一轮基于源码的量化诊断
+    （见 <code class="inl" data-page-node-id="cvzc6xWuBwpUnzBHdhKdGB">docs/ux_diagnosis.html</code>），定位到三个根因，
+    然后按优先级逐项实施。本文件记录**实际改了什么、怎么验证的、哪些还没验证**。
+  </p>
+
+  <div class="cards" data-page-node-id="uc1kok1PEUz2rfwBUltl8J">
+    <div class="card" data-page-node-id="ySKrGBHj5SfpQGJYrDV9AF"><div class="k" data-page-node-id="SyPG2CyQgs4U9C67mpqdSc">改动项</div><div class="v" data-page-node-id="wZfqT8KDodYVGN0no9hkrw">11</div><div class="n" data-page-node-id="M3RIXgKePHDceIDcmINcuE">覆盖导航 / 配色 / 触感 / 性能 / 数据健壮性</div></div>
+    <div class="card" data-page-node-id="VY0ZjtcDuAr8AGEy0pvRaA"><div class="k" data-page-node-id="9D4n7Gx8JHw8xAwUFCn4fQ">编译错误</div><div class="v" data-page-node-id="1MJAfLdcloBij8WBkkPACZ">0</div><div class="n" data-page-node-id="opkD0dIC1sBqXGpEuPWiji">每项改动均通过静态分析</div></div>
+    <div class="card" data-page-node-id="nfjBvTLTfSCb1WMGkBrU5x"><div class="k" data-page-node-id="9BK4Kueh6SmpmFllbcBxhO">新增告警</div><div class="v" data-page-node-id="uhINSfpYQPG9tb1xL5L0JE">0</div><div class="n" data-page-node-id="jCMD6cAC3bF2e0Xit5f0VX">issue 总数与改动前持平（200）</div></div>
+  </div>
+
+  <h2 data-page-node-id="sTYlslvT95BDpiDE4xAd54">一、三个根因的处理情况</h2>
+  <table class="boxed" data-page-node-id="0uCWrV4wfGMH03iXUiEHHr">
+    <thead data-page-node-id="tsXLsXG77fIBIVSC1j1rda"><tr data-page-node-id="OoeyOyhtBx00pOABeOlyv1"><th data-page-node-id="xNa9BnZEfsTJ3sHdYix8uT">根因</th><th data-page-node-id="y0c4zxYw6hSvMEue74exUn">处理</th><th data-page-node-id="eCWRHmy3TnN6rhamcWZqwW">状态</th></tr></thead>
+    <tbody data-page-node-id="N6cZ2WOSKsgeck2pLGJfvz">
+      <tr data-page-node-id="hfl5Pj74zfGEeVMHGFSt8H">
+        <td data-page-node-id="7cOVFOdzLHCokwwfCZpBKk"><strong data-page-node-id="GdvAnPlOQZAmAlC4sIExhZ">导航是桌面布局</strong><br data-page-node-id="GqQE0tWCV5AqGLbKAf4YTl"><span class="mono" style="font-size:12.5px" data-page-node-id="Hh1N1T82cW1goUFYxsNCNo">80px 图标栏 + 汉堡入口，无底部导航</span></td>
+        <td data-page-node-id="ciJe4LvNg2xLSqe2Gqr9Rk">新增底部导航（5 入口），抽屉与汉堡**全部保留**，纯增量</td>
+        <td data-page-node-id="FpkzYPifwPfE8sw0QVn0mK"><span class="pill ok" data-page-node-id="3HE4avpnwsPK1dCgzxc70n">已实施</span></td>
+      </tr>
+      <tr data-page-node-id="edZQplu7ERrGSA3B9gGZTK">
+        <td data-page-node-id="s7RyHSn9BiK3SFgW8agGbT"><strong data-page-node-id="sjUgbBdiEBXvQRk6ADp9jg">状态色分不开</strong><br data-page-node-id="rPIAehNIRzhHM5GpYN7QDr"><span class="mono" style="font-size:12.5px" data-page-node-id="lbt7lrbOX2yjAQt9DsiFkT">同色相带 + alpha 稀释</span></td>
+        <td data-page-node-id="GCGZsxE3ZNW1CmKSXyo2Fq">三个主题的状态色全部按色相分段重做，并通过 ΔE + 对比度校验</td>
+        <td data-page-node-id="vzXDU7PyImIEAsE0aQXawe"><span class="pill ok" data-page-node-id="pQ8CZ1kS08x3QG66pgnrYv">已实施</span></td>
+      </tr>
+      <tr data-page-node-id="Fxt2ATKqd2hvwyPhSmiEhp">
+        <td data-page-node-id="gS0c1MzP45wo7xwmiUxPjf"><strong data-page-node-id="2QLY8WhCDJdQhnaGGWRCJA">词条弹窗吃掉整屏</strong><br data-page-node-id="9nWpIyaP4ioLqn9k5MnD2V"><span class="mono" style="font-size:12.5px" data-page-node-id="AlVRMUgvLd7lQEglhpg9DX">纵向堆 7 段，遮住原文</span></td>
+        <td data-page-node-id="9WZJpcYTjZVRpqPGLJSLwa">罗马音 / 标签 / 父词收进默认折叠的「More」</td>
+        <td data-page-node-id="ufqW1YgdJYURQrTSRaGG0q"><span class="pill ok" data-page-node-id="XuhdYV6DVeJedtKkFgix2G">已实施</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 data-page-node-id="tqC96cqylpgz0Il4ORD49Y">二、全部改动清单</h2>
+  <table class="boxed" data-page-node-id="QIBqBosriBaJxK5YujHRRF">
+    <thead data-page-node-id="OaqV5C0DCeVysAAGbG0p2D"><tr data-page-node-id="Y5XTt9E67oCeloidXetrvv"><th data-page-node-id="st83RtGkpsNUsaGmgIhksE">#</th><th data-page-node-id="apwEqHJp1r6T5PMgiYfwbQ">改动</th><th data-page-node-id="O5ElgeFqt5Ow7d6fXOXhpC">文件</th></tr></thead>
+    <tbody data-page-node-id="lFpwXqplpXrYmeZ239gtrQ">
+      <tr data-page-node-id="1MXFpqfDN464aBwQCqQ6fY"><td data-page-node-id="JyWpqE9iw1XwUZ8j5DeM3V">1</td><td data-page-node-id="2YahQLOCqlbemHUSZbsHbS">状态色重做（深 / 浅 / 黑白三主题）</td><td class="mono" data-page-node-id="SRLrKj6iNF8ZQWCjLIhyKE">theme_presets.dart<br data-page-node-id="t5SjAEH884EGlebdkpYVD0">settings_provider.dart</td></tr>
+      <tr data-page-node-id="JFaPxM2E6n02V0smzFbrOt"><td data-page-node-id="KlniqiPQ8zKQKTJEQMLsAW">2</td><td data-page-node-id="fbEhqJUs5T6fWUJ5LRpxRK">状态按钮加文字标签（不再是 <span class="mono" data-page-node-id="p0gGneg6s40dU8Jx4j7R8K">1 2 3 4 5 ✓ ✕</span>）</td><td class="mono" data-page-node-id="VqWDFAepoqJpNww73qQW7U">term_form.dart</td></tr>
+      <tr data-page-node-id="Ysp63Wbl1GdXqTHr3dkFXO"><td data-page-node-id="YeyhfKdNz8LM2DSbDBk9GG">3</td><td data-page-node-id="Ot5sCbw9b10DL51D4Nehq2">触觉反馈（翻页 / 选词 / 切档 / 导航）</td><td class="mono" data-page-node-id="QcG1VHqLI53kU9p8t134rn">reader_screen.dart<br data-page-node-id="SKQxM3p8aVm2g8sgyru1Pa">text_display.dart<br data-page-node-id="h9OUGj6hnsgyHyZCCZNkkW">term_form.dart<br data-page-node-id="fLWqUASrBWJriKI6D6Zg7P">app_drawer.dart</td></tr>
+      <tr data-page-node-id="dOcv6vUCnndCNzHAc0C5IB"><td data-page-node-id="SFbsPkGZE8aqAU0GzJCJrt">4</td><td data-page-node-id="8y4sLu18mfe5I1VFCh0eEp">抽屉导航加文字标签</td><td class="mono" data-page-node-id="NiOEuUM08fXVlk65mdLOo5">app_drawer.dart</td></tr>
+      <tr data-page-node-id="XCc40CNz7EL3JVMEIz0dJp"><td data-page-node-id="aqDkt2xVPP16BVK61lqhi7">5</td><td data-page-node-id="PQWDSSjHPFbC5LcseyzRKn">底部导航（Reader / Books / Terms / Stats / Settings）</td><td class="mono" data-page-node-id="Vc3MJGr3rD98VlP48ZjJ5N">app.dart</td></tr>
+      <tr data-page-node-id="F6Ojr5jpSCSG14i3gCYB6c"><td data-page-node-id="cnruRvp3MTxYpjuXy9CpNr">6</td><td data-page-node-id="4iy5AkIlPEhChHyOsuLqEx">拖动跟手翻页（位移 + 速度双判定，18% 屏宽阈值）</td><td class="mono" data-page-node-id="nJDD8pSwOt6IE8RMHwsln4">reader_screen.dart</td></tr>
+      <tr data-page-node-id="JtD67hI7kBWR7BxVuE4JgU"><td data-page-node-id="FQuCSAiB4gQcXrw9PYELNC">7</td><td data-page-node-id="CnqvoWnYfCwBUs3aMv0yGi">词条弹窗折叠不常用项</td><td class="mono" data-page-node-id="FJDoMeDBSsS9jCSfCPqq1A">term_form.dart</td></tr>
+      <tr data-page-node-id="PVAeVBhETMFAbKp168Bh64"><td data-page-node-id="txLXgPOHVeov3zNMTcnu7A">8</td><td data-page-node-id="HPP0hxj51OyIaRKlpFKCH7">长按选词命中缓存（消除 O(n) 卡顿）</td><td class="mono" data-page-node-id="RmsdVxFgCfs1ufIr4BIAUz">text_display.dart</td></tr>
+      <tr data-page-node-id="oJeazegfSjWuvNPLP7agew"><td data-page-node-id="vG7CnoiFVgab5GwN2iaVAb">9</td><td data-page-node-id="fdtqNqoNTxIYl0cabrA2AP">翻页曲线 <span class="mono" data-page-node-id="zvUkLW863iizRMDqqT6gik">easeInOut → easeOutCubic</span></td><td class="mono" data-page-node-id="n5L5uhzs2Z8WfhpiBoZ7so">reader_screen.dart</td></tr>
+      <tr data-page-node-id="7sTfKb098uYTFwAECf2gyP"><td data-page-node-id="jUm4cLZFTNxX81kIAUcRcT">10</td><td data-page-node-id="wZDhnkQH7ChxJaBJv3h8nD">7 处 JSON 解析容错（防 null 崩溃）</td><td class="mono" data-page-node-id="8odhzbHCV7fHMSviCgBfkC">book.dart、datatables_response.dart<br data-page-node-id="t7YVbLUVBUmWrHUMo6E9NM">language.dart、language_stats.dart<br data-page-node-id="U6FLADDbCYjWJYrRqfaC6w">stats_data.dart、term.dart<br data-page-node-id="I2PC7iUcof6tNrQGPklucA">term_cache_entry.dart</td></tr>
+      <tr data-page-node-id="N27N1LgZLdqaOSVnT2SEdS"><td data-page-node-id="nsQtNvDCjKmFEfsacsFpQB">11</td><td data-page-node-id="CwsOOriUORKkSDPcfETc95">设置页分组（SERVER / READING / APPEARANCE）</td><td class="mono" data-page-node-id="qIIfoVBRzCf1lrHXn5tI0P">settings_screen.dart</td></tr>
+      <tr data-page-node-id="xthEbesd9EjZ3u3HBjRdeq"><td data-page-node-id="dpzY1H9VDpO2tXF5VBwt6M">—</td><td data-page-node-id="3rv3TmLuL8JXM97tDkL3aB">弹窗弹性曲线（<span class="mono" data-page-node-id="ByhKz130jaodv0E3W8CAgA">easeOutBack</span>，未打包）</td><td class="mono" data-page-node-id="1WnhbzcAGcEbMtGitw6wNf">term_tooltip.dart</td></tr>
+    </tbody>
+  </table>
+
+  <h2 data-page-node-id="eEjVwhaQ7ll03U3LzoRqPv">三、验证方式与覆盖范围</h2>
+  <p data-page-node-id="4ozXcEl5yMZ0IC0VQMz9sE">不同性质的改动，验证手段不同。这里如实说明每类改动**验证到了什么程度**。</p>
+  <table class="boxed" data-page-node-id="D5t0uEsaZNGMDDFTgw4qhy">
+    <thead data-page-node-id="4ikqgrZqWiTt1VFa4hXMaN"><tr data-page-node-id="kfh5QU2TnFSba5uKkbwGD2"><th data-page-node-id="1fosBAbcgjdNBcDg2OyNIu">验证手段</th><th data-page-node-id="pfinKKak2GghIBTTGUH3bN">能证明什么</th><th data-page-node-id="xpFeLcWATWEFRjR6aNCjG6">不能证明什么</th></tr></thead>
+    <tbody data-page-node-id="J0em3RKrF0IylA1kseLGrj">
+      <tr data-page-node-id="hhZykX2nLxFOR4qze4UCfn">
+        <td data-page-node-id="ZDxOwSiQX9sUOsSzpVFNDq">静态分析 <span class="mono" data-page-node-id="ArCjDO0vC0pDMc6sCEaBpZ">flutter analyze</span></td>
+        <td data-page-node-id="EJ602KcOa3buOve4jOr1vJ">代码可编译、无 error、无新增告警（200 issues 与改动前持平）</td>
+        <td data-page-node-id="jadxhCL5tlgxwCPw0MLvy4">运行时的行为、布局是否正确</td>
+      </tr>
+      <tr data-page-node-id="kPZzZiqeXfHazlH0PCfH7b">
+        <td data-page-node-id="XwYYVmArKn0J95Q3WbkxYu">配色守护测试 <span class="mono" data-page-node-id="ZvfVmvkRec9rj4MP1l9kHh">flutter test</span></td>
+        <td data-page-node-id="wVfmewJpLLiYLHYDk1VRZP">调色板的 CIE76 ΔE ≥ 阈值、文字/底色对比度达标、无重复色</td>
+        <td data-page-node-id="VUwJ5BWozFN1ziaexmlQGF">真机上眼睛看到的观感</td>
+      </tr>
+      <tr data-page-node-id="dtoS9SGvkLd31OnnxsdtJp">
+        <td data-page-node-id="nqZcKnJ2PprCK8l6GEbXer">改动前后对照</td>
+        <td data-page-node-id="E4EdbBstF53T7QU4if38ur">每一项 issue 是"本来就有的"还是"本次引入的"</td>
+        <td data-page-node-id="fTwl7Le4qfDHbpLx4GRcLm">—</td>
+      </tr>
+      <tr data-page-node-id="CF39ODmobAVnTbBKMAl7kp">
+        <td data-page-node-id="MmNZDKW4YNV7STqEtljrdd">真机截图（adb）</td>
+        <td data-page-node-id="OTdiNgOmqf8dg4Bv8TCcHM">底部导航实际渲染正常、服务器连接流程走通</td>
+        <td data-page-node-id="s3SEBXP7DYpwSJcnrSVh2n">触感、动画流畅度等主观体验</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="note warn" data-page-node-id="z4X15BkREBZFxg7U1KyEau">
+    <strong data-page-node-id="bwBxvqijvEBPdoXc8nmzNT">仍需你在真机上确认的：</strong>拖动跟手的流畅度（长页面可能掉帧）、
+    底部导航 80px 对阅读区的影响、状态色在真实屏幕上的可分辨度、
+    设置页分组标题的字号/间距、弹窗弹性曲线的过冲幅度。
+    这些是静态分析**无法**覆盖的部分。
+  </div>
+
+  <h2 data-page-node-id="DMqyIqpnaGv4j5DzHMhAFU">四、附带修掉的两个真实 bug</h2>
+
+  <p data-page-node-id="fapXz1QwrYzPIBGwWF5rSP"><strong data-page-node-id="TBH5DXScttrYJHEsHpvm09">1. 书架打不开（<span class="mono" data-page-node-id="iKJ0LfPe2nfOyr8ESqB9A2">type 'Null' is not a subtype of type 'int'</span>）</strong></p>
+  <p data-page-node-id="aEGP7JEDQlo1FuUkCBPxsV">
+    真机联调时发现：<span class="mono" data-page-node-id="F7gTAThkGCSMf5otUqIJTT">Book.fromJson</span> 用了强制类型转换
+    （<span class="mono" data-page-node-id="Mnplo9c5q9XZhRld9SjiC1">json['PageCount'] as int</span> 等），服务端任一字段返回
+    <span class="mono" data-page-node-id="Gap7qctbXxzpAxKp8z63dW">null</span> 就会让整页书架崩溃。服务端 SQL 里确实存在
+    <span class="mono" data-page-node-id="PblZhynt0Ua8WMZ9AgLCBX">case when … else currtext.TxOrder end as PageNum</span>
+    这类可能算出 NULL 的表达式。
+  </p>
+  <p data-page-node-id="Glimpm9wA5HGH4oFFDa8mB">
+    顺着这条线索做了**全项目排查**，又找出 6 处同类脆弱点
+    （books 列表解析入口、语言映射、统计页、词条列表、缓存解析等），
+    统一改成容错转换。**这是代码里原本就存在的缺陷，不是本次 UI 改动引入的。**
+  </p>
+
+  <p data-page-node-id="MIeOmMDrUtf2FnaXuTcY1N"><strong data-page-node-id="6o5bMR38vhhe2OIAmxPpci">2. 黑白主题状态色有 4 对完全相同</strong></p>
+  <p data-page-node-id="lVc0GtDYKUqBIiOhaHg5mH">
+    <span class="mono" data-page-node-id="gwPaZK260u5pvX4tMqbN5G">status0</span> 与 <span class="mono" data-page-node-id="040tPqCDl8SkUsaWV76a4Q">status4</span> 都是
+    <span class="mono" data-page-node-id="DTaLmWuDch07Sv7Tb8XsAk">#999999</span>；<span class="mono" data-page-node-id="a06QGOExvgcNKQtnDGBgAi">status1</span> /
+    <span class="mono" data-page-node-id="IATcTP9kH2Z3jwJHXnO7l9">status98</span> / <span class="mono" data-page-node-id="4Ul3oRkYa2zXn4jNvgjkGu">status99</span>
+    三个都是 <span class="mono" data-page-node-id="bnro8kUjeWrOcNPaRg3kKB">#000000</span>（ΔE = 0）。
+    且 <span class="mono" data-page-node-id="JuGaa1lQiBg64UFGcOhDo8">Learning5</span> 上的白字对比度只有
+    <strong data-page-node-id="3ZjGU8kjRXKRSEfh0Ft2VX">1.61</strong>，几乎看不见。已按"越熟越浅"的语义重排为 8 级灰阶。
+  </p>
+
+  <h2 data-page-node-id="AazY5rI0kaWOZak3iWAkjU">五、交付记录</h2>
+  <table class="boxed" data-page-node-id="eJ3fU6Bu1SUVJ2aoJzGqYM">
+    <thead data-page-node-id="kQqwkrKQ4ANwKScuJvFj12"><tr data-page-node-id="IVv8tFwB9Y1X6ozEffkxhU"><th data-page-node-id="PHS53DFWIfXDYx7pCH9uTn">版本</th><th data-page-node-id="uYNVebkNZtUzXCNLqpBJJp">包含</th><th data-page-node-id="pZ9DE4riKXGGvXbBBHxEgA">位置</th></tr></thead>
+    <tbody data-page-node-id="BnlvcJHHMpaf2Ck1P7VAHm">
+      <tr data-page-node-id="nhpaVcH1dHy8kwaG6uTMCM"><td class="mono" data-page-node-id="PHjoFfkb52zjJQyu1J6nXD">v1 (test)</td><td data-page-node-id="KzMk6QbbwAsMl561SttAiT">改动 1–5</td><td class="mono" data-page-node-id="0CZh5wS3oroloQBeb29A9I">/sdcard/Download/</td></tr>
+      <tr data-page-node-id="tUloqaWlUeAPPh8gLw5rhR"><td class="mono" data-page-node-id="Tzt7Db5aZhEgiXw6ihu1Ow">v2</td><td data-page-node-id="ifozPZJzPXIYZPB958AAD6">+ 改动 6–9</td><td class="mono" data-page-node-id="Q4tHm026qmGyHkwY8hQcyR">同上</td></tr>
+      <tr data-page-node-id="b0zcXf5euQJIN2dnvpuV1q"><td class="mono" data-page-node-id="mjZPzYZzra1iDDC69r0tD5">v3</td><td data-page-node-id="mg99F8eQcg28FdTDIJPVdX">+ Book 容错</td><td class="mono" data-page-node-id="7HheG4JFKbpKAtWkyk7zqm">同上</td></tr>
+      <tr data-page-node-id="iyDyMSlFIfns4Ag2MCERQD"><td class="mono" data-page-node-id="hx6yMdzGOQBR8PSpVCeFSH">v4</td><td data-page-node-id="pAlETxdDmvBjjTNzAXsU46">+ 其余 6 处容错</td><td class="mono" data-page-node-id="5BOsFxQO88qHObXcaHBcFM">同上</td></tr>
+      <tr data-page-node-id="hZGJpkAeejvWRMwLqV46U5"><td class="mono" data-page-node-id="ADSoFWWhTqRD4XHwyFAC5d"><strong data-page-node-id="lWAVimwXgIc44spjDxqUQO">v5</strong></td><td data-page-node-id="12bgGsKi3VicfmUcTCDZLg"><strong data-page-node-id="EU1fkfAd7g0VIWWxCjr9CO">+ 设置页分组（当前最新）</strong></td><td class="mono" data-page-node-id="WyfiNjDvmZj4aolqjB0DMU">同上</td></tr>
+      <tr data-page-node-id="bsdXAVBLJXAFEphqz9ELAO"><td class="mono" data-page-node-id="E5u6y3pL6bq0c2BQyooAyV">未打包</td><td data-page-node-id="VqJTynthaLFI6ZxBAmaCvv">弹窗弹性曲线</td><td data-page-node-id="GlCMUHtzVKsJqdOiaMKTWl">仅源码</td></tr>
+    </tbody>
+  </table>
+  <p data-page-node-id="Vux5xpCkogREWIozKDTF6W">
+    APK 只含 <span class="mono" data-page-node-id="OAAkPmEw3m6HzHdcsmZTVJ">arm64-v8a</span>（27.6 MB，全 ABI 版本是 69 MB）。
+    安装方式：文件管理器 → 下载 → 点击安装（ColorOS 会拦截 adb 安装，
+    需手动确认）。
+  </p>
+
+  <footer data-page-node-id="xqyPEuACcdC2IhXOdz1ezn">
+    源码改动均在 <span class="mono" data-page-node-id="nVix6bRYGGM6i5TbMLiR9R">lib/</span> 下，共 13 个文件。
+    配色约束由 <span class="mono" data-page-node-id="6WvXDGkvsoGYFOmaeitarR">test/palette_contrast_test.dart</span> 守护，
+    改配色后跑 <span class="mono" data-page-node-id="xEQisnZcQtSSMrZlCvyHYj">flutter test</span> 即可回归。
+  </footer>
+
+</div>
+</body>
+</html>

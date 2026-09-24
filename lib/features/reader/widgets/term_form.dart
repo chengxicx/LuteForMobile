@@ -3,6 +3,7 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/term_form.dart';
 import '../models/term_tooltip.dart';
@@ -18,6 +19,7 @@ import '../../../core/providers/ai_provider.dart';
 import 'parent_search.dart';
 import 'dictionary_view.dart';
 import '../providers/current_book_provider.dart';
+import '../../../core/network/session_manager.dart';
 
 class TermFormWidget extends ConsumerStatefulWidget {
   final TermForm termForm;
@@ -67,6 +69,10 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
   StateSetter? _imageDialogSetState;
   List<String> _pendingAITranslations = [];
   String? _lastAutoFetchedTermKey;
+  /// 「更多」区域是否展开（罗马音 / 标签 / 父词）。
+  /// 这三项不常改，默认折叠 —— 原先它们与翻译、状态一起纵向堆叠，
+  /// 弹窗一打开就占满大半个屏幕，把原文全遮住了。
+  bool _isMoreExpanded = false;
 
   @override
   void initState() {
@@ -409,16 +415,9 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                     _buildTranslationField(context),
                     const SizedBox(height: 12),
                     _buildStatusField(context),
-                    if (widget.termForm.showRomanization) ...[
-                      const SizedBox(height: 12),
-                      _buildRomanizationField(context),
-                    ],
-                    if (settings.showTags) ...[
-                      const SizedBox(height: 12),
-                      _buildTagsSection(context),
-                    ],
-                    const SizedBox(height: 12),
-                    _buildParentsSection(context),
+                    // 罗马音 / 标签 / 父词收进可折叠的「更多」，
+                    // 让弹窗默认高度降下来，露出底下的原文。
+                    _buildMoreSection(context),
                     const SizedBox(height: 16),
                     _buildButtons(context),
                   ],
@@ -784,18 +783,92 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
     }
   }
 
+  /// 学习档位 1-5，按"越熟越靠右"排列。
+  static const List<String> _learningStatuses = ['1', '2', '3', '4', '5'];
+
+  /// 状态的人类可读名称。与 [TermTooltip.statusLabel] 保持同一套措辞。
+  String _statusLabel(String status) {
+    switch (status) {
+      case '1':
+        return 'Learning 1';
+      case '2':
+        return 'Learning 2';
+      case '3':
+        return 'Learning 3';
+      case '4':
+        return 'Learning 4';
+      case '5':
+        return 'Learning 5';
+      case '99':
+        return 'Well known';
+      case '98':
+        return 'Ignored';
+      default:
+        return 'Unknown';
+    }
+  }
+
   Widget _buildStatusField(BuildContext context) {
-    return Wrap(
-      spacing: 4,
-      runSpacing: 4,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildStatusButton(context, '1', '1', _getStatusColor('1')),
-        _buildStatusButton(context, '2', '2', _getStatusColor('2')),
-        _buildStatusButton(context, '3', '3', _getStatusColor('3')),
-        _buildStatusButton(context, '4', '4', _getStatusColor('4')),
-        _buildStatusButton(context, '5', '5', _getStatusColor('5')),
-        _buildStatusButton(context, '99', '✓', _getStatusColor('99')),
-        _buildStatusButton(context, '98', '✕', _getStatusColor('98')),
+        Row(
+          children: [
+            const Text('Status', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Spacer(),
+            // 当前选中的档位名称，解决"1-5 分别是什么意思"的问题。
+            Text(
+              _statusLabel(_selectedStatus),
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: _getStatusColor(_selectedStatus),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 48,
+          child: Row(
+            children: [
+              for (var i = 0; i < _learningStatuses.length; i++) ...[
+                if (i > 0) const SizedBox(width: 6),
+                Expanded(
+                  child: _buildStatusTile(
+                    context,
+                    value: _learningStatuses[i],
+                    label: _learningStatuses[i],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _buildStatusTile(
+                context,
+                value: '99',
+                label: 'Well known',
+                icon: Icons.check,
+                height: 42,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildStatusTile(
+                context,
+                value: '98',
+                label: 'Ignored',
+                icon: Icons.close,
+                height: 42,
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
@@ -804,46 +877,128 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
     return context.getStatusColor(status);
   }
 
-  Widget _buildStatusButton(
-    BuildContext context,
-    String statusValue,
-    String label,
-    Color statusColor,
-  ) {
-    final isSelected = _selectedStatus == statusValue;
+  /// 单个状态选项。[label] 为数字时只显示数字（学习档），
+  /// 传 [icon] 时显示"图标 + 文字"（已知 / 忽略）。
+  Widget _buildStatusTile(
+    BuildContext context, {
+    required String value,
+    required String label,
+    IconData? icon,
+    double height = 48,
+  }) {
+    final isSelected = _selectedStatus == value;
+    final statusColor = _getStatusColor(value);
+    final foreground = isSelected
+        ? context.appColorScheme.status.highlightedText
+        : context.appColorScheme.text.primary;
 
-    final labelColor = !isSelected && statusValue == '5'
-        ? _getStatusColor('4')
-        : (isSelected ? context.appColorScheme.text.onPrimary : statusColor);
-
-    return InkWell(
-      onTap: () {
-        setState(() {
-          _selectedStatus = statusValue;
-        });
-        _updateForm();
-      },
-      child: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: isSelected
-              ? statusColor
-              : context.getStatusColorWithOpacity(statusValue),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: statusColor, width: isSelected ? 2 : 1),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: labelColor,
-            ),
+    return Semantics(
+      selected: isSelected,
+      button: true,
+      label: _statusLabel(value),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () {
+          HapticFeedback.selectionClick();
+          setState(() {
+            _selectedStatus = value;
+          });
+          _updateForm();
+        },
+        child: Container(
+          height: height,
+          decoration: BoxDecoration(
+            color: isSelected
+                ? statusColor
+                : context.getStatusColorWithOpacity(value, opacity: 0.12),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: statusColor, width: isSelected ? 2 : 1),
+          ),
+          child: Center(
+            child: icon == null
+                ? Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: foreground,
+                    ),
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 16, color: foreground),
+                      const SizedBox(width: 5),
+                      Flexible(
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: foreground,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
           ),
         ),
       ),
+    );
+  }
+
+  /// 罗马音 / 标签 / 父词 —— 这三项不常改，默认折叠起来。
+  Widget _buildMoreSection(BuildContext context) {
+    final settings = ref.watch(termFormSettingsProvider);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 4),
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            HapticFeedback.selectionClick();
+            setState(() {
+              _isMoreExpanded = !_isMoreExpanded;
+            });
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+            child: Row(
+              children: [
+                Icon(
+                  _isMoreExpanded ? Icons.expand_less : Icons.expand_more,
+                  size: 20,
+                  color: context.appColorScheme.text.secondary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _isMoreExpanded ? 'Less' : 'More',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: context.appColorScheme.text.secondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_isMoreExpanded) ...[
+          if (widget.termForm.showRomanization) ...[
+            const SizedBox(height: 8),
+            _buildRomanizationField(context),
+          ],
+          if (settings.showTags) ...[
+            const SizedBox(height: 12),
+            _buildTagsSection(context),
+          ],
+          const SizedBox(height: 12),
+          _buildParentsSection(context),
+        ],
+      ],
     );
   }
 
@@ -890,6 +1045,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                     borderRadius: BorderRadius.circular(5),
                     child: Image.network(
                       resolvedImageUrl,
+                      headers: SessionManager.authHeaders(),
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) {
                         return _buildSmallImagePlaceholder(context);
@@ -947,6 +1103,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                               aspectRatio: 16 / 9,
                               child: Image.network(
                                 _resolveImageUrl(_currentImageUrl!)!,
+                                headers: SessionManager.authHeaders(),
                                 fit: BoxFit.cover,
                                 errorBuilder: (context, error, stackTrace) {
                                   return _buildImagePlaceholder(context);
@@ -1276,6 +1433,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                                 borderRadius: BorderRadius.circular(8),
                                 child: Image.network(
                                   previewUrl,
+                                  headers: SessionManager.authHeaders(),
                                   fit: BoxFit.cover,
                                   errorBuilder: (context, error, stackTrace) =>
                                       _buildImagePlaceholder(context),

@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
+import 'package:lute_for_mobile/features/settings/widgets/text_formatting_controls.dart';
 import 'package:lute_for_mobile/core/cache/providers/tooltip_cache_provider.dart';
 import 'package:lute_for_mobile/core/cache/providers/cache_stats_provider.dart';
 import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
 import '../providers/sentence_reader_provider.dart';
 import '../providers/reader_provider.dart';
+import '../models/page_data.dart';
 import '../../../../app.dart';
 
 class ReaderDrawerSettings extends ConsumerWidget {
@@ -13,114 +15,56 @@ class ReaderDrawerSettings extends ConsumerWidget {
 
   const ReaderDrawerSettings({super.key, required this.currentRoute});
 
-  static const Map<String, List<FontWeight>> _fontWeights = {
-    'Roboto': [
-      FontWeight.w200,
-      FontWeight.w300,
-      FontWeight.normal,
-      FontWeight.w500,
-      FontWeight.w600,
-      FontWeight.bold,
-      FontWeight.w800,
-    ],
-    'AtkinsonHyperlegibleNext': [
-      FontWeight.w200,
-      FontWeight.w300,
-      FontWeight.normal,
-      FontWeight.w500,
-      FontWeight.w600,
-      FontWeight.bold,
-      FontWeight.w800,
-    ],
-    'Vollkorn': [
-      FontWeight.normal,
-      FontWeight.w500,
-      FontWeight.w600,
-      FontWeight.bold,
-      FontWeight.w900,
-    ],
-    'LinBiolinum': [FontWeight.normal, FontWeight.bold],
-    'Literata': [
-      FontWeight.normal,
-      FontWeight.w500,
-      FontWeight.w600,
-      FontWeight.bold,
-    ],
-  };
-
-  static const Map<int, String> _weightLabels = {
-    200: 'Extra Light',
-    300: 'Light',
-    400: 'Regular',
-    500: 'Medium',
-    600: 'Semi Bold',
-    700: 'Bold',
-    800: 'Extra Bold',
-    900: 'Black',
-  };
-
-  List<FontWeight> _getAvailableWeights(String fontFamily) {
-    return _fontWeights[fontFamily] ?? _fontWeights['Roboto']!;
-  }
-
-  FontWeight _getWeightFromIndex(double index, List<FontWeight> weights) {
-    final idx = index.round().clamp(0, weights.length - 1);
-    return weights[idx];
-  }
-
-  String _getWeightLabel(FontWeight weight) {
-    return _weightLabels[weight.value] ?? 'Regular';
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final textSettings = ref.watch(textFormattingSettingsProvider);
     final settings = ref.watch(settingsProvider);
     final termFormSettings = ref.watch(termFormSettingsProvider);
-    final availableWeights = _getAvailableWeights(textSettings.fontFamily);
-    int weightIndex = availableWeights.indexOf(textSettings.fontWeight);
-    if (weightIndex == -1) {
-      weightIndex = availableWeights.indexOf(FontWeight.normal);
-      if (weightIndex == -1) {
-        weightIndex = 0;
-      }
-    }
-    final weightIndexDouble = weightIndex.toDouble();
 
-    return Container(
+    // The panel is taller than a phone screen as soon as "Text Formatting" is
+    // expanded, and the bottom navigation bar took another ~80px off it.  A
+    // plain Column just overflowed: everything below the fold -- the font and
+    // size controls among it -- was clipped and unreachable, which is why the
+    // reader's font and text size could not be changed at all.
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 16),
+          // 标题用 titleMedium（与抽屉 header 同级），之前用 titleLarge
+          // （22sp）比抽屉自己的标题还大，在 320px 宽的抽屉里显得突兀；
+          // tilePadding/childrenPadding 归零让它与下面的开关行左对齐。
           ExpansionTile(
+            dense: true,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+            childrenPadding: EdgeInsets.zero,
             title: Text(
               'Text Formatting',
-              style: Theme.of(context).textTheme.titleLarge,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
             initiallyExpanded: false,
             children: [
               const SizedBox(height: 8),
-              _buildTextSizeSlider(context, ref, textSettings),
-              const SizedBox(height: 16),
-              _buildLineSpacingSlider(context, ref, textSettings),
-              const SizedBox(height: 16),
-              _buildFontDropdown(context, ref, textSettings),
-              const SizedBox(height: 16),
-              _buildFontWeightSlider(
-                context,
-                ref,
-                textSettings,
-                weightIndexDouble,
-                availableWeights,
+              // The preview shows the page being read -- sizing text against a
+              // fixed Latin sample would be wrong for a Chinese or Arabic book,
+              // and the panel covers the page it is meant to be judging.
+              Consumer(
+                builder: (context, ref, _) {
+                  final pageData = ref.watch(
+                    readerProvider.select((s) => s.pageData),
+                  );
+                  return TextFormattingControls(
+                    dense: true,
+                    previewTokens: _previewTokens(pageData),
+                  );
+                },
               ),
-              const SizedBox(height: 16),
-              _buildItalicToggle(context, ref, textSettings),
               const SizedBox(height: 16),
             ],
           ),
           const SizedBox(height: 16),
-          _buildFullscreenToggle(context, ref, textSettings),
+          _buildFullscreenToggle(context, ref),
           if (currentRoute != 'sentence-reader') ...[
             const SizedBox(height: 24),
             _buildWordGlowToggle(context, ref),
@@ -423,155 +367,10 @@ class ReaderDrawerSettings extends ConsumerWidget {
     );
   }
 
-  Widget _buildTextSizeSlider(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic textSettings,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Text Size: ${textSettings.textSize.toInt()}',
-          style: Theme.of(context).textTheme.labelLarge,
-        ),
-        Slider(
-          value: textSettings.textSize,
-          min: 12,
-          max: 30,
-          divisions: 18,
-          onChanged: (value) {
-            ref
-                .read(textFormattingSettingsProvider.notifier)
-                .updateTextSize(value);
-          },
-        ),
-      ],
+  Widget _buildFullscreenToggle(BuildContext context, WidgetRef ref) {
+    final fullscreenMode = ref.watch(
+      textFormattingSettingsProvider.select((s) => s.fullscreenMode),
     );
-  }
-
-  Widget _buildLineSpacingSlider(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic textSettings,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Line Spacing: ${textSettings.lineSpacing.toStringAsFixed(1)}',
-          style: Theme.of(context).textTheme.labelLarge,
-        ),
-        Slider(
-          value: textSettings.lineSpacing,
-          min: 0.6,
-          max: 2.0,
-          divisions: 14,
-          onChanged: (value) {
-            ref
-                .read(textFormattingSettingsProvider.notifier)
-                .updateLineSpacing(value);
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFontDropdown(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic textSettings,
-  ) {
-    final List<String> fonts = [
-      'Roboto',
-      'AtkinsonHyperlegibleNext',
-      'Vollkorn',
-      'LinBiolinum',
-      'Literata',
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Font', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        DropdownButton<String>(
-          value: textSettings.fontFamily,
-          isExpanded: true,
-          items: fonts.map((String font) {
-            return DropdownMenuItem<String>(value: font, child: Text(font));
-          }).toList(),
-          onChanged: (String? newValue) {
-            if (newValue != null) {
-              ref
-                  .read(textFormattingSettingsProvider.notifier)
-                  .updateFontFamily(newValue);
-            }
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFontWeightSlider(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic textSettings,
-    double weightIndex,
-    List<FontWeight> availableWeights,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Weight: ${_getWeightLabel(availableWeights[weightIndex.toInt()])}',
-          style: Theme.of(context).textTheme.labelLarge,
-        ),
-        Slider(
-          value: weightIndex,
-          min: 0,
-          max: availableWeights.length - 1,
-          divisions: availableWeights.length - 1,
-          label: _getWeightLabel(availableWeights[weightIndex.toInt()]),
-          onChanged: (value) {
-            ref
-                .read(textFormattingSettingsProvider.notifier)
-                .updateFontWeight(_getWeightFromIndex(value, availableWeights));
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildItalicToggle(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic textSettings,
-  ) {
-    return Row(
-      children: [
-        const Text('Italic', style: TextStyle(fontWeight: FontWeight.bold)),
-        const Spacer(),
-        Transform.scale(
-          scale: 0.8,
-          child: Switch(
-            value: textSettings.isItalic,
-            onChanged: (value) {
-              ref
-                  .read(textFormattingSettingsProvider.notifier)
-                  .updateIsItalic(value);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFullscreenToggle(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic textSettings,
-  ) {
     return Row(
       children: [
         const Text(
@@ -582,7 +381,7 @@ class ReaderDrawerSettings extends ConsumerWidget {
         Transform.scale(
           scale: 0.8,
           child: Switch(
-            value: textSettings.fullscreenMode,
+            value: fullscreenMode,
             onChanged: (value) {
               ref
                   .read(textFormattingSettingsProvider.notifier)
@@ -691,6 +490,23 @@ class ReaderDrawerSettings extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  /// The first stretch of the page being read, for the formatting preview.
+  ///
+  /// Statuses come along so the term colours are judged at the same time as
+  /// the size -- a status patch that is legible at 20px can swallow the text
+  /// at 14px.  Items without a wordId (spacing between words) are plain.
+  List<PreviewToken>? _previewTokens(PageData? pageData) {
+    final paragraphs = pageData?.paragraphs;
+    if (paragraphs == null || paragraphs.isEmpty) return null;
+    return paragraphs.first.textItems.take(16).map((item) {
+      final match = RegExp(r'status(\d+)').firstMatch(item.statusClass);
+      return (
+        text: item.text,
+        status: item.wordId == null ? null : match?.group(1) ?? '0',
+      );
+    }).toList();
   }
 
   int _getLangId(ReaderState reader) {
