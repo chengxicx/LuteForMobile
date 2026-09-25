@@ -7,7 +7,9 @@ import '../../../core/logger/api_logger.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
+import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
+import '../../../shared/widgets/hardware_key_navigator.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
@@ -210,8 +212,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   int _activeCueIndex = -1;
 
   // --- 拖动跟手翻页 ---
+  /// 最近一次按下的横坐标（屏幕坐标）。墨水屏模式下靠它判断点的是左半屏还是
+  /// 右半屏 —— 那里没有拖动，翻页只认左右区域。
+  double _lastTapX = 0.0;
+
   /// 水平拖动位移（像素）。正数 = 往右拖（看上一页），负数 = 往左拖（下一页）。
   double _dragOffset = 0.0;
+
   /// 是否正在水平拖动中。用于在「跟手（0ms）」与「回弹（200ms）」之间切换过渡时长。
   bool _isDragActive = false;
 
@@ -223,10 +230,40 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     if (pageData == null || pageData.pageCount <= 1) return false;
     // 漫画页用 InteractiveViewer 缩放/平移，翻页走屏幕控件
     if (pageData.isManga) return false;
+    // 墨水屏下翻页只剩点击区域与物理键两条路，都不经过拖动手势，
+    // 不该被「swipe navigation」这个触屏开关连坐（Leaf 5C 实测该开关
+    // 默认关，会把两种翻页全部掐死）。
+    if (context.eInk) return true;
     if (!ref.read(textFormattingSettingsProvider).swipeNavigationEnabled) {
       return false;
     }
     return true;
+  }
+
+  /// 按方向翻页：direction > 0 上一页，< 0 下一页。
+  ///
+  /// 拖动翻页与墨水屏的左右区域点击共用这一条路径 —— 墨水屏下没有拖动，
+  /// 只有点击（跟手位移每帧都要刷一次屏，见 onHorizontalDragStart）。
+  void _turnPage(int direction, PageData? pageData) {
+    if (direction == 0 || pageData == null) return;
+    if (!_canSwipePages(pageData)) return;
+    final textSettings = ref.read(textFormattingSettingsProvider);
+    if (direction > 0) {
+      if (pageData.currentPage > 1) {
+        HapticFeedback.lightImpact();
+        _loadPageWithoutMarkingRead(pageData.currentPage - 1);
+      }
+    } else {
+      if (pageData.currentPage < pageData.pageCount) {
+        HapticFeedback.lightImpact();
+        if (textSettings.swipeMarksRead) {
+          ref
+              .read(readerProvider.notifier)
+              .markPageRead(pageData.bookId, pageData.currentPage);
+        }
+        _loadPageWithoutMarkingRead(pageData.currentPage + 1);
+      }
+    }
   }
 
   Future<void> _loadLanguageMapping() async {
@@ -667,51 +704,67 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     // Check if reader is the active screen
     final isVisible = ref.watch(currentScreenRouteProvider) == 'reader';
 
-    return AbsorbPointer(
-      absorbing: !isVisible,
-      child: Scaffold(
-        appBar: _buildAppBar(
-          context,
-          pageData,
-          textSettings.fullscreenMode,
-          ref.watch(serverStatusProvider).isReachable,
-        ),
-        body: Stack(
-          children: [
-            Column(
-              children: [
-                if (settings.showAudioPlayer && pageData?.hasAudio == true)
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeInOut,
-                    margin: EdgeInsets.only(
-                      top: textSettings.fullscreenMode && !_isUiVisible
-                          ? MediaQuery.of(context).padding.top + kToolbarHeight
-                          : 0,
+    return HardwareKeyNavigator(
+      // 只在墨水屏模式接管物理键：手机上音量键就该去管音量。
+      enabled: context.eInk,
+      onAction: (action) =>
+          _turnPage(action == HardwareKeyAction.previous ? 1 : -1, pageData),
+      child: AbsorbPointer(
+        absorbing: !isVisible,
+        child: Scaffold(
+          appBar: _buildAppBar(
+            context,
+            pageData,
+            textSettings.fullscreenMode,
+            ref.watch(serverStatusProvider).isReachable,
+          ),
+          body: Stack(
+            children: [
+              Column(
+                children: [
+                  if (settings.showAudioPlayer && pageData?.hasAudio == true)
+                    AnimatedContainer(
+                      duration: einkDuration(
+                        const Duration(milliseconds: 200),
+                        eInk: context.eInk,
+                      ),
+                      curve: Curves.easeInOut,
+                      margin: EdgeInsets.only(
+                        top: textSettings.fullscreenMode && !_isUiVisible
+                            ? MediaQuery.of(context).padding.top +
+                                  kToolbarHeight
+                            : 0,
+                      ),
+                      child: AudioPlayerWidget(
+                        audioUrl: _audioUrlFor(settings, pageData!),
+                        bookId: pageData!.bookId,
+                        page: pageData!.currentPage,
+                        bookmarks: pageData!.audioBookmarks,
+                        audioCurrentPos: pageData.audioCurrentPos,
+                      ),
                     ),
-                    child: AudioPlayerWidget(
-                      audioUrl: _audioUrlFor(settings, pageData!),
-                      bookId: pageData!.bookId,
-                      page: pageData!.currentPage,
-                      bookmarks: pageData!.audioBookmarks,
-                      audioCurrentPos: pageData.audioCurrentPos,
+                  if (showTtsPlayer)
+                    AnimatedContainer(
+                      duration: einkDuration(
+                        const Duration(milliseconds: 200),
+                        eInk: context.eInk,
+                      ),
+                      curve: Curves.easeInOut,
+                      margin: EdgeInsets.only(
+                        top: textSettings.fullscreenMode && !_isUiVisible
+                            ? MediaQuery.of(context).padding.top +
+                                  kToolbarHeight
+                            : 0,
+                      ),
+                      child: const TTSPlayerWidget(),
                     ),
+                  Expanded(
+                    child: _buildBody(isLoading, errorMessage, pageData),
                   ),
-                if (showTtsPlayer)
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeInOut,
-                    margin: EdgeInsets.only(
-                      top: textSettings.fullscreenMode && !_isUiVisible
-                          ? MediaQuery.of(context).padding.top + kToolbarHeight
-                          : 0,
-                    ),
-                    child: const TTSPlayerWidget(),
-                  ),
-                Expanded(child: _buildBody(isLoading, errorMessage, pageData)),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -732,7 +785,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           _isUiVisible ? kToolbarHeight + topPadding : 0,
         ),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
+          duration: einkDuration(
+            const Duration(milliseconds: 200),
+            eInk: context.eInk,
+          ),
           curve: Curves.easeInOut,
           height: _isUiVisible ? kToolbarHeight + topPadding : 0,
           child: AppBar(
@@ -1250,113 +1306,113 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             if (youtubePlayer != null) youtubePlayer,
             Expanded(
               child: NotificationListener<ScrollNotification>(
-          onNotification: (scrollNotification) {
-            if (scrollNotification is ScrollUpdateNotification) {
-              if (scrollNotification.scrollDelta != null &&
-                  scrollNotification.scrollDelta!.abs() > 5) {
-                TermTooltipClass.close();
-              }
-            }
-            return false;
-          },
-          child: GestureDetector(
-            onTapDown: (_) => TermTooltipClass.close(),
-            onTap: () {
-              if (textSettings.fullscreenMode) {
-                if (!_isUiVisible) {
-                  _showUi();
-                } else {
-                  _resetHideTimer();
-                }
-              }
-            },
-            onHorizontalDragStart: (details) {
-              if (!_canSwipePages(pageData)) return;
-              _isDragActive = true;
-            },
-            onHorizontalDragUpdate: (details) {
-              if (!_isDragActive) return;
-              setState(() {
-                _dragOffset += details.delta.dx;
-              });
-            },
-            onHorizontalDragCancel: () {
-              if (!_isDragActive) return;
-              setState(() {
-                _isDragActive = false;
-                _dragOffset = 0;
-              });
-            },
-            onHorizontalDragEnd: (details) async {
-              final wasDragging = _isDragActive;
-              _isDragActive = false;
-              final dragOffset = _dragOffset;
-              // 先归零，触发平滑回弹/滑出（见下方 TweenAnimationBuilder）。
-              if (dragOffset != 0) {
-                setState(() {
-                  _dragOffset = 0;
-                });
-              }
-              if (!wasDragging) return;
-              if (!_canSwipePages(pageData)) return;
-
-              final currentTextSettings = ref.read(
-                textFormattingSettingsProvider,
-              );
-
-              final velocity = details.primaryVelocity ?? 0;
-              const minSwipeVelocity = 300.0;
-              // 位移阈值：屏宽的 18%。
-              // 原先只看甩动速度，导致「慢慢拖过半个屏幕再松手」也不翻页，
-              // 与直觉严重不符 —— 这是翻页手感生硬的主要原因之一。
-              final distanceThreshold = MediaQuery.sizeOf(context).width * 0.18;
-
-              // 方向判定：优先看甩动速度；速度不足时退回看拖动位移。
-              int direction = 0;
-              if (velocity.abs() >= minSwipeVelocity) {
-                direction = velocity > 0 ? 1 : -1;
-              } else if (dragOffset.abs() >= distanceThreshold) {
-                direction = dragOffset > 0 ? 1 : -1;
-              }
-              if (direction == 0) return;
-
-              if (direction > 0) {
-                if (pageData!.currentPage > 1) {
-                  HapticFeedback.lightImpact();
-                  _loadPageWithoutMarkingRead(pageData!.currentPage - 1);
-                }
-              } else {
-                if (pageData!.currentPage < pageData.pageCount) {
-                  HapticFeedback.lightImpact();
-                  if (currentTextSettings.swipeMarksRead) {
-                    ref
-                        .read(readerProvider.notifier)
-                        .markPageRead(pageData!.bookId, pageData!.currentPage);
+                onNotification: (scrollNotification) {
+                  if (scrollNotification is ScrollUpdateNotification) {
+                    if (scrollNotification.scrollDelta != null &&
+                        scrollNotification.scrollDelta!.abs() > 5) {
+                      TermTooltipClass.close();
+                    }
                   }
-                  _loadPageWithoutMarkingRead(pageData!.currentPage + 1);
-                }
-              }
-            },
-            child: TweenAnimationBuilder<double>(
-              // 拖动中 duration 为 0（立即跟手），松手后 200ms 平滑回弹/滑出。
-              tween: Tween<double>(begin: 0, end: _dragOffset),
-              duration: _isDragActive
-                  ? Duration.zero
-                  : const Duration(milliseconds: 200),
-              curve: Curves.easeOut,
-              builder: (context, value, child) => Transform.translate(
-                offset: Offset(value, 0),
-                child: child,
+                  return false;
+                },
+                child: GestureDetector(
+                  onTapDown: (details) {
+                    _lastTapX = details.globalPosition.dx;
+                    TermTooltipClass.close();
+                  },
+                  onTap: () {
+                    // 墨水屏模式：点左三分之一上一页、右三分之一下一页，中间区域
+                    // 仍走原来的「唤出/续期 UI」。拖动翻页在这里是关掉的（见
+                    // onHorizontalDragStart）—— 跟手位移每一帧都要刷一次屏。
+                    if (context.eInk) {
+                      final width = MediaQuery.sizeOf(context).width;
+                      if (_lastTapX < width / 3) {
+                        _turnPage(1, pageData);
+                        return;
+                      }
+                      if (_lastTapX > width * 2 / 3) {
+                        _turnPage(-1, pageData);
+                        return;
+                      }
+                    }
+                    if (textSettings.fullscreenMode) {
+                      if (!_isUiVisible) {
+                        _showUi();
+                      } else {
+                        _resetHideTimer();
+                      }
+                    }
+                  },
+                  onHorizontalDragStart: (details) {
+                    // 墨水屏下不跟手：拖动过程中的每一帧位移都是一次全屏刷新。
+                    // 翻页改走左右区域点击（见 onTap）。
+                    if (context.eInk) return;
+                    if (!_canSwipePages(pageData)) return;
+                    _isDragActive = true;
+                  },
+                  onHorizontalDragUpdate: (details) {
+                    if (!_isDragActive) return;
+                    setState(() {
+                      _dragOffset += details.delta.dx;
+                    });
+                  },
+                  onHorizontalDragCancel: () {
+                    if (!_isDragActive) return;
+                    setState(() {
+                      _isDragActive = false;
+                      _dragOffset = 0;
+                    });
+                  },
+                  onHorizontalDragEnd: (details) async {
+                    final wasDragging = _isDragActive;
+                    _isDragActive = false;
+                    final dragOffset = _dragOffset;
+                    // 先归零，触发平滑回弹/滑出（见下方 TweenAnimationBuilder）。
+                    if (dragOffset != 0) {
+                      setState(() {
+                        _dragOffset = 0;
+                      });
+                    }
+                    if (!wasDragging) return;
+
+                    final velocity = details.primaryVelocity ?? 0;
+                    const minSwipeVelocity = 300.0;
+                    // 位移阈值：屏宽的 18%。
+                    // 原先只看甩动速度，导致「慢慢拖过半个屏幕再松手」也不翻页，
+                    // 与直觉严重不符 —— 这是翻页手感生硬的主要原因之一。
+                    final distanceThreshold =
+                        MediaQuery.sizeOf(context).width * 0.18;
+
+                    // 方向判定：优先看甩动速度；速度不足时退回看拖动位移。
+                    int direction = 0;
+                    if (velocity.abs() >= minSwipeVelocity) {
+                      direction = velocity > 0 ? 1 : -1;
+                    } else if (dragOffset.abs() >= distanceThreshold) {
+                      direction = dragOffset > 0 ? 1 : -1;
+                    }
+                    _turnPage(direction, pageData);
+                  },
+                  child: TweenAnimationBuilder<double>(
+                    // 拖动中 duration 为 0（立即跟手），松手后 200ms 平滑回弹/滑出。
+                    tween: Tween<double>(begin: 0, end: _dragOffset),
+                    duration: _isDragActive
+                        ? Duration.zero
+                        : const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
+                    builder: (context, value, child) => Transform.translate(
+                      offset: Offset(value, 0),
+                      child: child,
+                    ),
+                    // 墨水屏下连转场也不要：它是一段 200ms 的补间，等于十几帧全刷。
+                    child: settings.pageTurnAnimations && !context.eInk
+                        ? _PageTransition(
+                            isForward: _isNavigatingForward,
+                            child: content,
+                          )
+                        : content,
+                  ),
+                ),
               ),
-              child: settings.pageTurnAnimations
-                  ? _PageTransition(
-                      isForward: _isNavigatingForward,
-                      child: content,
-                    )
-                  : content,
-            ),
-          ),
-        ),
             ),
           ],
         ),
@@ -1483,9 +1539,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     // Repaint immediately.  The write below is a fetch-then-post, far too slow to
     // gate the colour on, and the web reader's status swap is just as eager.
-    unawaited(
-      ref.read(readerProvider.notifier).updateTermStatus(wordId, next),
-    );
+    unawaited(ref.read(readerProvider.notifier).updateTermStatus(wordId, next));
 
     _originalTextItem = item;
     _triggerWordGlow();
@@ -1531,7 +1585,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   Future<void> _revertStatus(int wordId, String previous) async {
     try {
       // updateTermStatus also pushes the change into the sentence view.
-      await ref.read(readerProvider.notifier).updateTermStatus(wordId, previous);
+      await ref
+          .read(readerProvider.notifier)
+          .updateTermStatus(wordId, previous);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

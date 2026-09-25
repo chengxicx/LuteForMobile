@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../../core/network/session_manager.dart';
+import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../models/youtube_data.dart';
 
@@ -112,11 +113,7 @@ class _YtSnapshot {
     );
   }
 
-  _YtSnapshot copyWith({
-    double? time,
-    double? duration,
-    int? state,
-  }) {
+  _YtSnapshot copyWith({double? time, double? duration, int? state}) {
     return _YtSnapshot(
       time: time ?? this.time,
       duration: duration ?? this.duration,
@@ -167,7 +164,12 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
   @override
   void initState() {
     super.initState();
-    _pollTimer = Timer.periodic(_pollInterval, (_) => unawaited(_poll()));
+    // 墨水屏模式：250ms 的轮询放宽到 2s。视频在墨水屏上本来也没法看，但
+    // 音频和字幕还在用，轮询只是拿位置的，慢一点不影响听。
+    _pollTimer = Timer.periodic(
+      context.eInk ? const Duration(seconds: 2) : _pollInterval,
+      (_) => unawaited(_poll()),
+    );
   }
 
   @override
@@ -208,9 +210,7 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
   );
 
   Future<_YtSnapshot?> _readSnapshot() async {
-    final raw = await _eval(
-      "window.__ytApi ? window.__ytApi.snapshot() : ''",
-    );
+    final raw = await _eval("window.__ytApi ? window.__ytApi.snapshot() : ''");
     if (raw == null || raw.isEmpty) return null;
     return _YtSnapshot.parse(raw);
   }
@@ -424,11 +424,11 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
     final hasCues = widget.cues.isNotEmpty;
     final canGoPrevious = hasCues && _activeCueIndex > 0;
     final canGoNext =
-        hasCues && _activeCueIndex >= 0 && _activeCueIndex < widget.cues.length - 1;
+        hasCues &&
+        _activeCueIndex >= 0 &&
+        _activeCueIndex < widget.cues.length - 1;
 
-    double sliderValue = _isDragging
-        ? (_dragSeconds ?? position)
-        : position;
+    double sliderValue = _isDragging ? (_dragSeconds ?? position) : position;
     if (sliderValue > maxDuration) sliderValue = maxDuration;
     if (sliderValue < 0) sliderValue = 0;
 
@@ -473,9 +473,7 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
             ),
             IconButton(
               icon: Icon(
-                (snap?.isPlaying ?? false)
-                    ? Icons.pause
-                    : Icons.play_arrow,
+                (snap?.isPlaying ?? false) ? Icons.pause : Icons.play_arrow,
               ),
               onPressed: snap == null ? null : () => unawaited(_togglePlay()),
               color: context.audioPlayerIcon,
@@ -693,8 +691,9 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
     URLAuthenticationChallenge challenge,
   ) async {
     final serverUrl = widget.serverUrl;
-    final serverHost =
-        serverUrl == null ? '' : Uri.tryParse(serverUrl)?.host ?? '';
+    final serverHost = serverUrl == null
+        ? ''
+        : Uri.tryParse(serverUrl)?.host ?? '';
     final user = SessionManager.basicAuthUser;
     if (serverHost.isEmpty ||
         user.isEmpty ||
@@ -795,10 +794,8 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
   /// player disabling its controls in that mode.
   String _buildBilibiliHtml() {
     final bili = widget.bilibili!;
-    final mpdLiteral =
-        bili.hasStream ? _jsString(bili.mpdUrl!) : "''";
-    final embedLiteral =
-        bili.hasEmbed ? _jsString(bili.embedUrl!) : "''";
+    final mpdLiteral = bili.hasStream ? _jsString(bili.mpdUrl!) : "''";
+    final embedLiteral = bili.hasEmbed ? _jsString(bili.embedUrl!) : "''";
     return '''
       <!DOCTYPE html>
       <html>
