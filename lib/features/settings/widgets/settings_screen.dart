@@ -259,6 +259,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _connectionTestPassed = false;
         }
       });
+      // Test passes ⇒ save. Replaces the old separate Save Settings button.
+      if (_connectionTestPassed && mounted) {
+        await _persistConnection();
+      }
     } catch (e) {
       setState(() {
         _connectionStatus = 'Connection failed: ${e.toString()}';
@@ -331,17 +335,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  void _saveSettings() async {
-    if (!_formKey.currentState!.validate()) return;
-
+  /// Persists the connection form (URL + Basic Auth). Called automatically
+  /// when a connection test succeeds — there is no separate Save button:
+  /// "Test Connection" IS the save, so a host change can't be saved without
+  /// also proving it reachable.
+  Future<void> _persistConnection() async {
     final newUrl = _buildFullUrl();
-
-    await _testConnection();
-
-    if (!_connectionTestPassed) {
-      return;
-    }
-
     final prefs = await SharedPreferences.getInstance();
     final oldUrl = prefs.getString('local_url') ?? '';
 
@@ -358,7 +357,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Settings saved successfully')),
+          const SnackBar(content: Text('Connection saved')),
         );
       }
 
@@ -368,7 +367,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Settings saved successfully')),
+          const SnackBar(content: Text('Connection saved')),
         );
       }
 
@@ -533,167 +532,206 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           ),
                         ),
                       ],
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _authUserController,
-                        decoration: const InputDecoration(
-                          labelText: 'Username (Basic Auth)',
-                          hintText: 'e.g. song',
-                          border: OutlineInputBorder(),
-                        ),
-                        autocorrect: false,
-                        onChanged: (_) {
-                          _connectionTestPassed = false;
-                          _connectionStatus = null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _authPasswordController,
-                        decoration: const InputDecoration(
-                          labelText: 'Password (Basic Auth)',
-                          hintText: 'Leave blank if no authentication',
-                          border: OutlineInputBorder(),
-                        ),
-                        obscureText: true,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        onChanged: (_) {
-                          _connectionTestPassed = false;
-                          _connectionStatus = null;
-                        },
-                      ),
                       const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Required only if your lute server is protected by HTTP Basic Authentication.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: context.appColorScheme.text.primary
-                                .withValues(alpha: 0.6),
-                          ),
+                      ExpansionTile(
+                        title: const Text('HTTP Basic Auth (optional)'),
+                        subtitle: const Text(
+                          'Collapsed by default — only for servers behind Basic Auth',
                         ),
-                      ),
-                      const SizedBox(height: 24),
-                      Text(
-                        'Lute Account Login (multi-user mode)',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Required when your lute server has multi-user login enabled (lute v3.12+). The session is kept for ~30 days.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: context.appColorScheme.text.primary.withValues(
-                            alpha: 0.6,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _luteUserController,
-                        decoration: const InputDecoration(
-                          labelText: 'Lute Username',
-                          hintText: 'Your lute account username',
-                          border: OutlineInputBorder(),
-                        ),
-                        autocorrect: false,
-                        enableSuggestions: false,
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _lutePasswordController,
-                        decoration: InputDecoration(
-                          labelText: 'Lute Password',
-                          hintText: 'Your lute account password',
-                          border: const OutlineInputBorder(),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscureLutePassword
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                            ),
-                            tooltip: _obscureLutePassword
-                                ? 'Show password'
-                                : 'Hide password',
-                            onPressed: () => setState(
-                              () =>
-                                  _obscureLutePassword = !_obscureLutePassword,
-                            ),
-                          ),
-                        ),
-                        obscureText: _obscureLutePassword,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
                         children: [
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: _isLoggingIn ? null : _luteLogin,
-                              child: _isLoggingIn
-                                  ? const SizedBox(
-                                      height: 20,
-                                      width: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : const Text('Log In'),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed:
-                                  session.status == SessionStatus.loggedIn
-                                  ? _luteLogout
-                                  : null,
-                              child: const Text('Log Out'),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextFormField(
+                                  controller: _authUserController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Username (Basic Auth)',
+                                    hintText: 'e.g. song',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  autocorrect: false,
+                                  onChanged: (_) {
+                                    _connectionTestPassed = false;
+                                    _connectionStatus = null;
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+                                TextFormField(
+                                  controller: _authPasswordController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Password (Basic Auth)',
+                                    hintText: 'Leave blank if no authentication',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  obscureText: true,
+                                  autocorrect: false,
+                                  enableSuggestions: false,
+                                  onChanged: (_) {
+                                    _connectionTestPassed = false;
+                                    _connectionStatus = null;
+                                  },
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Required only if your lute server is protected by HTTP Basic Authentication.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: context
+                                        .appColorScheme.text.primary
+                                        .withValues(alpha: 0.6),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
                       ),
-                      if (_loginStatus != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          _loginStatus!,
-                          style: TextStyle(
-                            fontSize: 12,
+                      const SizedBox(height: 16),
+                      ExpansionTile(
+                        title: const Text('Lute Account Login'),
+                        subtitle: const Text(
+                          'Multi-user mode (lute v3.12+), session kept ~30 days',
+                        ),
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextFormField(
+                                  controller: _luteUserController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Lute Username',
+                                    hintText: 'Your lute account username',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  autocorrect: false,
+                                  enableSuggestions: false,
+                                ),
+                                const SizedBox(height: 12),
+                                TextFormField(
+                                  controller: _lutePasswordController,
+                                  decoration: InputDecoration(
+                                    labelText: 'Lute Password',
+                                    hintText: 'Your lute account password',
+                                    border: const OutlineInputBorder(),
+                                    suffixIcon: IconButton(
+                                      icon: Icon(
+                                        _obscureLutePassword
+                                            ? Icons.visibility_outlined
+                                            : Icons.visibility_off_outlined,
+                                      ),
+                                      tooltip: _obscureLutePassword
+                                          ? 'Show password'
+                                          : 'Hide password',
+                                      onPressed: () => setState(
+                                        () => _obscureLutePassword =
+                                            !_obscureLutePassword,
+                                      ),
+                                    ),
+                                  ),
+                                  obscureText: _obscureLutePassword,
+                                  autocorrect: false,
+                                  enableSuggestions: false,
+                                ),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: ElevatedButton(
+                                        onPressed: _isLoggingIn
+                                            ? null
+                                            : _luteLogin,
+                                        child: _isLoggingIn
+                                            ? const SizedBox(
+                                                height: 20,
+                                                width: 20,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Text('Log In'),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: OutlinedButton(
+                                        onPressed:
+                                            session.status ==
+                                                SessionStatus.loggedIn
+                                            ? _luteLogout
+                                            : null,
+                                        child: const Text('Log Out'),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (_loginStatus != null) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _loginStatus!,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: session.status ==
+                                              SessionStatus.loggedIn
+                                          ? context.success
+                                          : context
+                                                .appColorScheme.text.primary
+                                                .withValues(alpha: 0.8),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      // One-line session state stays visible even with the
+                      // login panel collapsed.
+                      Row(
+                        children: [
+                          Icon(
+                            session.status == SessionStatus.loggedIn
+                                ? Icons.check_circle
+                                : Icons.info_outline,
+                            size: 16,
                             color: session.status == SessionStatus.loggedIn
                                 ? context.success
                                 : context.appColorScheme.text.primary
-                                      .withValues(alpha: 0.8),
+                                      .withValues(alpha: 0.5),
                           ),
-                        ),
-                      ],
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: _isTesting ? null : _testConnection,
-                              child: _isTesting
-                                  ? const SizedBox(
-                                      height: 20,
-                                      width: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : const Text('Test Connection'),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: _saveSettings,
-                              child: const Text('Save Settings'),
+                          const SizedBox(width: 6),
+                          Text(
+                            session.status == SessionStatus.loggedIn
+                                ? 'Logged in'
+                                : 'Not logged in',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: context.appColorScheme.text.primary
+                                  .withValues(alpha: 0.6),
                             ),
                           ),
                         ],
+                      ),
+                      const SizedBox(height: 24),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _isTesting ? null : _testConnection,
+                          child: _isTesting
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Test Connection & Save'),
+                        ),
                       ),
                       if (_connectionStatus != null) ...[
                         const SizedBox(height: 16),
@@ -869,6 +907,102 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ],
               const SizedBox(height: 16),
               _buildSectionHeader(context, 'Reading'),
+              // E-ink gets its own top-level card: buried inside the Reading
+              // expansion it was effectively undiscoverable on the device.
+              Card(
+                elevation: 2,
+                child: ExpansionTile(
+                  title: const Text(
+                    'E-ink Mode',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: const Text(
+                    'For BOOX / e-ink devices: animations off, tap zones, hardware page-turn keys',
+                  ),
+                  initiallyExpanded: false,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'Optimize for e-ink displays: no animations, '
+                                  'no shadows or glow, and tap the left or '
+                                  'right third of the page to turn it',
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.8,
+                                child: Switch(
+                                  value: settings.eInkMode,
+                                  onChanged: (value) {
+                                    ref
+                                        .read(settingsProvider.notifier)
+                                        .updateEInkMode(value);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: () => showDialog(
+                              context: context,
+                              builder: (_) => const KeyDiagnosticsDialog(),
+                            ),
+                            icon: const Icon(Icons.keyboard),
+                            label: const Text(
+                              'Test hardware keys (page-turn buttons)',
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              final notifier = ref.read(
+                                settingsProvider.notifier,
+                              );
+                              await notifier.updateEInkMode(true);
+                              await notifier.updatePageTurnAnimations(false);
+                              await notifier.updateEnableTooltipCaching(true);
+                              await notifier.updateAutoPronounceOnTap(false);
+                              await notifier.updateEnablePagePreload(true);
+                              await ref
+                                  .read(termFormSettingsProvider.notifier)
+                                  .updateShowTooltipImages(false);
+                              // 机内 TTS（系统 SpeechSynthesis）在国行 Leaf 5C 上
+                              // 大概率缺日语/韩语语音：预设里一次性切到服务端
+                              // Edge TTS。新装设备默认是 none（没选过引擎），
+                              // 也一并切过去；用户已明确选了其他引擎则不动。
+                              final ttsProvider = ref
+                                  .read(ttsSettingsProvider)
+                                  .provider;
+                              if (ttsProvider == TTSProvider.onDevice ||
+                                  ttsProvider == TTSProvider.none) {
+                                await ref
+                                    .read(ttsSettingsProvider.notifier)
+                                    .updateProvider(TTSProvider.edgeTTS);
+                              }
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('E-ink preset applied'),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.auto_awesome),
+                            label: const Text('Apply e-ink preset'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
               // The reader's drawer panel used to be the only place these lived,
               // and there they were unreachable (non-scrollable panel, pushed
               // off-screen).  Same controls, one more way in.
@@ -1049,79 +1183,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                 ),
                               ),
                             ],
-                          ),
-                          const SizedBox(height: 24),
-                          const Text('E-ink Mode'),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              const Expanded(
-                                child: Text(
-                                  'Optimize for e-ink displays: no animations, '
-                                  'no shadows or glow, and tap the left or '
-                                  'right third of the page to turn it',
-                                ),
-                              ),
-                              Transform.scale(
-                                scale: 0.8,
-                                child: Switch(
-                                  value: settings.eInkMode,
-                                  onChanged: (value) {
-                                    ref
-                                        .read(settingsProvider.notifier)
-                                        .updateEInkMode(value);
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: () => showDialog(
-                              context: context,
-                              builder: (_) => const KeyDiagnosticsDialog(),
-                            ),
-                            icon: const Icon(Icons.keyboard),
-                            label: const Text(
-                              'Test hardware keys (page-turn buttons)',
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: () async {
-                              final notifier = ref.read(
-                                settingsProvider.notifier,
-                              );
-                              await notifier.updateEInkMode(true);
-                              await notifier.updatePageTurnAnimations(false);
-                              await notifier.updateEnableTooltipCaching(true);
-                              await notifier.updateAutoPronounceOnTap(false);
-                              await notifier.updateEnablePagePreload(true);
-                              await ref
-                                  .read(termFormSettingsProvider.notifier)
-                                  .updateShowTooltipImages(false);
-                              // 机内 TTS（系统 SpeechSynthesis）在国行 Leaf 5C 上
-                              // 大概率缺日语/韩语语音：预设里一次性切到服务端
-                              // Edge TTS。新装设备默认是 none（没选过引擎），
-                              // 也一并切过去；用户已明确选了其他引擎则不动。
-                              final ttsProvider = ref
-                                  .read(ttsSettingsProvider)
-                                  .provider;
-                              if (ttsProvider == TTSProvider.onDevice ||
-                                  ttsProvider == TTSProvider.none) {
-                                await ref
-                                    .read(ttsSettingsProvider.notifier)
-                                    .updateProvider(TTSProvider.edgeTTS);
-                              }
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('E-ink preset applied'),
-                                ),
-                              );
-                            },
-                            icon: const Icon(Icons.auto_awesome),
-                            label: const Text('Apply e-ink preset'),
                           ),
                           const SizedBox(height: 24),
                           const Text('Page Preloading'),
@@ -1443,113 +1504,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const TTSSettingsSection(),
               const SizedBox(height: 16),
               const AISettingsSection(),
-              const SizedBox(height: 16),
-              _buildSectionHeader(context, 'Advanced'),
-              Card(
-                elevation: 2,
-                child: ExpansionTile(
-                  title: const Text(
-                    'Book Stats Refresh',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: const Text(
-                    'Server-side batch stats refresh tuning. Defaults are fine — change only if you know why.',
-                  ),
-                  initiallyExpanded: false,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          NumberField(
-                            label: 'Calc Sample Size',
-                            initialValue: settings.statsCalcSampleSize
-                                .toString(),
-                            hint: '1-500',
-                            minValue: 1,
-                            maxValue: 500,
-                            onChanged: (value) {
-                              final intValue = int.tryParse(value);
-                              if (intValue != null) {
-                                ref
-                                    .read(settingsProvider.notifier)
-                                    .updateStatsCalcSampleSize(intValue);
-                              }
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          SwitchListTile(
-                            title: const Text('Auto Refresh Full Stats'),
-                            value: settings.autoRefreshFullStats,
-                            onChanged: (value) {
-                              ref
-                                  .read(settingsProvider.notifier)
-                                  .updateAutoRefreshFullStats(value);
-                            },
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                          if (settings.autoRefreshFullStats) ...[
-                            const SizedBox(height: 8),
-                            NumberField(
-                              label: 'Books to Process at Once',
-                              initialValue: settings.statsRefreshBatchSize
-                                  .toString(),
-                              hint: '1-5',
-                              minValue: 1,
-                              maxValue: 5,
-                              onChanged: (value) {
-                                final intValue = int.tryParse(value);
-                                if (intValue != null) {
-                                  ref
-                                      .read(settingsProvider.notifier)
-                                      .updateStatsRefreshBatchSize(intValue);
-                                }
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                            NumberField(
-                              label: 'Cooldown Before Refresh (hours)',
-                              initialValue: settings.statsRefreshCooldownHours
-                                  .toString(),
-                              hint: '1-336 (14 days)',
-                              minValue: 1,
-                              maxValue: 336,
-                              onChanged: (value) {
-                                final intValue = int.tryParse(value);
-                                if (intValue != null) {
-                                  ref
-                                      .read(settingsProvider.notifier)
-                                      .updateStatsRefreshCooldownHours(
-                                        intValue,
-                                      );
-                                }
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                            NumberField(
-                              label: 'Full Refresh Sample Size',
-                              initialValue: settings.stats500SampleSize
-                                  .toString(),
-                              hint: '1-500',
-                              minValue: 1,
-                              maxValue: 500,
-                              onChanged: (value) {
-                                final intValue = int.tryParse(value);
-                                if (intValue != null) {
-                                  ref
-                                      .read(settingsProvider.notifier)
-                                      .updateStats500SampleSize(intValue);
-                                }
-                              },
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
               const SizedBox(height: 16),
               _buildSectionHeader(context, 'Appearance'),
               Card(
