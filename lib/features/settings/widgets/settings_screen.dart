@@ -6,11 +6,14 @@ import '../../../core/cache/providers/cache_manager_provider.dart';
 import '../../../core/logger/widget_logger.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
+import '../../../shared/widgets/key_diagnostics_dialog.dart';
+import '../providers/tts_settings_provider.dart';
 import '../../../core/network/session_manager.dart';
 import '../providers/settings_provider.dart';
 import '../../books/providers/books_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../models/settings.dart';
+import '../models/tts_settings.dart';
 import '../../../shared/theme/theme_definitions.dart';
 import '../../../app.dart';
 import 'theme_selector_screen.dart';
@@ -18,7 +21,6 @@ import 'tts_settings_section.dart';
 import 'ai_settings_section.dart';
 import 'backup_restore_card.dart';
 import 'termux_screen.dart';
-import 'language_settings_card.dart';
 import 'text_formatting_controls.dart';
 import '../../../shared/utils/number_input.dart';
 
@@ -175,12 +177,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _authPasswordController = TextEditingController();
   final _luteUserController = TextEditingController();
   final _lutePasswordController = TextEditingController();
+  bool _obscureLutePassword = true;
   String _protocolValue = 'https';
   int _buildCount = 0;
   bool _isTesting = false;
   String? _connectionStatus;
   bool _connectionTestPassed = false;
-  bool _bookStatsExpanded = false;
   bool _readerExpanded = false;
   bool _isLoggingIn = false;
   String? _loginStatus;
@@ -285,8 +287,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // Login targets the active server URL; fall back to the form URL only
     // when no server is configured yet. Otherwise a cookie could end up
     // associated with a URL the user never saved.
-    if (SessionManager.serverUrl.isEmpty) {
-      SessionManager.updateServerUrl(_buildFullUrl());
+    final formUrl = _buildFullUrl();
+    if (SessionManager.serverUrl.isEmpty ||
+        SessionManager.serverUrl != formUrl) {
+      SessionManager.updateServerUrl(formUrl);
     }
 
     final result = await SessionManager.login(username, password);
@@ -299,6 +303,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
 
     if (result.success && mounted) {
+      // 连接配置随登录一并落盘（host、Basic Auth），用户不必再单独点
+      // Save Settings；Save 按钮保留给「改了 host 想先测连通性」的场景。
+      await ref
+          .read(settingsProvider.notifier)
+          .updateBasicAuth(
+            _authUserController.text.trim(),
+            _authPasswordController.text,
+          );
+      await ref.read(settingsProvider.notifier).updateLocalUrl(formUrl);
       // Other users may have different books/terms: drop stale caches.
       await ref.read(cacheManagerProvider).clearServerDependentCaches();
       await ref.read(settingsProvider.notifier).clearCurrentBook();
@@ -591,12 +604,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _lutePasswordController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Lute Password',
                           hintText: 'Your lute account password',
-                          border: OutlineInputBorder(),
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscureLutePassword
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                            tooltip: _obscureLutePassword
+                                ? 'Show password'
+                                : 'Hide password',
+                            onPressed: () => setState(
+                              () =>
+                                  _obscureLutePassword = !_obscureLutePassword,
+                            ),
+                          ),
                         ),
-                        obscureText: true,
+                        obscureText: _obscureLutePassword,
                         autocorrect: false,
                         enableSuggestions: false,
                       ),
@@ -841,50 +868,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ],
               const SizedBox(height: 16),
-              Card(
-                elevation: 2,
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Current Settings',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 16),
-                      _buildSettingRow('Server URL', settings.serverUrl),
-                      if (settings.serverUrl == Settings.termuxUrl)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8.0),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              'Using Termux (localhost)',
-                              style: TextStyle(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onPrimaryContainer,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
               _buildSectionHeader(context, 'Reading'),
               // The reader's drawer panel used to be the only place these lived,
               // and there they were unreachable (non-scrollable panel, pushed
@@ -908,8 +891,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
-              const LanguageSettingsCard(),
               const SizedBox(height: 16),
               Card(
                 elevation: 2,
@@ -1068,6 +1049,79 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                 ),
                               ),
                             ],
+                          ),
+                          const SizedBox(height: 24),
+                          const Text('E-ink Mode'),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'Optimize for e-ink displays: no animations, '
+                                  'no shadows or glow, and tap the left or '
+                                  'right third of the page to turn it',
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.8,
+                                child: Switch(
+                                  value: settings.eInkMode,
+                                  onChanged: (value) {
+                                    ref
+                                        .read(settingsProvider.notifier)
+                                        .updateEInkMode(value);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: () => showDialog(
+                              context: context,
+                              builder: (_) => const KeyDiagnosticsDialog(),
+                            ),
+                            icon: const Icon(Icons.keyboard),
+                            label: const Text(
+                              'Test hardware keys (page-turn buttons)',
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              final notifier = ref.read(
+                                settingsProvider.notifier,
+                              );
+                              await notifier.updateEInkMode(true);
+                              await notifier.updatePageTurnAnimations(false);
+                              await notifier.updateEnableTooltipCaching(true);
+                              await notifier.updateAutoPronounceOnTap(false);
+                              await notifier.updateEnablePagePreload(true);
+                              await ref
+                                  .read(termFormSettingsProvider.notifier)
+                                  .updateShowTooltipImages(false);
+                              // 机内 TTS（系统 SpeechSynthesis）在国行 Leaf 5C 上
+                              // 大概率缺日语/韩语语音：预设里一次性切到服务端
+                              // Edge TTS。新装设备默认是 none（没选过引擎），
+                              // 也一并切过去；用户已明确选了其他引擎则不动。
+                              final ttsProvider = ref
+                                  .read(ttsSettingsProvider)
+                                  .provider;
+                              if (ttsProvider == TTSProvider.onDevice ||
+                                  ttsProvider == TTSProvider.none) {
+                                await ref
+                                    .read(ttsSettingsProvider.notifier)
+                                    .updateProvider(TTSProvider.edgeTTS);
+                              }
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('E-ink preset applied'),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.auto_awesome),
+                            label: const Text('Apply e-ink preset'),
                           ),
                           const SizedBox(height: 24),
                           const Text('Page Preloading'),
@@ -1390,19 +1444,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 16),
               const AISettingsSection(),
               const SizedBox(height: 16),
+              _buildSectionHeader(context, 'Advanced'),
               Card(
                 elevation: 2,
                 child: ExpansionTile(
                   title: const Text(
-                    'Book Stats Settings',
+                    'Book Stats Refresh',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
-                  initiallyExpanded: _bookStatsExpanded,
-                  onExpansionChanged: (expanded) {
-                    setState(() {
-                      _bookStatsExpanded = expanded;
-                    });
-                  },
+                  subtitle: const Text(
+                    'Server-side batch stats refresh tuning. Defaults are fine — change only if you know why.',
+                  ),
+                  initiallyExpanded: false,
                   children: [
                     Padding(
                       padding: const EdgeInsets.all(16.0),
@@ -1433,24 +1486,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               ref
                                   .read(settingsProvider.notifier)
                                   .updateAutoRefreshFullStats(value);
-                            },
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                          SwitchListTile(
-                            title: const Text(
-                              'Experimental Book Details Full Stats Endpoint',
-                            ),
-                            subtitle: const Text(
-                              'Dev server only. Experimental proof of concept for the new backend stats refresh endpoint. Leave this off on normal servers.',
-                            ),
-                            value: settings
-                                .experimentalBookDetailsFullStatsEndpoint,
-                            onChanged: (value) {
-                              ref
-                                  .read(settingsProvider.notifier)
-                                  .updateExperimentalBookDetailsFullStatsEndpoint(
-                                    value,
-                                  );
                             },
                             contentPadding: EdgeInsets.zero,
                           ),
@@ -1678,29 +1713,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           letterSpacing: 0.8,
           color: context.m3Primary,
         ),
-      ),
-    );
-  }
-
-  Widget _buildSettingRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
-          Expanded(
-            child: Text(
-              value,
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                color: context.appColorScheme.text.primary.withValues(
-                  alpha: 0.6,
-                ),
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }
