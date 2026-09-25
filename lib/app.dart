@@ -16,6 +16,7 @@ import 'package:lute_for_mobile/features/terms/widgets/terms_screen.dart';
 import 'package:lute_for_mobile/features/stats/widgets/stats_screen.dart';
 import 'package:lute_for_mobile/features/grammar/widgets/grammar_screen.dart';
 import 'package:lute_for_mobile/shared/theme/app_theme.dart';
+import 'package:lute_for_mobile/shared/theme/eink.dart';
 import 'package:lute_for_mobile/shared/theme/theme_definitions.dart';
 import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
 import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
@@ -90,10 +91,11 @@ class LastMainRouteNotifier extends Notifier<String> {
   }
 }
 
-final lastMainRouteProvider =
-    NotifierProvider<LastMainRouteNotifier, String>(() {
-      return LastMainRouteNotifier();
-    });
+final lastMainRouteProvider = NotifierProvider<LastMainRouteNotifier, String>(
+  () {
+    return LastMainRouteNotifier();
+  },
+);
 
 class NavigationController {
   NavigationController._internal();
@@ -171,6 +173,7 @@ class App extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeSettings = ref.watch(themeSettingsProvider);
+    final eInk = ref.watch(einkModeProvider);
 
     ThemeMode themeMode;
     switch (themeSettings.themeType) {
@@ -185,17 +188,23 @@ class App extends ConsumerWidget {
         break;
     }
 
-    return RestartWidget(
-      child: MaterialApp(
-        title: 'LuteForMobile',
-        debugShowCheckedModeBanner: false,
-        theme: switch (themeSettings.themeType) {
-          ThemeType.blackAndWhite => AppTheme.blackAndWhiteTheme(themeSettings),
-          _ => AppTheme.lightTheme(themeSettings),
-        },
-        darkTheme: AppTheme.darkTheme(themeSettings),
-        themeMode: themeMode,
-        home: const MainNavigation(),
+    final lightTheme = switch (themeSettings.themeType) {
+      ThemeType.blackAndWhite => AppTheme.blackAndWhiteTheme(themeSettings),
+      _ => AppTheme.lightTheme(themeSettings),
+    };
+    final darkTheme = AppTheme.darkTheme(themeSettings);
+
+    return EInkScope(
+      enabled: eInk,
+      child: RestartWidget(
+        child: MaterialApp(
+          title: 'LuteForMobile',
+          debugShowCheckedModeBanner: false,
+          theme: eInk ? applyEInkTheme(lightTheme) : lightTheme,
+          darkTheme: eInk ? applyEInkTheme(darkTheme) : darkTheme,
+          themeMode: themeMode,
+          home: const MainNavigation(),
+        ),
       ),
     );
   }
@@ -539,7 +548,10 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
                 backgroundColor: context.appColorScheme.background.surface,
                 elevation: 0,
                 destinations: const <NavigationDestination>[
-                  NavigationDestination(icon: Icon(Icons.book), label: 'Reader'),
+                  NavigationDestination(
+                    icon: Icon(Icons.book),
+                    label: 'Reader',
+                  ),
                   NavigationDestination(
                     icon: Icon(Icons.collections_bookmark),
                     label: 'Books',
