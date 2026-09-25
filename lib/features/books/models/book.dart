@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'book_difficulty.dart';
+
 class Book {
   /// 服务端用来标记「tag 聚合行」的 BookType 取值。
   ///
@@ -18,7 +20,28 @@ class Book {
   final int percent;
   final int wordCount;
   final int? distinctTerms;
+
+  /// 生词（status 0）的词数，服务端 `bookstats.distinctunknowns`。
+  final int? unknownCount;
+
   final double? unknownPct;
+
+  /// 「新词」占比（0-100），服务端 `bookstats.new_word_percent`。
+  ///
+  /// 它和 [unknownPct] 不是一回事：UnknownPercent 是「未掌握词」占比，
+  /// NewWordPercent 只算从没见过的词。难度分档用的是后者。
+  final double? newWordPercent;
+
+  /// 服务端算好的难度档位（`DifficultyLabel`：EASY / CHAL / HARD）。
+  final String? difficultyLabel;
+
+  /// 服务端给的 CSS 配色类名（`DifficultyColor`），目前仅作留档，
+  /// 手机端自己按 [difficulty] 取色。
+  final String? difficultyColor;
+
+  /// 服务端给的难度说明（`DifficultyDescription`），用于长按提示。
+  final String? difficultyDescription;
+
   final List<int>? statusDistribution;
   final List<String>? tags;
   final String? lastRead;
@@ -62,6 +85,27 @@ class Book {
   /// `DistinctCount`，用 hasStats 判断会让聚合卡片显示「— terms」。
   bool get hasTermCount => distinctTerms != null;
 
+  /// 难度百分比。服务端没给 NewWordPercent（旧版本 / 统计未跑）时用
+  /// UnknownPercent 兜底，宁可近似也不要留空。
+  double? get newWordPercentOrUnknown => newWordPercent ?? unknownPct;
+
+  /// 是否已经算过新词比例。null 表示这本书还没跑过统计，卡片上要显示占位。
+  bool get hasNewWordPercent => newWordPercentOrUnknown != null;
+
+  /// 新词难度档位。
+  ///
+  /// 优先用服务端给的 `DifficultyLabel`（阈值在 lute/book/stats.py 单点维护），
+  /// 服务端没给时才按百分比本地算，兜底阈值与服务端一致。
+  BookDifficulty get difficulty =>
+      BookDifficultyLevel.fromLabel(difficultyLabel) ??
+      BookDifficultyLevel.fromPercent(newWordPercentOrUnknown);
+
+  /// 难度说明文案：优先用服务端那份，避免中英文案漂移。
+  String get difficultyHint =>
+      (difficultyDescription != null && difficultyDescription!.isNotEmpty)
+      ? difficultyDescription!
+      : difficulty.description;
+
   bool get hasAudio => audioFilename != null && audioFilename!.isNotEmpty;
   bool get isStatsExpired {
     if (lastStatsRefresh == null) return true;
@@ -83,6 +127,11 @@ class Book {
     required this.distinctTerms,
     required this.unknownPct,
     required this.statusDistribution,
+    this.unknownCount,
+    this.newWordPercent,
+    this.difficultyLabel,
+    this.difficultyColor,
+    this.difficultyDescription,
     this.tags,
     this.lastRead,
     this.isCompleted = false,
@@ -157,7 +206,12 @@ class Book {
 
     final isCompleted = asInt(json['IsCompleted']) == 1;
     final distinctCount = json['DistinctCount'];
+    final unknownCountRaw = json['UnknownCount'];
     final unknownPercent = json['UnknownPercent'];
+    final newWordPercentRaw = json['NewWordPercent'];
+    final difficultyLabel = _nullableString(json['DifficultyLabel']);
+    final difficultyColor = _nullableString(json['DifficultyColor']);
+    final difficultyDescription = _nullableString(json['DifficultyDescription']);
     final statusDist = json['StatusDistribution'];
     final tagList = json['TagList'];
     final lastOpened = json['LastOpenedDate'];
@@ -217,6 +271,17 @@ class Book {
       distinctTerms: (distinctCount is int) ? distinctCount : null,
       unknownPct: (unknownPercent is num) ? unknownPercent.toDouble() : null,
       statusDistribution: parsedStatusDist,
+      unknownCount: (unknownCountRaw is int)
+          ? unknownCountRaw
+          : (unknownCountRaw is num ? unknownCountRaw.toInt() : null),
+      newWordPercent: (newWordPercentRaw is num)
+          ? newWordPercentRaw.toDouble()
+          : (newWordPercentRaw is String
+                ? double.tryParse(newWordPercentRaw)
+                : null),
+      difficultyLabel: difficultyLabel,
+      difficultyColor: difficultyColor,
+      difficultyDescription: difficultyDescription,
       tags: parsedTags,
       lastRead: (lastOpened is String && lastOpened.isNotEmpty)
           ? lastOpened
@@ -231,6 +296,13 @@ class Book {
       seriesReadCount: seriesReadCount,
       seriesStatsPending: seriesStatsPending,
     );
+  }
+
+  /// 空串（服务端给 NULL 时序列化出来的）统一当成 null。
+  static String? _nullableString(dynamic v) {
+    if (v is! String) return null;
+    final s = v.trim();
+    return s.isEmpty ? null : s;
   }
 
   /// 聚合行的完成度 = 已读书数 / 总书数，四舍五入到整数百分比。
@@ -270,7 +342,12 @@ class Book {
       'PageNum': currentPage,
       'WordCount': wordCount,
       'DistinctCount': distinctTerms,
+      'UnknownCount': unknownCount,
       'UnknownPercent': unknownPct,
+      'NewWordPercent': newWordPercent,
+      'DifficultyLabel': difficultyLabel,
+      'DifficultyColor': difficultyColor,
+      'DifficultyDescription': difficultyDescription,
       'StatusDistribution': statusDistribution,
       'IsCompleted': isCompleted ? 1 : 0,
       'audio_filename': audioFilename,
@@ -338,6 +415,11 @@ class Book {
     int? distinctTerms,
     double? unknownPct,
     List<int>? statusDistribution,
+    int? unknownCount,
+    double? newWordPercent,
+    String? difficultyLabel,
+    String? difficultyColor,
+    String? difficultyDescription,
     List<String>? tags,
     String? lastRead,
     bool? isCompleted,
@@ -362,6 +444,12 @@ class Book {
       distinctTerms: distinctTerms ?? this.distinctTerms,
       unknownPct: unknownPct ?? this.unknownPct,
       statusDistribution: statusDistribution ?? this.statusDistribution,
+      unknownCount: unknownCount ?? this.unknownCount,
+      newWordPercent: newWordPercent ?? this.newWordPercent,
+      difficultyLabel: difficultyLabel ?? this.difficultyLabel,
+      difficultyColor: difficultyColor ?? this.difficultyColor,
+      difficultyDescription:
+          difficultyDescription ?? this.difficultyDescription,
       tags: tags ?? this.tags,
       lastRead: lastRead ?? this.lastRead,
       isCompleted: isCompleted ?? this.isCompleted,

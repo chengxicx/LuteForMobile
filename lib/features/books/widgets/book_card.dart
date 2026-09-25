@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../shared/theme/theme_extensions.dart';
+import '../../../shared/utils/book_type_icons.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
-import '../../../shared/widgets/status_distribution_bar.dart';
+import '../../../shared/widgets/new_word_difficulty_badge.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/book.dart';
 
@@ -26,6 +27,7 @@ class BookCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final displaySettings = ref.watch(bookDisplaySettingsProvider);
     final isSeries = book.isSeries;
+    final typeIcon = BookTypeIcons.of(book.bookType, isSeries: isSeries);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -40,15 +42,16 @@ class BookCard extends ConsumerWidget {
             children: [
               Row(
                 children: [
-                  if (isSeries)
-                    Icon(
-                      Icons.collections_bookmark,
-                      size: 20,
-                      color: context.m3Primary,
-                    )
-                  else if (book.isCompleted)
+                  // 书籍类型图标（text / manga / youtube / mp3 / …）。
+                  // 配色取自服务端 lute/book/types.py 的同一份注册表。
+                  Tooltip(
+                    message: typeIcon.label,
+                    child: Icon(typeIcon.icon, size: 20, color: typeIcon.color),
+                  ),
+                  const SizedBox(width: 8),
+                  if (book.isCompleted)
                     Icon(Icons.check_circle, size: 20, color: context.success),
-                  if (isSeries || book.isCompleted) const SizedBox(width: 8),
+                  if (book.isCompleted) const SizedBox(width: 8),
                   if (book.hasAudio)
                     Icon(Icons.volume_up, size: 20, color: context.m3Primary),
                   if (book.hasAudio) const SizedBox(width: 8),
@@ -163,12 +166,15 @@ class BookCard extends ConsumerWidget {
                   ],
                 ),
               const SizedBox(height: 12),
-              // 聚合行没有状态分布（服务端不聚合它），改画「已读/总书数」进度条，
-              // 这样聚合卡片仍然能一眼看出读了多少。
-              if (isSeries)
-                _SeriesProgressBar(book: book)
-              else
-                StatusDistributionBar(book: book),
+              // 新词难度（EASY / CHAL / HARD），取代原来的状态分布条。
+              // 聚合行服务端也算好了 NewWordPercent（成员书的平均），
+              // 所以这里两种卡片用同一套渲染。
+              NewWordDifficultyBadge(book: book),
+              // 聚合行另外画一条「已读/总书数」，因为右侧徽标只有数字。
+              if (isSeries) ...[
+                const SizedBox(height: 8),
+                _SeriesProgressBar(book: book),
+              ],
             ],
           ),
         ),
