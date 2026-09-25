@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/tts_player_provider.dart';
+import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
 
 /// Full TTS read-aloud player bar (timeline + controls) for text books.
@@ -58,9 +59,15 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
                     ),
                   ),
                   IconButton(
-                    icon: Icon(Icons.close, size: 18, color: context.audioError),
+                    icon: Icon(
+                      Icons.close,
+                      size: 18,
+                      color: context.audioError,
+                    ),
                     onPressed: () {
-                      ref.read(ttsPlayerProvider.notifier).play();
+                      ref
+                          .read(ttsPlayerProvider.notifier)
+                          .play(tickPosition: !context.eInk);
                     },
                     padding: EdgeInsets.zero,
                     visualDensity: VisualDensity.compact,
@@ -80,7 +87,9 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
     final positionSeconds = state.position.inMilliseconds / 1000.0;
     final maxDuration = totalSeconds > 0 ? totalSeconds : 1.0;
 
-    double sliderValue = _isDragging ? (_dragSeconds ?? positionSeconds) : positionSeconds;
+    double sliderValue = _isDragging
+        ? (_dragSeconds ?? positionSeconds)
+        : positionSeconds;
     if (sliderValue > maxDuration) sliderValue = maxDuration;
 
     final sentenceLabel = state.hasSnippets
@@ -171,9 +180,7 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
         children: [
           IconButton(
             icon: Icon(Icons.navigate_before),
-            onPressed: state.canGoPrevious
-                ? () => notifier.previous()
-                : null,
+            onPressed: state.canGoPrevious ? () => notifier.previous() : null,
             color: context.audioPlayerIcon,
             iconSize: 22,
             padding: EdgeInsets.all(4),

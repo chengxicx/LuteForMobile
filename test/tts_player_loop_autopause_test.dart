@@ -16,6 +16,7 @@
 //     looping that would spin with no audio and no way out.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -36,7 +37,16 @@ class FakeTtsService implements TTSService {
     this.fetchMs = 0,
     this.stopEventDelayMs = 0,
     this.refuseToVoice = const {},
+    this.supportsBytes = false,
   });
+
+  /// Whether the service offers byte output.
+
+  /// Off by default: these tests pin the loop and auto-pause behaviour, and
+  /// turning byte output on moves them onto the prefetch path -- a different
+  /// code route the prefetch test covers on its own. The bytes carry the text
+  /// so either path can be asserted on.
+  final bool supportsBytes;
 
   /// How long one utterance "plays" before reporting completion.
   ///
@@ -60,6 +70,9 @@ class FakeTtsService implements TTSService {
 
   final _stateCtl = StreamController<PlayerState>.broadcast();
   final List<String> spoken = [];
+
+  /// Sentences played from prefetched bytes rather than fetched on demand.
+  final List<String> spokenFromBytes = [];
   Timer? _playingTimer;
   double? lastRate;
   bool disposed = false;
@@ -68,11 +81,25 @@ class FakeTtsService implements TTSService {
   Stream<PlayerState> get playerStateStream => _stateCtl.stream;
 
   @override
-  bool get supportsBytesOutput => true;
+  bool get supportsBytesOutput => supportsBytes;
 
   @override
-  Future<Uint8List> getAudioBytes(String text) async =>
-      Uint8List.fromList(List.filled(16, 0));
+  Future<Uint8List> getAudioBytes(String text) async {
+    final trimmed = text.trim();
+    if (refuseToVoice.contains(trimmed)) {
+      throw TTSUnpronounceableFragmentException('fake fragment');
+    }
+    return Uint8List.fromList(utf8.encode(trimmed));
+  }
+
+  @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    // The bytes are the text, so the same events play out whichever way the
+    // player got the audio -- the difference under test is only the timing.
+    final text = utf8.decode(bytes);
+    spokenFromBytes.add(text);
+    await speak(text);
+  }
 
   @override
   Future<void> speak(String text) async {

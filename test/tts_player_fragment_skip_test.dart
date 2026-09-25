@@ -15,6 +15,7 @@
 // failure would look "fixed" while quietly reading nothing.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -34,7 +35,14 @@ class FakeEdgeTTSService implements TTSService {
     this.fragment = '」',
     this.audioMs = 30,
     this.failGenericOn,
+    this.supportsBytes = false,
   });
+
+  /// Whether the service offers byte output.
+
+  /// Off by default so these tests keep exercising [speak], the path that
+  /// carries the fragment and outage errors under test here.
+  final bool supportsBytes;
 
   final String fragment;
   final int audioMs;
@@ -44,6 +52,9 @@ class FakeEdgeTTSService implements TTSService {
 
   final _stateCtl = StreamController<PlayerState>.broadcast();
   final List<String> spoken = [];
+
+  /// Sentences played from prefetched bytes rather than fetched on demand.
+  final List<String> spokenFromBytes = [];
   bool disposed = false;
 
   /// Rate the player last asked for, so a test can assert the player bar's
@@ -54,14 +65,20 @@ class FakeEdgeTTSService implements TTSService {
   Stream<PlayerState> get playerStateStream => _stateCtl.stream;
 
   @override
-  bool get supportsBytesOutput => true;
+  bool get supportsBytesOutput => supportsBytes;
 
   @override
   Future<Uint8List> getAudioBytes(String text) async {
     if (text.trim() == fragment) {
       throw TTSUnpronounceableFragmentException('fake fragment');
     }
-    return Uint8List.fromList(List.filled(16, 0));
+    return Uint8List.fromList(utf8.encode(text.trim()));
+  }
+
+  @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    spokenFromBytes.add(utf8.decode(bytes));
+    await speak(utf8.decode(bytes));
   }
 
   @override

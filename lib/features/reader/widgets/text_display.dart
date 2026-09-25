@@ -6,6 +6,7 @@ import '../../../core/logger/widget_logger.dart';
 import '../models/text_item.dart';
 import '../models/paragraph.dart';
 import '../utils/text_direction_utils.dart';
+import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import 'term_tooltip.dart';
 
@@ -97,6 +98,7 @@ class TextDisplay extends StatefulWidget {
   }) {
     Color? textColor;
     Color? backgroundColor;
+    bool statusBold = false;
 
     if (item.wordId != null) {
       final statusMatch = RegExp(r'status(\d+)').firstMatch(item.statusClass);
@@ -104,6 +106,14 @@ class TextDisplay extends StatefulWidget {
 
       textColor = context.getStatusTextColor(status);
       backgroundColor = context.getStatusBackgroundColor(status);
+
+      // 墨水屏（D2①）：彩底换 4 档灰底、文字回落正文色，新词加粗补区分。
+      // 彩色文字（text 模式的状态）在 16 灰阶下也是一滩灰，一并归一。
+      if (context.eInk) {
+        backgroundColor = einkStatusBackground(context, status);
+        textColor = null;
+        statusBold = einkStatusBold(status);
+      }
     }
 
     final isReadingSentence = highlightedSentenceIds.contains(item.sentenceId);
@@ -119,7 +129,11 @@ class TextDisplay extends StatefulWidget {
         ? const Color(0xFF1C1B1F)
         : const Color(0xFFFFFFFF);
 
-    final glowEffect = isHighlighted
+    // 墨水屏下两种外发光都去掉：模糊在 16 灰阶下只会渲染成一团脏灰，而且
+    // 发光范围比词本身大，等于把每次重绘的面积也放大了。标记改用下边框。
+    final eInk = context.eInk;
+
+    final glowEffect = isHighlighted && !eInk
         ? BoxShadow(
             color: context.wordGlowColor,
             blurRadius: 12,
@@ -128,7 +142,7 @@ class TextDisplay extends StatefulWidget {
           )
         : null;
 
-    final selectionGlow = isSelected
+    final selectionGlow = isSelected && !eInk
         ? BoxShadow(
             color: selectionColor.withValues(alpha: 0.6),
             blurRadius: 12,
@@ -163,7 +177,7 @@ class TextDisplay extends StatefulWidget {
           : isReadingSentence
           ? context.playingLineText
           : textColor ?? Theme.of(context).textTheme.bodyLarge?.color,
-      fontWeight: fontWeight,
+      fontWeight: statusBold ? FontWeight.w700 : fontWeight,
       fontSize: textSize,
       height: lineSpacing,
       fontFamily: fontFamily,
@@ -177,8 +191,13 @@ class TextDisplay extends StatefulWidget {
       decoration: BoxDecoration(
         color: blockColor,
         borderRadius: blockRadius,
+        // 墨水屏下用一道下边框代替外发光标出"正在读的这句"。
         border: isSelected
             ? Border.all(color: selectionTextColor.withValues(alpha: 0.35))
+            : (eInk && isHighlighted)
+            ? Border(
+                bottom: BorderSide(color: context.playingLineText, width: 2),
+              )
             : null,
         boxShadow: [
           ...?selectionGlow == null ? null : [selectionGlow],
@@ -580,7 +599,9 @@ class _TextDisplayState extends State<TextDisplay> {
     final itemBox = itemContext.findRenderObject();
     if (itemBox is! RenderBox || !itemBox.hasSize) return;
 
-    final viewportBox = Scrollable.maybeOf(itemContext)?.context.findRenderObject();
+    final viewportBox = Scrollable.maybeOf(
+      itemContext,
+    )?.context.findRenderObject();
     if (viewportBox is! RenderBox || !viewportBox.hasSize) return;
 
     final itemRect = itemBox.localToGlobal(Offset.zero) & itemBox.size;
@@ -599,7 +620,7 @@ class _TextDisplayState extends State<TextDisplay> {
       Scrollable.ensureVisible(
         itemContext,
         alignment: 0.35,
-        duration: MediaQuery.of(context).disableAnimations
+        duration: MediaQuery.of(context).disableAnimations || context.eInk
             ? Duration.zero
             : const Duration(milliseconds: 300),
         curve: Curves.easeInOut,

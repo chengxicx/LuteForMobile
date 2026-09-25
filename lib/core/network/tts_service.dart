@@ -73,6 +73,20 @@ class TTSVoice {
 
 abstract class TTSService {
   Future<void> speak(String text);
+
+  /// Play audio that has already been fetched, skipping the synthesis round
+  /// trip [speak] pays.
+  ///
+  /// The read-aloud player prefetches the *next* sentence while the current
+  /// one is being read, then hands the bytes straight to the platform player.
+  /// Without this the reader stalls between every pair of sentences for one
+  /// full HTTP request plus server-side synthesis -- the reason reading aloud
+  /// on mobile "stops after every sentence" while the web player does not
+  /// (the web player synthesises locally in the browser).
+  ///
+  /// Only services that report [supportsBytesOutput] get bytes; the rest
+  /// throw, and the caller falls back to [speak].
+  Future<void> speakBytes(Uint8List bytes);
   Future<void> stop();
   Future<void> setLanguage(String languageCode);
   Future<void> setSettings(TTSSettingsConfig config);
@@ -117,6 +131,11 @@ class OnDeviceTTSService implements TTSService {
     } catch (e) {
       throw TTSException('Failed to speak with on-device TTS: $e');
     }
+  }
+
+  @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    throw TTSException('On-device TTS does not support byte playback');
   }
 
   @override
@@ -301,10 +320,22 @@ class KokoroTTSService implements TTSService {
   }
 
   @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    try {
+      // Already-fetched audio: straight to the platform player, no request.
+      await _audioPlayer.play(BytesSource(bytes));
+    } catch (e) {
+      throw TTSException('Failed to play Kokoro TTS audio: $e');
+    }
+  }
+
+  @override
   Future<void> stop() async {
     try {
+      // No release() here. release() tears down the platform MediaPlayer, so
+      // every sentence change paid to build a new one; that setup cost landed
+      // squarely in the gap between two sentences. dispose() frees it.
       await _audioPlayer.stop();
-      await _audioPlayer.release();
     } catch (e) {
       throw TTSException('Failed to stop Kokoro TTS: $e');
     }
@@ -436,10 +467,22 @@ class OpenAITTSService implements TTSService {
   }
 
   @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    try {
+      // Already-fetched audio: straight to the platform player, no request.
+      await _audioPlayer.play(BytesSource(bytes));
+    } catch (e) {
+      throw TTSException('Failed to play OpenAI TTS audio: $e');
+    }
+  }
+
+  @override
   Future<void> stop() async {
     try {
+      // No release() here. release() tears down the platform MediaPlayer, so
+      // every sentence change paid to build a new one; that setup cost landed
+      // squarely in the gap between two sentences. dispose() frees it.
       await _audioPlayer.stop();
-      await _audioPlayer.release();
     } catch (e) {
       throw TTSException('Failed to stop OpenAI TTS: $e');
     }
@@ -567,10 +610,22 @@ class LocalOpenAITTSService implements TTSService {
   }
 
   @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    try {
+      // Already-fetched audio: straight to the platform player, no request.
+      await _audioPlayer.play(BytesSource(bytes));
+    } catch (e) {
+      throw TTSException('Failed to play Local OpenAI TTS audio: $e');
+    }
+  }
+
+  @override
   Future<void> stop() async {
     try {
+      // No release() here. release() tears down the platform MediaPlayer, so
+      // every sentence change paid to build a new one; that setup cost landed
+      // squarely in the gap between two sentences. dispose() frees it.
       await _audioPlayer.stop();
-      await _audioPlayer.release();
     } catch (e) {
       throw TTSException('Failed to stop local OpenAI TTS: $e');
     }
@@ -677,10 +732,22 @@ class SupertonicFastApiTTSService implements TTSService {
   }
 
   @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    try {
+      // Already-fetched audio: straight to the platform player, no request.
+      await _audioPlayer.play(BytesSource(bytes));
+    } catch (e) {
+      throw TTSException('Failed to play Supertonic FastAPI TTS audio: $e');
+    }
+  }
+
+  @override
   Future<void> stop() async {
     try {
+      // No release() here. release() tears down the platform MediaPlayer, so
+      // every sentence change paid to build a new one; that setup cost landed
+      // squarely in the gap between two sentences. dispose() frees it.
       await _audioPlayer.stop();
-      await _audioPlayer.release();
     } catch (e) {
       throw TTSException('Failed to stop Supertonic FastAPI TTS: $e');
     }
@@ -916,10 +983,22 @@ class EdgeTTSService implements TTSService {
   }
 
   @override
+  Future<void> speakBytes(Uint8List bytes) async {
+    try {
+      // Already-fetched audio: straight to the platform player, no request.
+      await _audioPlayer.play(BytesSource(bytes));
+    } catch (e) {
+      throw TTSException('Failed to play Edge TTS audio: $e');
+    }
+  }
+
+  @override
   Future<void> stop() async {
     try {
+      // No release() here. release() tears down the platform MediaPlayer, so
+      // every sentence change paid to build a new one; that setup cost landed
+      // squarely in the gap between two sentences. dispose() frees it.
       await _audioPlayer.stop();
-      await _audioPlayer.release();
     } catch (e) {
       throw TTSException('Failed to stop Edge TTS: $e');
     }
@@ -972,6 +1051,11 @@ class EdgeTTSService implements TTSService {
 class NoTTSService implements TTSService {
   @override
   Future<void> speak(String text) async {
+    debugPrint('TTS is disabled');
+  }
+
+  @override
+  Future<void> speakBytes(Uint8List bytes) async {
     debugPrint('TTS is disabled');
   }
 

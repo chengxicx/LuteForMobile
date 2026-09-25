@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/logger/widget_logger.dart';
+import '../../../shared/theme/eink.dart';
+import '../../../shared/widgets/hardware_key_navigator.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
 import '../models/text_item.dart';
 import '../models/term_form.dart';
@@ -536,23 +538,52 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     final textSettings = ref.watch(textFormattingSettingsProvider);
     final settings = ref.watch(settingsProvider);
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
-        title: Text(pageTitle ?? 'Sentence Reader'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: () =>
-                ref.read(navigationProvider).navigateToScreen('reader'),
-            tooltip: 'Close',
-          ),
-        ],
-      ),
-      body: settings.pageTurnAnimations
-          ? _PageTransition(
-              isForward: _isNavigatingForward,
-              child: Column(
+    return HardwareKeyNavigator(
+      // 墨水屏模式：翻页键 = 上一句/下一句。手机上音量键仍归音量。
+      enabled: context.eInk,
+      onAction: (action) {
+        if (action == HardwareKeyAction.previous) {
+          _goPrevious();
+        } else {
+          _goNext();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
+          title: Text(pageTitle ?? 'Sentence Reader'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () =>
+                  ref.read(navigationProvider).navigateToScreen('reader'),
+              tooltip: 'Close',
+            ),
+          ],
+        ),
+        // 墨水屏下不做句子转场：那是一段补间，等于十几帧全屏刷新。
+        body: settings.pageTurnAnimations && !context.eInk
+            ? _PageTransition(
+                isForward: _isNavigatingForward,
+                child: Column(
+                  key: ValueKey('column-${currentSentence?.id ?? "null"}'),
+                  children: [
+                    Expanded(
+                      flex: 10 - _splitRatio,
+                      child: _buildTopSection(
+                        textSettings,
+                        settings,
+                        currentSentence,
+                      ),
+                    ),
+                    Expanded(
+                      flex: _splitRatio,
+                      child: _buildBottomSection(currentSentence),
+                    ),
+                  ],
+                ),
+              )
+            : Column(
                 key: ValueKey('column-${currentSentence?.id ?? "null"}'),
                 children: [
                   Expanded(
@@ -569,30 +600,13 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
                   ),
                 ],
               ),
-            )
-          : Column(
-              key: ValueKey('column-${currentSentence?.id ?? "null"}'),
-              children: [
-                Expanded(
-                  flex: 10 - _splitRatio,
-                  child: _buildTopSection(
-                    textSettings,
-                    settings,
-                    currentSentence,
-                  ),
-                ),
-                Expanded(
-                  flex: _splitRatio,
-                  child: _buildBottomSection(currentSentence),
-                ),
-              ],
-            ),
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (ref.read(settingsProvider).showStatsBar) _buildStatsRow(),
-          _buildNavigationBar(),
-        ],
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (ref.read(settingsProvider).showStatsBar) _buildStatsRow(),
+            _buildNavigationBar(),
+          ],
+        ),
       ),
     );
   }

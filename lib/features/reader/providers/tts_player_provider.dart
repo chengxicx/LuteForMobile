@@ -74,8 +74,8 @@ class TTSPlayerState {
 
   TTSPlayerSnippet? get currentSnippet =>
       currentIndex >= 0 && currentIndex < snippets.length
-          ? snippets[currentIndex]
-          : null;
+      ? snippets[currentIndex]
+      : null;
 
   /// Overall duration of the whole cue list (sum of estimates).
   Duration get totalDuration {
@@ -112,9 +112,7 @@ class TTSPlayerState {
       currentIndex: currentIndex ?? this.currentIndex,
       positionInSnippet: positionInSnippet ?? this.positionInSnippet,
       status: status ?? this.status,
-      errorMessage: clearError
-          ? null
-          : (errorMessage ?? this.errorMessage),
+      errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       loopMode: loopMode ?? this.loopMode,
       autoPauseMode: autoPauseMode ?? this.autoPauseMode,
       playbackRate: playbackRate ?? this.playbackRate,
@@ -146,6 +144,43 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   StreamSubscription<PlayerState>? _serviceStateSubscription;
   bool _advanceOnComplete = false;
 
+  /// 是否启动 250ms 的位置心跳。墨水屏模式下 UI 传 false 关掉它：每 250ms
+  /// 推一次状态就是每秒 4 次全屏重绘，朗读时屏幕会一直抖。
+  bool _tickPosition = true;
+
+  /// Audio already fetched but not yet spoken, keyed by snippet index.
+  ///
+  /// A network TTS service's [TTSService.speak] pays one full HTTP request
+  /// first -- plus server-side synthesis when the server's cache misses --
+  /// and until it returns there is nothing to play. That wait landed between
+  /// every pair of sentences, which is why read-aloud "stops after every
+  /// sentence" on mobile. The web player has no such gap: it synthesises in
+  /// the browser from text already on the page.
+  ///
+  /// So fetch sentence N+1 while sentence N is being read. By the time N
+  /// finishes, its successor is in memory and goes straight to the platform
+  /// player through [TTSService.speakBytes].
+  final Map<int, Uint8List> _prefetched = {};
+
+  /// The service the cached bytes came from. A settings change rebuilds the
+  /// service, possibly with another voice, language or endpoint; bytes from
+  /// the previous one would then be wrong, so they are dropped.
+  TTSService? _prefetchedOwner;
+
+  /// Index whose audio is currently being fetched, so the same sentence is
+  /// not requested twice.
+  int? _prefetchingIndex;
+
+  /// Service instance that last received the rate, and the rate it received.
+  ///
+  /// Every network service answers [TTSService.setPlaybackRate] with a call
+  /// into the platform player, so doing it per sentence costs a round trip
+  /// per sentence. Skipping it rests on `stop()` no longer calling
+  /// `release()` -- see [TTSService.stop] -- because releasing tears down the
+  /// player and with it the playback rate that was set.
+  TTSService? _rateAppliedTo;
+  double? _appliedRate;
+
   /// Rate the user picked in the player bar, or null while the player still
   /// follows the TTS settings.  Kept here so turning the page does not
   /// quietly undo the user's choice.
@@ -169,6 +204,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// Loads a new set of sentences (one full page) and prepares playback.
   void loadPage(List<TTSPlayerSentence> sentences) {
     _resetPosition();
+    _clearPrefetch();
     _serviceStateSubscription?.cancel();
     final rate = _userRate ?? _rateFromSettings();
     final snippets = sentences.map((s) {
@@ -202,9 +238,9 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   }
 
   static Duration estimateDuration(String text, double rate) {
-    final cjk = RegExp(r'[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]')
-        .allMatches(text)
-        .length;
+    final cjk = RegExp(
+      r'[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]',
+    ).allMatches(text).length;
     final other = text.length - cjk;
     final effRate = rate <= 0 ? 1.0 : rate;
     final seconds = (cjk * 0.4 + other * 0.09) / effRate;
@@ -212,8 +248,13 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   }
 
   /// Starts playing the whole page from the beginning.
-  Future<void> play() async {
+  ///
+  /// [tickPosition] = false 时不启动 250ms 的位置心跳（墨水屏模式）。句子
+  /// 推进由服务的完成事件驱动，不受影响；只是不再有秒级进度可显示 ——
+  /// 墨水屏上"第几句"比"第几秒"有用。
+  Future<void> play({bool tickPosition = true}) async {
     if (!state.hasSnippets) return;
+    _tickPosition = tickPosition;
     _advanceOnComplete = true;
     if (state.currentIndex < 0) {
       state = state.copyWith(
@@ -233,11 +274,11 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     await _speakCurrent();
   }
 
-  Future<void> toggle() async {
+  Future<void> toggle({bool tickPosition = true}) async {
     if (state.isPlaying || state.isLoading) {
       await pause();
     } else {
-      await play();
+      await play(tickPosition: tickPosition);
     }
   }
 
@@ -272,9 +313,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// a plain `setSpeechRate`/`setPlaybackRate` only affects the *next*
   /// utterance.
   Future<void> setPlaybackRate(double rate) async {
-    final clamped = rate
-        .clamp(minPlaybackRate, maxPlaybackRate)
-        .toDouble();
+    final clamped = rate.clamp(minPlaybackRate, maxPlaybackRate).toDouble();
     if (clamped == state.playbackRate) return;
 
     _userRate = clamped;
@@ -348,6 +387,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _positionTimer?.cancel();
     _speakStartedAt = null;
     _instantLoopRepeats = 0;
+    _clearPrefetch();
     _stopService();
     state = state.copyWith(
       currentIndex: -1,
@@ -420,13 +460,28 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     try {
       final service = ref.read(ttsServiceProvider);
       state = state.copyWith(status: TTSPlayerStatus.loading);
-      // Set the rate right before speaking.  It is applied at utterance level
-      // (FlutterTts / audioplayers), and a service rebuilt from the settings
-      // would otherwise come back at the configured rate -- silently undoing
-      // a rate the user picked in the player bar.
-      await service.setPlaybackRate(state.playbackRate);
+      await _applyPlaybackRate(service);
+
+      // Cached bytes belong to one service instance; anything fetched before
+      // a rebuild can carry a different voice or language than the one now
+      // selected, and must not be played.
+      if (_prefetchedOwner != null && _prefetchedOwner != service) {
+        _clearPrefetch();
+      }
+      _prefetchedOwner = service;
+
+      // Prefetched audio is looked up, not consumed: Loop replays this very
+      // sentence, and taking its bytes away would send the second pass back
+      // through the network. Entries behind the playhead are dropped when the
+      // next one is fetched.
+      final prefetched = _prefetched[state.currentIndex];
       _speakStartedAt = DateTime.now();
-      await service.speak(snippet.text);
+      if (prefetched != null) {
+        await service.speakBytes(prefetched);
+      } else {
+        await service.speak(snippet.text);
+      }
+      unawaited(_prefetchNext());
       // The service has taken this utterance.  From here a completion belongs
       // to *it*, not to the sentence we stopped in order to get here -- see
       // [_stopService].  Re-armed only after speak() has returned, so the
@@ -453,6 +508,66 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         errorMessage: e is TTSException ? e.message : e.toString(),
       );
     }
+  }
+
+  /// Push the rate to the service only when it has actually changed.
+  ///
+  /// Applied at utterance level (FlutterTts / audioplayers), and a service
+  /// rebuilt from the settings comes back at the configured rate -- so a rate
+  /// the user picked in the player bar still has to be re-applied whenever the
+  /// service instance itself changes, not just when the number changed.
+  Future<void> _applyPlaybackRate(TTSService service) async {
+    if (_rateAppliedTo == service && _appliedRate == state.playbackRate) return;
+    await service.setPlaybackRate(state.playbackRate);
+    _rateAppliedTo = service;
+    _appliedRate = state.playbackRate;
+  }
+
+  /// Fetch the sentence after the playhead in the background.
+  ///
+  /// Failure here is silent and deliberately so: a prefetch that fails leaves
+  /// the sentence to be spoken the old way, one network request's worth of
+  /// waiting later. Nothing about the failure belongs to the sentence being
+  /// read *now*, which is what the user is listening to.
+  Future<void> _prefetchNext() async {
+    final index = state.currentIndex + 1;
+    if (index < 1 || index >= state.snippets.length) return;
+    if (_prefetched.containsKey(index) || _prefetchingIndex == index) return;
+
+    final TTSService service;
+    try {
+      service = ref.read(ttsServiceProvider);
+    } catch (_) {
+      return;
+    }
+    if (!service.supportsBytesOutput) return;
+
+    _prefetchingIndex = index;
+    try {
+      final bytes = await service.getAudioBytes(state.snippets[index].text);
+      // Kept as long as the sentence still lies at or ahead of the playhead.
+      // Anything behind it is dead weight and dropped. Note this is *not* a
+      // check that we are still on the previous sentence: a short sentence
+      // can finish before the fetch does, and throwing those bytes away is
+      // exactly how short sentences lose the prefetch's benefit. Keeping them
+      // costs nothing -- they are keyed by index and only ever played for the
+      // sentence they were fetched for.
+      if (bytes.isNotEmpty && index >= state.currentIndex) {
+        _prefetched.removeWhere((key, _) => key < state.currentIndex);
+        _prefetched[index] = bytes;
+        _prefetchedOwner = service;
+      }
+    } catch (e) {
+      debugPrint('TTS prefetch failed for sentence $index: $e');
+    } finally {
+      if (_prefetchingIndex == index) _prefetchingIndex = null;
+    }
+  }
+
+  void _clearPrefetch() {
+    _prefetched.clear();
+    _prefetchedOwner = null;
+    _prefetchingIndex = null;
   }
 
   void _subscribeService() {
@@ -541,8 +656,8 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       _positionTimer?.cancel();
       _advanceOnComplete = false;
       state = state.copyWith(
-        positionInSnippet: state.currentSnippet?.estimatedDuration ??
-            state.positionInSnippet,
+        positionInSnippet:
+            state.currentSnippet?.estimatedDuration ?? state.positionInSnippet,
         status: TTSPlayerStatus.idle,
       );
     }
@@ -550,6 +665,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
 
   void _startPositionTimer() {
     _positionTimer?.cancel();
+    if (!_tickPosition) return;
     final snippet = state.currentSnippet;
     if (snippet == null) return;
     _positionTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
@@ -593,7 +709,8 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   }
 }
 
-final ttsPlayerProvider =
-    NotifierProvider<TTSPlayerNotifier, TTSPlayerState>(() {
-      return TTSPlayerNotifier();
-    });
+final ttsPlayerProvider = NotifierProvider<TTSPlayerNotifier, TTSPlayerState>(
+  () {
+    return TTSPlayerNotifier();
+  },
+);
