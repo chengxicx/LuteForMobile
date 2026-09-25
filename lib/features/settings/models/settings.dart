@@ -47,6 +47,11 @@ class Settings {
   final bool autoRefreshFullStats;
   final bool experimentalBookDetailsFullStatsEndpoint;
 
+  /// 墨水屏模式（E-ink mode）。打开后关掉动画、水波纹、阴影等持续重绘的
+  /// 视觉效果，并把翻页从「拖动跟手」改成「左右区域点击」。
+  /// 目标设备 BOOX Leaf 5C，详见 docs/eink_leaf5c_plan.md。
+  final bool eInkMode;
+
   static const String termuxUrl = 'http://127.0.0.1:5001';
 
   const Settings({
@@ -91,6 +96,7 @@ class Settings {
     this.maxConcurrentTooltipFetches = 4,
     this.autoRefreshFullStats = false,
     this.experimentalBookDetailsFullStatsEndpoint = false,
+    this.eInkMode = false,
   });
 
   Settings copyWith({
@@ -137,6 +143,7 @@ class Settings {
     int? maxConcurrentTooltipFetches,
     bool? autoRefreshFullStats,
     bool? experimentalBookDetailsFullStatsEndpoint,
+    bool? eInkMode,
   }) {
     return Settings(
       localUrl: localUrl ?? this.localUrl,
@@ -202,6 +209,7 @@ class Settings {
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint ??
           this.experimentalBookDetailsFullStatsEndpoint,
+      eInkMode: eInkMode ?? this.eInkMode,
     );
   }
 
@@ -246,6 +254,7 @@ class Settings {
       maxConcurrentTooltipFetches: 4,
       autoRefreshFullStats: false,
       experimentalBookDetailsFullStatsEndpoint: false,
+      eInkMode: false,
     );
   }
 
@@ -295,7 +304,8 @@ class Settings {
         other.maxConcurrentTooltipFetches == maxConcurrentTooltipFetches &&
         other.autoRefreshFullStats == autoRefreshFullStats &&
         other.experimentalBookDetailsFullStatsEndpoint ==
-            experimentalBookDetailsFullStatsEndpoint;
+            experimentalBookDetailsFullStatsEndpoint &&
+        other.eInkMode == eInkMode;
   }
 
   @override
@@ -340,6 +350,7 @@ class Settings {
     maxConcurrentTooltipFetches,
     autoRefreshFullStats,
     experimentalBookDetailsFullStatsEndpoint,
+    eInkMode,
   ]);
 
   bool isValidServerUrl(String url) {

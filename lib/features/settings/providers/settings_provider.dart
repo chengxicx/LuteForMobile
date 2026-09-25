@@ -72,6 +72,7 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyAutoRefreshFullStats = 'auto_refresh_full_stats';
   static const String _keyExperimentalBookDetailsFullStatsEndpoint =
       'experimental_book_details_full_stats_endpoint';
+  static const String _keyEInkMode = 'eink_mode';
 
   @override
   Settings build() {
@@ -125,8 +126,7 @@ class SettingsNotifier extends Notifier<Settings> {
     final showPageNumbers = prefs.getBool(_keyShowPageNumbers) ?? true;
     final enableTripleTapToMarkKnown =
         prefs.getBool(_keyEnableTripleTapToMarkKnown) ?? false;
-    final autoPronounceOnTap =
-        prefs.getBool(_keyAutoPronounceOnTap) ?? true;
+    final autoPronounceOnTap = prefs.getBool(_keyAutoPronounceOnTap) ?? true;
     final enablePagePreload = prefs.getBool(_keyEnablePagePreload) ?? false;
     final termuxIntegrationEnabled =
         prefs.getBool(_keyTermuxIntegrationEnabled) ?? false;
@@ -143,6 +143,7 @@ class SettingsNotifier extends Notifier<Settings> {
         prefs.getBool(_keyAutoRefreshFullStats) ?? false;
     final experimentalBookDetailsFullStatsEndpoint =
         prefs.getBool(_keyExperimentalBookDetailsFullStatsEndpoint) ?? false;
+    final eInkMode = prefs.getBool(_keyEInkMode) ?? false;
 
     final currentBookId = prefs.getInt(_keyCurrentBookId);
     final currentBookLangId = prefs.getInt(_keyCurrentBookLangId);
@@ -187,6 +188,7 @@ class SettingsNotifier extends Notifier<Settings> {
       autoRefreshFullStats: autoRefreshFullStats,
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint,
+      eInkMode: eInkMode,
     );
   }
 
@@ -219,10 +221,7 @@ class SettingsNotifier extends Notifier<Settings> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyBasicAuthUser, user);
     await prefs.setString(_keyBasicAuthPassword, password);
-    state = state.copyWith(
-      basicAuthUser: user,
-      basicAuthPassword: password,
-    );
+    state = state.copyWith(basicAuthUser: user, basicAuthPassword: password);
     SessionManager.updateBasicAuth(user, password);
 
     final cacheManager = ref.read(cacheManagerProvider);
@@ -397,6 +396,12 @@ class SettingsNotifier extends Notifier<Settings> {
     state = state.copyWith(pageTurnAnimations: enabled);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyPageTurnAnimations, enabled);
+  }
+
+  Future<void> updateEInkMode(bool enabled) async {
+    state = state.copyWith(eInkMode: enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyEInkMode, enabled);
   }
 
   Future<void> updateEnableTooltipCaching(bool enabled) async {
