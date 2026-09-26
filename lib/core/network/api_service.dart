@@ -787,18 +787,33 @@ class ApiService {
     );
   }
 
-  Future<Response<String>> postPlayerData(
+  /// Posts the audio player's position (and, when known, its bookmarks).
+  ///
+  /// Goes to `/read/save_youtube_player_data` -- the **unified** media
+  /// player's endpoint.  Its docstring says the shared media engine posts
+  /// there "for every backend it drives, audio included", and the reader page
+  /// renders the resume point as
+  /// `LUTE_YT_DATA.startPos = video_current_pos or audio_current_pos`
+  /// (`lute/read/routes.py`).  Writing the legacy `audio_current_pos` instead
+  /// left the app's progress shadowed by whatever `video_current_pos` held
+  /// from a previous browser session -- 17 of 21 audio books on the live
+  /// server, with two visibly parked on the wrong spot.
+  ///
+  /// [bookmarks] is null when this session never loaded them.  The key is then
+  /// **omitted**, not sent empty: the server only writes the column when the
+  /// key is present, so "we don't know" cannot clear a stored list.
+  Future<Response<String>> postUnifiedPlayerData(
     int bookId,
-    double position,
-    List<double> bookmarks,
-  ) async {
-    final bookmarksString = bookmarks.map((b) => b.toString()).join(';');
+    double position, [
+    List<double>? bookmarks,
+  ]) async {
     return await _dio.post<String>(
-      '/read/save_player_data',
+      '/read/save_youtube_player_data',
       data: {
         'bookid': bookId,
         'position': position,
-        'bookmarks': bookmarksString,
+        if (bookmarks != null)
+          'bookmarks': bookmarks.map((b) => b.toString()).join(';'),
       },
       options: Options(contentType: 'application/json'),
     );
@@ -815,6 +830,56 @@ class ApiService {
       data: {'bookid': bookId, 'position': position},
       options: Options(contentType: 'application/json'),
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Review queue (mirrors lute.review.routes; the web UI posts the same JSON)
+  // -------------------------------------------------------------------------
+
+  /// POST /review/start -- builds the whole session in one call.
+  ///
+  /// Throws [DioException] with a 400 whose body carries `{"error": ...,
+  /// "needs_fsrs": true}` when the server's fsrs package is missing.
+  Future<dynamic> startReviewSession() async {
+    final response = await _dio.post<dynamic>(
+      '/review/start',
+      data: '{}',
+      options: Options(contentType: 'application/json'),
+    );
+    return response.data;
+  }
+
+  /// POST /review/grade -- grade one card; [rating] is 1 (Again) to 4 (Easy).
+  ///
+  /// [typed] checks a cloze/recall typed answer server-side; a wrong answer
+  /// is forced to rating 1 and reported via the result's `correct`.
+  Future<dynamic> gradeReviewCard(int cardId, int rating, {String? typed}) async {
+    final response = await _dio.post<dynamic>(
+      '/review/grade',
+      data: {'card_id': cardId, 'rating': rating, 'typed': typed},
+      options: Options(contentType: 'application/json'),
+    );
+    return response.data;
+  }
+
+  /// POST /review/undo -- reverse the most recent grading.
+  Future<dynamic> undoReviewGrade() async {
+    final response = await _dio.post<dynamic>(
+      '/review/undo',
+      data: '{}',
+      options: Options(contentType: 'application/json'),
+    );
+    return response.data;
+  }
+
+  /// POST /review/scheduler/install -- one-click install of the fsrs package.
+  Future<dynamic> installReviewScheduler() async {
+    final response = await _dio.post<dynamic>(
+      '/review/scheduler/install',
+      data: '{}',
+      options: Options(contentType: 'application/json'),
+    );
+    return response.data;
   }
 
   String _filenameFromPath(String path) {

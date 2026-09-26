@@ -1036,14 +1036,17 @@ class ContentService {
         .toList();
   }
 
+  /// [bookmarks] is null when this session never loaded them, and the field is
+  /// then left out of the request so the server keeps whatever it has.  See
+  /// [ApiService.postUnifiedPlayerData].
   Future<void> saveAudioPlayerData({
     required int bookId,
     required int page,
     required double position,
     required double duration,
-    required List<double> bookmarks,
+    List<double>? bookmarks,
   }) async {
-    await _apiService.postPlayerData(bookId, position, bookmarks);
+    await _apiService.postUnifiedPlayerData(bookId, position, bookmarks);
   }
 
   Future<void> saveYoutubePlayerData(int bookId, double position) async {

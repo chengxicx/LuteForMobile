@@ -26,10 +26,12 @@ import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
 import '../providers/audio_player_provider.dart';
+import '../providers/player_mode_provider.dart';
 import '../providers/sentence_tts_provider.dart';
 import '../providers/tts_player_provider.dart';
 import '../providers/current_book_provider.dart';
 import '../utils/playing_line.dart';
+import '../utils/player_lifecycle.dart';
 import '../widgets/term_tooltip.dart';
 import 'text_display.dart';
 import 'term_form.dart';
@@ -194,6 +196,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   bool _isLastPageMarkedDone = false;
   int? _lastAttemptedBookId;
   int? _lastAttemptedPageNum;
+
+  /// 本次运行是否已经为「上次在读的书」拿到过结果（正文或错误）。
+  ///
+  /// 用来把「正在恢复」和「真的没开书」区分开：前者不该显示
+  /// "No Book Loaded"，后者才该。
+  bool _hasLoadedOnce = false;
   bool _isNavigatingForward = true;
   Key _pageKey = const ValueKey('page');
   Map<int, String> _languageIdToName = {};
@@ -359,9 +367,18 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       if (!_checkServerPageInProgress) {
         _checkServerPage();
       }
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      ref.read(audioPlayerProvider.notifier).reset();
+      // 回到前台把播放条复位到切走前的位置。`_checkServerPage()` 只在服务端
+      // 页码不同时才翻页，所以这条路径不会重新装载音频，位置得自己还回来。
+      ref.read(audioPlayerProvider.notifier).restoreAfterBackground();
+    } else if (shouldStopAudioOnLifecycleChange(state)) {
+      // 只在真正切后台时停 MP3。inactive（窗口失焦）不算离开 app ——
+      // 音量面板、控制中心、权限弹窗都会触发它，理由见
+      // utils/player_lifecycle.dart。
+      //
+      // 用 suspendForBackground 而不是 reset：切后台只是停播，回来还在同一
+      // 本书、同一页、同一位置，不该连音源和进度一起卸掉 —— 那样播放条会
+      // 归零，而且按播放也起不来（重装兜底需要音源地址）。
+      ref.read(audioPlayerProvider.notifier).suspendForBackground();
     }
   }
 
@@ -449,6 +466,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
   void _startHideTimer() {
     _hideUiTimer?.cancel();
+    // 墨水屏下顶栏常驻，两个理由：
+    // 1. 阅读屏在宽屏布局里没有任何主导航入口（底部 NavigationBar 在宽屏不出现，
+    //    rail 又在阅读屏整条退场），顶栏的「书架」按钮是唯一一次点击就能离开
+    //    阅读页的路径，藏起来等于把这条路又堵上；
+    // 2. 显隐各是一次 0 → kToolbarHeight 的整屏 reflow，常驻反而少刷新。
+    if (context.eInk) {
+      // 直接赋值不走 setState：本方法会在 build 期间被调用（见下面 fullscreen
+      // 分支），那里 setState 会抛异常。同文件已有同样的写法。
+      _isUiVisible = true;
+      return;
+    }
     _hideUiTimer = Timer(const Duration(seconds: 2), _hideUi);
   }
 
@@ -475,6 +503,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     if (_lastAudioBookId == pageData!.bookId) return;
 
     _lastAudioBookId = pageData!.bookId;
+    // 进书默认听 MP3 音频;模式切换只在同一本书内保留。
+    ref.read(playerModeProvider.notifier).setMode(PlayerMode.mp3);
     ref.read(audioPlayerProvider.notifier).reset();
 
     if (pageData.hasAudio) {
@@ -505,14 +535,19 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// Whether the TTS read-aloud player should be shown for the current page.
   /// Mirrors the web reader: a full timeline player bar is shown for plain text
   /// pages (no uploaded audio, no manga/image, no online video) once a TTS
-  /// provider is configured.  Audio books keep the MP3 player instead.
+  /// provider is configured.  Audio books keep the MP3 player instead —
+  /// unless the user explicitly switched the bar to TTS mode.
   bool _showTtsPlayer(PageData? pageData, Settings settings) {
     if (pageData == null || !settings.showAudioPlayer) return false;
-    if (pageData.hasAudio || pageData.isManga || pageData.isVideoBook) {
+    if (pageData.isManga || pageData.isVideoBook) {
       return false;
     }
     final ttsSettings = ref.read(ttsSettingsProvider);
-    return ttsSettings.provider != TTSProvider.none;
+    if (ttsSettings.provider == TTSProvider.none) return false;
+    if (pageData.hasAudio) {
+      return ref.read(playerModeProvider) == PlayerMode.tts;
+    }
+    return true;
   }
 
   /// Builds the ordered list of sentences for a text page and feeds them to the
@@ -634,6 +669,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           .read(readerProvider.notifier)
           .loadPage(bookId: bookId, pageNum: pageNum);
 
+      // 恢复尝试已经有结果（正文或错误都算），之后 pageData 仍为空才是
+      // 真的「没开书」，那时该显示的是空状态而不是转圈。
+      _hasLoadedOnce = true;
+
       final pageData = ref.read(readerProvider).pageData;
       if (pageData != null) {
         final langId = _findLangId(pageData);
@@ -687,8 +726,42 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final pageData = ref.watch(readerProvider.select((s) => s.pageData));
     final textSettings = ref.watch(textFormattingSettingsProvider);
     final settings = ref.watch(settingsProvider);
+
+    // 记住「读到第几页」。冷启动时 MainNavigation 会带着这个页码恢复，reader
+    // 于是直接命中本地页缓存；不带页码就得先向服务端问「读到哪了」、再拉正文
+    // （两次往返 = 一个整屏转圈）。页码与 currentBookId 同源，换书时由
+    // SettingsNotifier.updateCurrentBook 作废，所以这里只认当前这本书的页。
+    ref.listen<PageData?>(readerProvider.select((s) => s.pageData), (
+      previous,
+      next,
+    ) {
+      final page = next?.currentPage;
+      if (page == null || page <= 0) return;
+      if (next!.bookId != settings.currentBookId) return;
+      if (page == settings.currentBookPage) return;
+      unawaited(
+        ref.read(settingsProvider.notifier).updateCurrentBookPage(page),
+      );
+    });
     ref.watch(ttsSettingsProvider);
+    final playerMode = ref.watch(playerModeProvider);
+    final playerCollapsed = ref.watch(playerCollapsedProvider);
     final showTtsPlayer = _showTtsPlayer(pageData, settings);
+
+    // 播放条模式切换的联动:切到 TTS 时暂停 MP3 并装配当前页的朗读句子;
+    // 切回 MP3 时停掉朗读条。两边都不自动发声,等用户按播放。
+    ref.listen<PlayerMode>(playerModeProvider, (previous, next) {
+      if (previous == next) return;
+      if (next == PlayerMode.tts) {
+        unawaited(ref.read(audioPlayerProvider.notifier).pause());
+        _lastTtsPageKey = null;
+        if (pageData != null) {
+          _loadTtsIfNeeded(pageData);
+        }
+      } else {
+        _stopStaleTtsPlayer();
+      }
+    });
 
     if (textSettings.fullscreenMode && !_lastFullscreenMode) {
       _lastFullscreenMode = true;
@@ -722,7 +795,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             children: [
               Column(
                 children: [
-                  if (settings.showAudioPlayer && pageData?.hasAudio == true)
+                  if (settings.showAudioPlayer &&
+                      pageData?.hasAudio == true &&
+                      playerMode == PlayerMode.mp3 &&
+                      !playerCollapsed)
                     AnimatedContainer(
                       duration: einkDuration(
                         const Duration(milliseconds: 200),
@@ -743,7 +819,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                         audioCurrentPos: pageData.audioCurrentPos,
                       ),
                     ),
-                  if (showTtsPlayer)
+                  if (showTtsPlayer && !playerCollapsed)
                     AnimatedContainer(
                       duration: einkDuration(
                         const Duration(milliseconds: 200),
@@ -756,7 +832,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                                   kToolbarHeight
                             : 0,
                       ),
-                      child: const TTSPlayerWidget(),
+                      child: TTSPlayerWidget(
+                        showMp3Toggle: pageData?.hasAudio == true,
+                      ),
                     ),
                   Expanded(
                     child: _buildBody(isLoading, errorMessage, pageData),
@@ -767,6 +845,63 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           ),
         ),
       ),
+    );
+  }
+
+  /// 阅读屏的抽屉就是 Reader Settings 面板（排版区在顶），汉堡和 Aa 都开它：
+  /// Aa 是高频动作的显性入口，点进去第一屏就是字体字号。
+  void _openReaderDrawer() {
+    widget.scaffoldKey?.currentState?.openDrawer();
+  }
+
+  /// 当前页是否有播放条可显示（漫画/视频书、未配置 TTS、播放条总开关关闭
+  /// 时为 false）。与 body 里两条播放条的显示条件保持一致。
+  bool _playerAvailable(PageData? pageData, Settings settings) {
+    if (settings.showAudioPlayer &&
+        pageData?.hasAudio == true &&
+        ref.read(playerModeProvider) == PlayerMode.mp3) {
+      return true;
+    }
+    return _showTtsPlayer(pageData, settings);
+  }
+
+  /// AppBar 上的播放条收起/恢复快捷按钮。
+  ///
+  /// 收起只藏 UI：播放状态都在 provider 里，朗读/音乐继续、句子高亮跟随
+  /// 照旧。已收起时按钮显示当前模式的图标，提示有播放在进行、点击恢复。
+  Widget _buildPlayerToggleButton(PageData? pageData, Settings settings) {
+    final collapsed = ref.watch(playerCollapsedProvider);
+    final mp3Mode =
+        pageData?.hasAudio == true &&
+        ref.read(playerModeProvider) == PlayerMode.mp3;
+    return IconButton(
+      icon: Icon(
+        collapsed
+            ? (mp3Mode ? Icons.music_note : Icons.record_voice_over)
+            : Icons.keyboard_arrow_up,
+      ),
+      tooltip: collapsed ? 'Show player' : 'Collapse player',
+      onPressed: () => ref
+          .read(playerCollapsedProvider.notifier)
+          .setCollapsed(!collapsed),
+    );
+  }
+
+  /// 阅读屏顶栏的「书架」直达入口。
+  ///
+  /// 阅读屏是 IndexedStack 的一个 tab，不是 push 出来的页面，所以"返回"只能靠
+  /// 主导航切 tab。而主导航在阅读屏上一条都不剩：窄屏的底部 NavigationBar 在
+  /// 宽屏不渲染（app.dart:562），宽屏的 rail 又在阅读屏整条退场
+  /// （app.dart:662）。Leaf 5C 逻辑宽约 674dp、走宽屏分支，于是离开阅读页只剩
+  /// 汉堡 → 抽屉 → Books 三次操作 —— 这就是"没有跳回 book 页面的便捷方式"。
+  ///
+  /// 给阅读屏恢复一条常驻导航要吃掉正文行宽，代价太大；一个一次点击的按钮就够。
+  /// 它顶掉的是原来的 Grammar 按钮：拼写检查不是阅读动作，抽屉里本来就有。
+  Widget _buildBooksButton() {
+    return IconButton(
+      icon: const Icon(Icons.collections_bookmark),
+      tooltip: 'Books',
+      onPressed: () => ref.read(navigationProvider).navigateToScreen('books'),
     );
   }
 
@@ -795,6 +930,14 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
             title: Text(pageData?.title ?? 'Reader'),
             actions: [
+              _buildBooksButton(),
+              if (_playerAvailable(pageData, settings))
+                _buildPlayerToggleButton(pageData, settings),
+              IconButton(
+                icon: const Icon(Icons.text_fields),
+                tooltip: 'Text formatting',
+                onPressed: _openReaderDrawer,
+              ),
               if (pageData != null && pageData.pageCount > 1)
                 Padding(
                   padding: const EdgeInsets.only(right: 16),
@@ -842,6 +985,14 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
       title: Text(pageData?.title ?? 'Reader'),
       actions: [
+        _buildBooksButton(),
+        if (_playerAvailable(pageData, settings))
+          _buildPlayerToggleButton(pageData, settings),
+        IconButton(
+          icon: const Icon(Icons.text_fields),
+          tooltip: 'Text formatting',
+          onPressed: _openReaderDrawer,
+        ),
         if (pageData != null && pageData.pageCount > 1)
           Padding(
             padding: const EdgeInsets.only(right: 16),
@@ -1049,12 +1200,28 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     return headers;
   }
 
+  /// 是否正在恢复「上次在读的书」：settings 里记着这本书，但本次运行还没
+  /// 为它拿到结果（正文或错误），正文还没到。
+  ///
+  /// 这段窗口里页面是空的，但**不是**「没开书」：冷启动时正文来自本地页
+  /// 缓存，只差一两帧；显示 "No Book Loaded" 会误导用户。
+  bool _isRestoringBook(Settings settings) {
+    final bookId = settings.currentBookId;
+    if (bookId == null || _hasLoadedOnce) return false;
+    // 加载还没发起（_lastAttemptedBookId 仍为 null）也算「恢复中」：
+    // MainNavigation 的启动恢复就在这一两帧里由 post-frame 回调发起。
+    return _lastAttemptedBookId == null || _lastAttemptedBookId == bookId;
+  }
+
   Widget _buildBody(bool isLoading, String? errorMessage, PageData? pageData) {
+    final settings = ref.watch(settingsProvider);
+
+    // 转圈延迟显示：启动恢复走本地页缓存，通常一两帧就位；立刻画进度圈
+    // 会让每次冷启动都闪一下 loading。真的慢（缓存未命中 → 走网络）时才显示。
     if (isLoading) {
-      return const LoadingIndicator(message: 'Loading content...');
+      return const _DeferredLoadingIndicator(message: 'Loading content...');
     }
 
-    final settings = ref.watch(settingsProvider);
     if (!settings.isUrlValid) {
       return Center(
         child: Padding(
@@ -1074,7 +1241,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                'Please configure your Lute server in settings.',
+                'Please configure your Song server in settings.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: context.appColorScheme.text.secondary,
                 ),
@@ -1111,6 +1278,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     }
 
     if (pageData == null) {
+      // 正在恢复上次在读的书（settings 里记着这本书，正文还在路上）：
+      // 这时显示 "No Book Loaded" 是错的 —— 书是有的，只是还没读出来。
+      if (_isRestoringBook(settings)) {
+        return const _DeferredLoadingIndicator(message: 'Loading content...');
+      }
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -2325,5 +2497,51 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         );
       },
     );
+  }
+}
+
+/// 延迟显示的进度圈。
+///
+/// 阅读屏在 App 启动时就要恢复上次在读的书和页码，正文通常直接从本地页
+/// 缓存读出，只花一两帧。立刻画进度圈会让每次冷启动都闪一下 loading，
+/// 所以先留白，只有在真的慢（超过 [_delay]）时才把进度圈显示出来。
+///
+/// 留白而不是 [SizedBox.shrink]：占住正文区，避免除背景色外还出现跳变。
+class _DeferredLoadingIndicator extends StatefulWidget {
+  final String? message;
+
+  const _DeferredLoadingIndicator({this.message});
+
+  /// 留白时长。够长到让本地缓存命中（通常 < 50ms）永远不显示进度圈，
+  /// 又够短到网络真的慢时不会让用户对着一片空白发呆。
+  static const Duration _delay = Duration(milliseconds: 250);
+
+  @override
+  State<_DeferredLoadingIndicator> createState() =>
+      _DeferredLoadingIndicatorState();
+}
+
+class _DeferredLoadingIndicatorState extends State<_DeferredLoadingIndicator> {
+  Timer? _timer;
+  bool _visible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(_DeferredLoadingIndicator._delay, () {
+      if (mounted) setState(() => _visible = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_visible) return const SizedBox.expand();
+    return LoadingIndicator(message: widget.message);
   }
 }
