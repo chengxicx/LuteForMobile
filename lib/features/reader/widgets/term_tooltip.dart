@@ -399,10 +399,17 @@ class TermTooltipClass {
 
   static void close() {
     _dismissTimer?.cancel();
-    _currentEntry?.remove();
+    // entry 可能已被框架摘掉（Overlay 随路由重建等），此时 entry.mounted 为
+    // false 而 remove() 里的 null check 会在 release 包直接抛异常 —— 而且
+    // 抛在 `_currentEntry = null` 之前，static 里留着一具尸体，之后每次
+    // close()（每次点词的第一行）都重复崩溃，词卡和发音整个瘫痪。
+    final entry = _currentEntry;
     _currentEntry = null;
     _isHidden = false;
     _makeVisibleRequested = false;
+    if (entry?.mounted == true) {
+      entry!.remove();
+    }
   }
 
   static void _setupAutoDismiss() {

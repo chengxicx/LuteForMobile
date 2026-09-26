@@ -306,6 +306,24 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
     }
 
+    // Manga 页的 HTML 没有 .textsentence 包裹，paragraphs 恒为空 —— 只扫
+    // paragraphs 的话这里拿到 null，TTS 语言退回兜底 'en'，日文词被丢给
+    // 英文语音（edge-tts 422，词卡彻底无声，见 nginx 日志 /tts/en/言う）。
+    // OCR 文字项带同样的 data-lang-id，从 manga blocks 里补扫一遍。
+    final mangaPage = pageData.mangaPage;
+    if (mangaPage != null) {
+      for (final block in mangaPage.blocks) {
+        for (final line in block.lineItems) {
+          for (final item in line) {
+            final langId = item.langId;
+            if (langId != null && langId != 0) {
+              return langId;
+            }
+          }
+        }
+      }
+    }
+
     return null;
   }
 
