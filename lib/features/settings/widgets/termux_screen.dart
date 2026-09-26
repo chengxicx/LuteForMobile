@@ -305,10 +305,10 @@ class _TermuxScreenState extends ConsumerState<TermuxScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Termux Permission Required'),
         content: const Text(
-          'To run the Lute server, LuteForMobile needs permission to execute commands in Termux.\n\n'
+          'To run the Lute server, Song Mobile needs permission to execute commands in Termux.\n\n'
           'Tap "Open Settings" \n'
           '"Permissions" → "Additional permissions" → "Run commands" → "Allow"\n'
-          'Press back until you return to LuteForMobile\n'
+          'Press back until you return to Song Mobile\n'
           'Tap refresh icon in top right',
         ),
         actions: [
@@ -2161,7 +2161,7 @@ class _TermuxScreenState extends ConsumerState<TermuxScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Termux needs to be configured to accept commands from LuteForMobile.',
+                'Termux needs to be configured to accept commands from Song Mobile.',
               ),
 
               const SizedBox(height: 8),
@@ -2223,7 +2223,7 @@ class _TermuxScreenState extends ConsumerState<TermuxScreen> {
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const Text(
-                'Step 3: Return to LuteForMobile and refresh',
+                'Step 3: Return to Song Mobile and refresh',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ],
@@ -2311,7 +2311,7 @@ class _TermuxScreenState extends ConsumerState<TermuxScreen> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Step 3: Return to LuteForMobile and refresh',
+                'Step 3: Return to Song Mobile and refresh',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ],

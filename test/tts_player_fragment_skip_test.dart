@@ -242,4 +242,66 @@ void main() {
       reason: 'the player must not keep reading past a real error',
     );
   });
+
+  test('a sentence that normalizes away is skipped, never fetched', () async {
+    // The second half of the same server rule.  The edge-tts provider puts the
+    // text in a path segment, and Werkzeug's `path` converter needs at least
+    // one character that is not a newline -- so `/tts/ja-JP/` (an empty
+    // sentence) 404s exactly like the trailing-newline case does.  A 404 is a
+    // real error to this client, so an unguarded ghost sentence kills the page.
+    //
+    // The web player advances past these instead of speaking them
+    // (`tts-player.js`: `if (!cleanText) { ttsAdvance(); return; }`).
+    final fake = FakeEdgeTTSService();
+    final container = _containerFor(fake);
+    addTearDown(() {
+      container.dispose();
+      fake.dispose();
+    });
+
+    final sentences = _page();
+    // A ghost: whitespace, a zero-width space and a line break, nothing else.
+    sentences[2] = const TTSPlayerSentence(sentenceId: 2, text: '\n \u200B ');
+    // The sentence from the report, newline included.
+    sentences[4] = const TTSPlayerSentence(
+      sentenceId: 4,
+      text: '作词 : 上江洌清作\n',
+    );
+
+    final notifier = container.read(ttsPlayerProvider.notifier);
+    notifier.loadPage(sentences);
+    await notifier.play();
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+    expect(
+      fake.spoken,
+      isNot(contains('')),
+      reason: 'an empty sentence would build /tts/<lang>/ and 404',
+    );
+    expect(
+      fake.spoken,
+      contains('作词 : 上江洌清作'),
+      reason: 'the sentence itself is still read -- only normalized',
+    );
+
+    // Assert on the snippet text, not on what the fake recorded: `snippet.text`
+    // is the string `_fetchAudio` puts in the URL path, and the fake trims what
+    // it receives -- which would hide a surviving newline.
+    final snippets = container.read(ttsPlayerProvider).snippets;
+    expect(
+      snippets[2].text,
+      isEmpty,
+      reason: 'the ghost sentence must normalize away',
+    );
+    expect(
+      snippets[4].text,
+      '作词 : 上江洌清作',
+      reason: 'the trailing newline must be gone before the URL is built',
+    );
+    expect(
+      container.read(ttsPlayerProvider).errorMessage,
+      isNull,
+      reason: 'neither case may surface as an error banner',
+    );
+  });
 }

@@ -192,6 +192,23 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
 
   int _instantLoopRepeats = 0;
 
+  /// 世代计数器：每次 stop／页面切换推进。[ _speakCurrent] 在 speak 的漫长
+  /// 等待期间用户可能已按了下一句或暂停 —— 等待回来的旧调用凭此识别自己
+  /// 已被取代，不再武装完成处理、不再改状态，否则迟到事件会被误读。
+  int _transitionEpoch = 0;
+
+  /// 最近一次我们自己发起 stop 的时刻。stop 在平台侧会回一个 `stopped`
+  /// 回声，真机上它经常迟到：一旦落在新语句重新武装 [_advanceOnComplete]
+  /// 之后就被当成「句子读完」—— 非循环模式平白跳一句；循环模式里瞬时
+  /// 重播会让两次 play 在播放器上叠写，进度照走、声音没了。窗口内的
+  /// `stopped` 一律丢弃；真正的句子完成永远以 `completed` 报告。
+  DateTime? _stopRequestedAt;
+  static const Duration _stopEchoWindow = Duration(milliseconds: 750);
+
+  /// 在途的 stop future。下一条语句开口前先等它落地：引擎不保证 stop 先于
+  /// 紧随的 speak/play 处理完，新语句可能被在途的 stop 冲掉。
+  Future<void>? _pendingStop;
+
   @override
   TTSPlayerState build() {
     ref.onDispose(() {
@@ -208,10 +225,13 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _serviceStateSubscription?.cancel();
     final rate = _userRate ?? _rateFromSettings();
     final snippets = sentences.map((s) {
+      // 多词词元文本里的零宽空格要在这里剥掉:snippet.text 是 speak、预取、
+      // 时长估算三处共用的唯一文本源,入口归一化后三处自然一致。
+      final text = normalizeTtsText(s.text);
       return TTSPlayerSnippet(
         sentenceId: s.sentenceId,
-        text: s.text,
-        estimatedDuration: estimateDuration(s.text, rate),
+        text: text,
+        estimatedDuration: estimateDuration(text, rate),
       );
     }).toList();
     state = TTSPlayerState(
@@ -255,7 +275,8 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   Future<void> play({bool tickPosition = true}) async {
     if (!state.hasSnippets) return;
     _tickPosition = tickPosition;
-    _advanceOnComplete = true;
+    // 完成处理不在预武装：要等 [_speakCurrent] 真正把语句交给服务之后。
+    // 预武装会让上一句的 stop 回声落在装载窗口里被误读为完成。
     if (state.currentIndex < 0) {
       state = state.copyWith(
         currentIndex: 0,
@@ -396,6 +417,12 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     );
   }
 
+  /// 只清除报错条,不动播放状态(报错行末尾的"关闭"按钮用)。
+  void clearError() {
+    if (state.errorMessage == null) return;
+    state = state.copyWith(clearError: true);
+  }
+
   Future<void> next() async {
     if (!state.canGoNext) return;
     _positionTimer?.cancel();
@@ -455,12 +482,31 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       return;
     }
 
+    // 归一化后什么都不剩的句子不能送去合成：它拼出来是 `/tts/<lang>/`，末段
+    // 为空，服务端的 path 转换器（要求至少一个字符）同样匹配不上 → 404 →
+    // 被当成真实错误弹横幅、卡住整页。这类"幽灵句"在页面上只占标点或空白，
+    // 本来就没有可读内容。
+    //
+    // 走「不可发音碎片」那条路：当作正常播完，推进下一句。网页播放器也是先
+    // 判空再 advance（`tts-player.js`: `if (!cleanText) { ttsAdvance(); return; }`）。
+    // 推进是 `unawaited(_speakCurrent())`，所以连着一串空句也不会递归爆栈。
+    if (snippet.text.isEmpty) {
+      _advanceOnComplete = true;
+      _onServiceCompleted();
+      return;
+    }
+
+    // 本调用所属的世代。speak 的等待期间用户可能已切换／暂停（都会推进
+    // 世代），等回来的这里已是过时请求，不得再武装完成处理或改状态。
+    final epoch = _transitionEpoch;
+
     _subscribeService();
 
     try {
       final service = ref.read(ttsServiceProvider);
       state = state.copyWith(status: TTSPlayerStatus.loading);
       await _applyPlaybackRate(service);
+      if (epoch != _transitionEpoch) return;
 
       // Cached bytes belong to one service instance; anything fetched before
       // a rebuild can carry a different voice or language than the one now
@@ -469,6 +515,18 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         _clearPrefetch();
       }
       _prefetchedOwner = service;
+
+      // 先等上一次 stop 落地再开口。引擎不保证 stop 先于紧随的 speak/play
+      // 处理完，新语句可能被在途的 stop 冲掉 —— 进度心跳照走，声音却不再来。
+      final stopToSettle = _pendingStop;
+      if (stopToSettle != null) {
+        _pendingStop = null;
+        await stopToSettle.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () {},
+        );
+        if (epoch != _transitionEpoch) return;
+      }
 
       // Prefetched audio is looked up, not consumed: Loop replays this very
       // sentence, and taking its bytes away would send the second pass back
@@ -481,6 +539,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       } else {
         await service.speak(snippet.text);
       }
+      if (epoch != _transitionEpoch) return;
       unawaited(_prefetchNext());
       // The service has taken this utterance.  From here a completion belongs
       // to *it*, not to the sentence we stopped in order to get here -- see
@@ -494,6 +553,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         _startPositionTimer();
       }
     } on TTSUnpronounceableFragmentException {
+      if (epoch != _transitionEpoch) return;
       // The server cannot synthesize this fragment (e.g. a sentence that was
       // split down to a single closing bracket). Treat it exactly like a normal
       // completion so the reader advances to the next sentence instead of
@@ -502,6 +562,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       _advanceOnComplete = true;
       _onServiceCompleted();
     } catch (e) {
+      if (epoch != _transitionEpoch) return;
       _positionTimer?.cancel();
       state = state.copyWith(
         status: TTSPlayerStatus.error,
@@ -574,10 +635,19 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _serviceStateSubscription?.cancel();
     final service = ref.read(ttsServiceProvider);
     _serviceStateSubscription = service.playerStateStream.listen((playerState) {
-      if (playerState == PlayerState.completed ||
-          playerState == PlayerState.stopped) {
-        _onServiceCompleted();
+      if (playerState != PlayerState.completed &&
+          playerState != PlayerState.stopped) {
+        return;
       }
+      // 我们自己的 stop 在平台侧回的 stopped 回声，丢弃 stop 后短窗口内的
+      //（见 [_stopRequestedAt]）。真正的句子完成永远以 completed 报告。
+      final requestedAt = _stopRequestedAt;
+      if (playerState == PlayerState.stopped &&
+          requestedAt != null &&
+          DateTime.now().difference(requestedAt) < _stopEchoWindow) {
+        return;
+      }
+      _onServiceCompleted();
     });
   }
 
@@ -687,6 +757,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   void _resetPosition() {
     _positionTimer?.cancel();
     _advanceOnComplete = false;
+    _transitionEpoch++;
     _speakStartedAt = null;
     _instantLoopRepeats = 0;
   }
@@ -702,10 +773,18 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// [_speakCurrent] once the next utterance has actually been handed over.
   /// Every caller either pauses/stops (where a completion must not advance)
   /// or is about to speak again.
+  ///
+  /// Each call also bumps [_transitionEpoch] (invalidating any in-flight
+  /// speak) and records the in-flight stop in [_pendingStop] — the next
+  /// utterance settles it before speaking, so the engine-side stop can never
+  /// land on top of the new utterance and mute it.
   void _stopService() {
     _advanceOnComplete = false;
+    _transitionEpoch++;
+    _stopRequestedAt = DateTime.now();
     final service = ref.read(ttsServiceProvider);
-    unawaited(service.stop());
+    _pendingStop = service.stop().catchError((Object _) {});
+    unawaited(_pendingStop);
   }
 }
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/settings.dart';
@@ -73,11 +74,19 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyExperimentalBookDetailsFullStatsEndpoint =
       'experimental_book_details_full_stats_endpoint';
   static const String _keyEInkMode = 'eink_mode';
+  static const String _keyOrientationLock = 'orientation_lock';
 
   @override
   Settings build() {
     _loadSettings();
-    return state;
+    // 必须给一个真实的初值：以前这里 `return state;` 会读到「还没初始化的
+    // state」，Riverpod 把它记成 provider 错误状态（真机日志：
+    // `Bad state: Tried to read the state of an uninitialized provider`），
+    // 启动那一瞬间任何 ref.read(settingsProvider) 都会抛
+    // `Tried to use a provider that is in error state` —— 正好落在
+    // MainNavigation 的启动恢复上（读 currentBookId），恢复会被整个跳过。
+    // 真正的值由 _loadSettings 稍后异步填上。
+    return Settings.defaultSettings();
   }
 
   Future<void> _loadSettings() async {
@@ -144,6 +153,9 @@ class SettingsNotifier extends Notifier<Settings> {
     final experimentalBookDetailsFullStatsEndpoint =
         prefs.getBool(_keyExperimentalBookDetailsFullStatsEndpoint) ?? false;
     final eInkMode = prefs.getBool(_keyEInkMode) ?? false;
+    final orientationLock = _orientationLockFromName(
+      prefs.getString(_keyOrientationLock),
+    );
 
     final currentBookId = prefs.getInt(_keyCurrentBookId);
     final currentBookLangId = prefs.getInt(_keyCurrentBookLangId);
@@ -189,7 +201,45 @@ class SettingsNotifier extends Notifier<Settings> {
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint,
       eInkMode: eInkMode,
+      orientationLock: orientationLock,
     );
+
+    // 启动即应用方向锁：设置是在 build() 的异步加载里到位的，
+    // 不在这里调一次的话，首帧到加载完成之间一直跟随系统。
+    _applyOrientationLock(state.orientationLock);
+  }
+
+  /// 把方向锁应用到系统。portrait/portraitDown 都放行，避免人脸朝下的
+  /// 场景（躺床阅读）直接黑屏不转。
+  static void _applyOrientationLock(OrientationLock lock) {
+    switch (lock) {
+      case OrientationLock.system:
+        unawaited(
+          SystemChrome.setPreferredOrientations(DeviceOrientation.values),
+        );
+      case OrientationLock.portrait:
+        unawaited(
+          SystemChrome.setPreferredOrientations([
+            DeviceOrientation.portraitUp,
+            DeviceOrientation.portraitDown,
+          ]),
+        );
+      case OrientationLock.landscape:
+        unawaited(
+          SystemChrome.setPreferredOrientations([
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ]),
+        );
+    }
+  }
+
+  static OrientationLock _orientationLockFromName(String? name) {
+    if (name == null || name.isEmpty) return OrientationLock.portrait;
+    for (final lock in OrientationLock.values) {
+      if (lock.name == name) return lock;
+    }
+    return OrientationLock.portrait;
   }
 
   Future<void> updateLocalUrl(String url) async {
@@ -324,10 +374,16 @@ class SettingsNotifier extends Notifier<Settings> {
     print(
       'DEBUG: updateCurrentBook - saving bookId=$bookId, page=$page, langId=$langId',
     );
+
+    // 页码只对「同一本书」成立：换书时必须作废，否则冷启动会拿上一本书的
+    // 页码去恢复新书（copyWith 传 null 表示「保持原值」，不会自己清）。
+    final sameBook = state.currentBookId == bookId;
+
     state = state.copyWith(
       currentBookId: bookId,
       currentBookLangId: langId,
       currentBookPage: page,
+      clearCurrentBookPage: !sameBook,
       currentBookSentenceIndex: null,
     );
 
@@ -336,7 +392,9 @@ class SettingsNotifier extends Notifier<Settings> {
     if (langId != null) {
       await prefs.setInt(_keyCurrentBookLangId, langId);
     }
-    if (page != null) {
+    if (!sameBook) {
+      await prefs.remove(_keyCurrentBookPage);
+    } else if (page != null) {
       await prefs.setInt(_keyCurrentBookPage, page);
     }
     await prefs.remove(_keyCurrentBookSentenceIndex);
@@ -402,6 +460,13 @@ class SettingsNotifier extends Notifier<Settings> {
     state = state.copyWith(eInkMode: enabled);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyEInkMode, enabled);
+  }
+
+  Future<void> updateOrientationLock(OrientationLock lock) async {
+    state = state.copyWith(orientationLock: lock);
+    _applyOrientationLock(lock);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyOrientationLock, lock.name);
   }
 
   Future<void> updateEnableTooltipCaching(bool enabled) async {
@@ -564,8 +629,10 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.remove(_keyAlwaysRefreshBookDetails);
     await prefs.remove(_keyAutoRefreshFullStats);
     await prefs.remove(_keyExperimentalBookDetailsFullStatsEndpoint);
+    await prefs.remove(_keyOrientationLock);
 
     state = Settings.defaultSettings();
+    _applyOrientationLock(state.orientationLock);
   }
 }
 

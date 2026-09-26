@@ -63,6 +63,8 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       _playerStateSubscription?.cancel();
       _completeSubscription?.cancel();
       _ttsServiceStateSubscription?.cancel();
+      _ttsPlayerInstance?.dispose();
+      _ttsPlayerInstance = null;
     });
     return const SentenceTTSState();
   }
@@ -71,15 +73,35 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
   StreamSubscription<void>? _completeSubscription;
   StreamSubscription<PlayerState>? _ttsServiceStateSubscription;
 
+  /// 发音专用的播放器。它刻意与 MP3 有声书的 [audioPlayerProvider] 分开:
+  /// 共用一个播放器时,发音字节流会替换掉已加载的书籍音源,之后按 MP3 的
+  /// 播放键只是 resume,会播出 TTS 的声音。
+  AudioPlayer? _ttsPlayerInstance;
+  AudioPlayer get _ttsPlayer {
+    final existing = _ttsPlayerInstance;
+    if (existing != null) return existing;
+    final player = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    _ttsPlayerInstance = player;
+    return player;
+  }
+
+  /// 书籍音频在播时先暂停(位置已随 pause 保存),发音才开口,
+  /// 避免旁白与单词发音两个声音叠在一起。尽力而为,失败不阻塞发音。
+  Future<void> _pauseBookAudioIfPlaying() async {
+    if (ref.read(audioPlayerProvider).playerState != PlayerState.playing) {
+      return;
+    }
+    try {
+      await ref.read(audioPlayerProvider.notifier).pause();
+    } catch (_) {}
+  }
+
   void _setupPlayerStateListener() {
-    final audioPlayer = ref
-        .read(audioPlayerProvider.notifier)
-        .state
-        .audioPlayer;
+    final player = _ttsPlayer;
     _playerStateSubscription?.cancel();
     _completeSubscription?.cancel();
 
-    _playerStateSubscription = audioPlayer.onPlayerStateChanged.listen((
+    _playerStateSubscription = player.onPlayerStateChanged.listen((
       playerState,
     ) {
       debugPrint('TTS Player state changed: $playerState');
@@ -89,7 +111,7 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       }
     });
 
-    _completeSubscription = audioPlayer.onPlayerComplete.listen((_) {
+    _completeSubscription = player.onPlayerComplete.listen((_) {
       debugPrint('TTS onPlayerComplete triggered');
       state = const SentenceTTSState();
     });
@@ -129,10 +151,32 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
     return 'TTS failed: $error';
   }
 
+  /// 在发音专用播放器上播放 TTS 字节流。错误向上抛给调用方的
+  /// try/catch(_handleError 统一处理重试)。
+  Future<void> _playTtsBytes(BytesSource source) async {
+    await _ttsPlayer.stop();
+    await _ttsPlayer.play(source);
+  }
+
   Future<void> speakSentence(String text, int sentenceId) async {
     final ttsService = ref.read(ttsServiceProvider);
 
+    // 多词词元的文本带着零宽空格(on-device 引擎会读出停顿),入口剥掉,
+    // 之后的状态、合成与重试用的都是同一份干净文本。
+    text = normalizeTtsText(text);
+
+    // 归一化后什么都不剩的句子不要去合成：`/tts/<lang>/` 的末段为空，服务端
+    // 的 path 转换器要求至少一个字符，请求会 404 而不是返回音频。点读是单句
+    // 行为，没有"推进下一句"可依赖，所以直接当作无事发生 —— 也不顺手暂停书籍
+    // 音频，免得在页边空白上误点一下就掐掉正在播的有声书。网页播放器的
+    // `speakText` 同样先判空再返回。
+    if (text.isEmpty) return;
+
     try {
+      // 点词瞬间就暂停书籍音频(位置随 pause 保存),不等网络合成:
+      // 否则合成的一两秒里书还在走,发音出来时进度已经漂走。
+      await _pauseBookAudioIfPlaying();
+
       state = state.copyWith(
         status: SentenceTTSStatus.loading,
         currentText: text,
@@ -155,11 +199,10 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
           ttsAudioSource: bytesSource,
         );
 
-        final audioPlayer = ref.read(audioPlayerProvider.notifier);
         _setupPlayerStateListener();
 
         debugPrint('Starting TTS playback...');
-        await audioPlayer.playTTSAudio(bytesSource);
+        await _playTtsBytes(bytesSource);
         debugPrint('TTS playback started');
       } else {
         debugPrint('Using direct speak for on-device TTS...');
@@ -193,7 +236,6 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
 
       try {
         final ttsService = ref.read(ttsServiceProvider);
-        final audioPlayer = ref.read(audioPlayerProvider.notifier);
 
         if (ttsService.supportsBytesOutput) {
           final audioBytes = await ttsService.getAudioBytes(text);
@@ -204,7 +246,8 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
             ttsAudioSource: bytesSource,
           );
 
-          await audioPlayer.playTTSAudio(bytesSource);
+          _setupPlayerStateListener();
+          await _playTtsBytes(bytesSource);
         } else {
           debugPrint('Using direct speak for on-device TTS...');
           _setupTTSServiceListener();
@@ -232,12 +275,11 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
 
   Future<void> stop() async {
     final ttsService = ref.read(ttsServiceProvider);
-    final audioPlayer = ref.read(audioPlayerProvider.notifier);
 
     try {
       debugPrint('Stopping TTS...');
       if (ttsService.supportsBytesOutput) {
-        await audioPlayer.stop();
+        await _ttsPlayer.stop();
       } else {
         await ttsService.stop();
       }

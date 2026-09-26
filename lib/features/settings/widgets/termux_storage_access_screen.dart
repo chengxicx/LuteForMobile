@@ -78,7 +78,7 @@ class _TermuxStorageAccessScreenState extends State<TermuxStorageAccessScreen> {
               const Text('To grant Termux access to shared storage:'),
               const SizedBox(height: 12),
               const Text(
-                'Step 1: In Termux, run this command:\n\ntermux-setup-storage\n\nThis will prompt you to grant storage permissions.\n\nStep 2: Tap "Allow" when prompted.\n\nStep 3: Return to LuteForMobile and verify storage access.',
+                'Step 1: In Termux, run this command:\n\ntermux-setup-storage\n\nThis will prompt you to grant storage permissions.\n\nStep 2: Tap "Allow" when prompted.\n\nStep 3: Return to Song Mobile and verify storage access.',
                 style: TextStyle(fontSize: 14),
               ),
               const SizedBox(height: 16),
@@ -284,7 +284,7 @@ class _TermuxStorageAccessScreenState extends State<TermuxStorageAccessScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Open Termux app\n\nRun: termux-setup-storage\n\nTap "Allow" when prompted\n\nReturn to LuteForMobile',
+                      'Open Termux app\n\nRun: termux-setup-storage\n\nTap "Allow" when prompted\n\nReturn to Song Mobile',
                     ),
                   ],
                 ),

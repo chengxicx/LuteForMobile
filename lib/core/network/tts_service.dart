@@ -3,9 +3,54 @@ import 'dart:convert';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:song_mobile/core/network/session_manager.dart';
 import 'package:song_mobile/features/settings/models/tts_settings.dart';
+
+/// Normalizes text about to be synthesized -- once, at the TTS entry points,
+/// so every provider sees the same string.
+///
+/// Two jobs, both about text that *looks* fine on screen but breaks synthesis.
+///
+/// **1. Zero-width characters.**  Lute joins the tokens of a multi-word term
+/// with zero-width spaces (U+200B) in its text-item data, so a term like
+/// ました arrives as `まし\u200Bた`.  On-device engines treat U+200B as a word
+/// boundary and voice it as まし + pause + た; the edge-tts server strips
+/// zero-width characters itself, which is why only on-device TTS showed the
+/// pauses.
+///
+/// **2. Whitespace that cannot survive the URL.**  [EdgeTTSService] puts the
+/// text in the *path*: `/tts/<lang>/<text>`.  A sentence carrying a trailing
+/// newline -- which the server's text items routinely do, and which HTML
+/// collapses so nothing is visible on screen -- arrives as a `%0A` at the end
+/// of the path, and the request then **404s**:
+///
+///   * Werkzeug's `path` converter regex is `[^/].*?`, and `Rule._parse_rule`
+///     appends `\Z` to the final part, so the path must be consumed right to
+///     the end.
+///   * The state-machine matcher compiles that part with a bare
+///     `re.compile(...)` -- no `re.DOTALL` -- so `.` refuses to match the
+///     newline, `.*?` stops short of it, and the `\Z` anchor can never be
+///     satisfied.  Nothing matches, and the request 404s before the route
+///     body ever runs.
+///
+/// That 404 is *not* the "this fragment cannot be voiced" signal (which is
+/// 422 -- see [EdgeTTSService.isSynthesisFailureResponse]), so it surfaced as a
+/// hard error and stopped read-aloud on the first such sentence.
+///
+/// Collapsing runs of whitespace to one space and trimming is exactly what the
+/// web player's `cleanSentenceText` does before building the same URL, so this
+/// also keeps the two clients sending identical bytes.
+///
+/// `#` / `＃` are deliberately **not** stripped here, unlike the web helper:
+/// both are legal in a path segment, so neither can cause the 404 above, and
+/// dropping them would change how legitimate text such as `C#` is read.
+String normalizeTtsText(String text) => text
+    .replaceAll('\u200B', '')
+    .replaceAll('\uFEFF', '')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
 
 class TTSVoice {
   final String name;
@@ -111,8 +156,29 @@ class OnDeviceTTSService implements TTSService {
   AudioPlayer? _audioPlayer;
   final _playerStateController = StreamController<PlayerState>.broadcast();
 
+  /// Last applied config. A rebuilt engine loses voice/rate/pitch settings,
+  /// so they are re-applied after recovery.
+  TTSSettingsConfig? _config;
+
+  /// How long the platform call may take to *accept* an utterance. Acceptance
+  /// is a local enqueue (no synthesis happens yet), sub-100ms on a live
+  /// engine -- anything longer means the call was parked (see [speak]).
+  static const Duration _speakAcceptTimeout = Duration(seconds: 4);
+
+  /// How long an engine rebuild may take: bind + init of a possibly
+  /// just-thawed engine process.
+  static const Duration _engineRebuildTimeout = Duration(seconds: 10);
+
   OnDeviceTTSService() {
-    _flutterTts.awaitSpeakCompletion(true);
+    // Non-blocking speak: the read-aloud player's contract is that speak()
+    // returns once playback has *started* and completion arrives later via
+    // playerStateStream -- that is how every audioplayers-based service
+    // behaves, and the player flips loading->playing (pause icon, playhead)
+    // on that basis. With awaitSpeakCompletion(true) speak() would not
+    // return until the whole utterance is done, pinning the player in its
+    // loading spinner for the entire sentence. flutter_tts still fires the
+    // completion handler on utterance end regardless of this flag.
+    _flutterTts.awaitSpeakCompletion(false);
     _flutterTts.setStartHandler(() {
       _playerStateController.add(PlayerState.playing);
     });
@@ -127,9 +193,58 @@ class OnDeviceTTSService implements TTSService {
   @override
   Future<void> speak(String text) async {
     try {
+      // Resolves once the engine has accepted the utterance, not when it
+      // finishes speaking (see awaitSpeakCompletion above).
+      await _flutterTts.speak(text).timeout(_speakAcceptTimeout);
+    } on TimeoutException {
+      // The call was parked forever inside the plugin: the engine session
+      // died while the app was idle (ColorOS freezes the TTS engine process
+      // after inactivity; observed as "Failed creating TTS session" at
+      // startup, after which every speak() waits on an init that never
+      // completes -- no retry, no error, player spinning endlessly).
+      //
+      // Rebuild the engine instance: setEngine re-binds it, resolves once
+      // the new engine is initialized (throws PlatformException on init
+      // failure), and re-runs the parked utterance on the fresh engine.
+      await _rebuildEngine();
+      // The re-run of the parked utterance may already be queued by now;
+      // flush it and speak fresh, so exactly one copy goes out.
+      await _flutterTts.stop();
       await _flutterTts.speak(text);
     } catch (e) {
       throw TTSException('Failed to speak with on-device TTS: $e');
+    }
+  }
+
+  /// Recreates the platform TTS engine behind the shared flutter_tts plugin.
+  Future<void> _rebuildEngine() async {
+    String engine;
+    try {
+      engine =
+          (await _flutterTts.getDefaultEngine.timeout(_engineRebuildTimeout))
+              .toString();
+    } catch (e) {
+      throw TTSException('On-device TTS engine is unavailable: $e');
+    }
+    try {
+      await _flutterTts.setEngine(engine).timeout(_engineRebuildTimeout);
+    } on TimeoutException {
+      throw TTSException(
+        'On-device TTS engine did not recover. Try again in a moment.',
+      );
+    } on PlatformException catch (e) {
+      throw TTSException(
+        'On-device TTS engine failed to initialize: ${e.message ?? e.code}',
+      );
+    }
+    final config = _config;
+    if (config != null) {
+      try {
+        await setSettings(config);
+      } catch (_) {
+        // Engine is usable; a failed voice/rate re-apply must not kill the
+        // utterance -- it just falls back to the engine default voice.
+      }
     }
   }
 
@@ -164,6 +279,7 @@ class OnDeviceTTSService implements TTSService {
   @override
   Future<void> setSettings(TTSSettingsConfig config) async {
     try {
+      _config = config;
       String? voiceName = config.voice;
       String? voiceLocale = config.voiceLocale;
 
@@ -214,6 +330,17 @@ class OnDeviceTTSService implements TTSService {
   Future<List<TTSVoice>> getAvailableVoices() async {
     try {
       final voices = await _flutterTts.getVoices;
+      // flutter_tts answers null when the platform TTS engine never
+      // initialized (e.g. the engine could not be bound at startup). There
+      // are no voices to list, and speak() would silently hang too, so say
+      // so instead of letting the null surface as a cryptic type error from
+      // the loop below.
+      if (voices == null) {
+        throw TTSException(
+          'Device TTS engine is unavailable. Install/enable a TTS engine '
+          '(e.g. Google Speech Services) in system settings.',
+        );
+      }
       final result = <TTSVoice>[];
       for (final v in voices) {
         try {
@@ -838,10 +965,10 @@ class SupertonicFastApiTTSService implements TTSService {
   }
 }
 
-/// Edge TTS via the Lute server's /tts/<lang>/<text> endpoint.
+/// Edge TTS via the Song server's /tts/<lang>/<text> endpoint.
 ///
 /// The server synthesizes speech using edge-tts and returns an mp3 (cached on
-/// the server). The Lute server may require Basic Auth, so credentials are
+/// the server). The Song server may require Basic Auth, so credentials are
 /// passed through so requests don't fail with a 401.
 class EdgeTTSService implements TTSService {
   final String serverUrl;
@@ -964,7 +1091,7 @@ class EdgeTTSService implements TTSService {
         );
       }
       if (e.type == DioExceptionType.connectionError) {
-        throw TTSException('Failed to connect to Lute server at $serverUrl');
+        throw TTSException('Failed to connect to Song server at $serverUrl');
       }
       throw TTSException('Edge TTS request failed: ${e.message}');
     } catch (e) {
