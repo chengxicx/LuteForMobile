@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:lute_for_mobile/features/settings/models/ai_settings.dart';
-import 'package:lute_for_mobile/features/settings/providers/ai_settings_provider.dart';
-import 'package:lute_for_mobile/core/network/ai_service.dart';
+import 'package:song_mobile/features/settings/models/ai_settings.dart';
+import 'package:song_mobile/features/settings/providers/ai_settings_provider.dart';
+import 'package:song_mobile/core/network/ai_service.dart';
 
 final aiServiceProvider = Provider<AIService>((ref) {
   final settings = ref.watch(aiSettingsProvider);

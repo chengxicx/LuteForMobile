@@ -1,4 +1,4 @@
-name: lute_for_mobile
+name: song_mobile
 description: "Mobile frontend for Lute v3 language learning server"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.

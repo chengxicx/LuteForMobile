@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/core/network/tts_service.dart';
-import 'package:lute_for_mobile/core/providers/tts_provider.dart';
-import 'package:lute_for_mobile/features/settings/models/tts_settings.dart';
-import 'package:lute_for_mobile/features/settings/providers/tts_settings_provider.dart';
-import 'package:lute_for_mobile/features/settings/widgets/kokoro_voice_chips.dart';
-import 'package:lute_for_mobile/features/settings/widgets/on_device_voice_selector.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
-import 'package:lute_for_mobile/shared/utils/tts_language_mapper.dart';
+import 'package:song_mobile/core/network/tts_service.dart';
+import 'package:song_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/features/settings/models/tts_settings.dart';
+import 'package:song_mobile/features/settings/providers/tts_settings_provider.dart';
+import 'package:song_mobile/features/settings/widgets/kokoro_voice_chips.dart';
+import 'package:song_mobile/features/settings/widgets/on_device_voice_selector.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/shared/utils/tts_language_mapper.dart';
 
 class TTSSettingsSection extends ConsumerStatefulWidget {
   const TTSSettingsSection({super.key});

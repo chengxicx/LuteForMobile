@@ -15,8 +15,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/shared/theme/theme_definitions.dart';
-import 'package:lute_for_mobile/shared/theme/theme_presets.dart';
+import 'package:song_mobile/shared/theme/theme_definitions.dart';
+import 'package:song_mobile/shared/theme/theme_presets.dart';
 
 // ---------------------------------------------------------------------------
 // 色彩科学

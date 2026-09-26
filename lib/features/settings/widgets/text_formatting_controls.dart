@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/features/settings/providers/settings_provider.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 
 /// The font families the reader can render with.  Every one of them is
 /// declared in pubspec.yaml; a family that is *not* declared fails silently

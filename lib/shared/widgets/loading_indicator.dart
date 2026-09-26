@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:lute_for_mobile/shared/theme/eink.dart';
+import 'package:song_mobile/shared/theme/eink.dart';
 
 class LoadingIndicator extends StatelessWidget {
   final String? message;

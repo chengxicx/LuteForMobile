@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/features/settings/models/ai_settings.dart';
-import 'package:lute_for_mobile/features/settings/providers/ai_settings_provider.dart';
-import 'package:lute_for_mobile/features/settings/widgets/model_selector.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/features/settings/models/ai_settings.dart';
+import 'package:song_mobile/features/settings/providers/ai_settings_provider.dart';
+import 'package:song_mobile/features/settings/widgets/model_selector.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 
 class AISettingsSection extends ConsumerStatefulWidget {
   const AISettingsSection({super.key});

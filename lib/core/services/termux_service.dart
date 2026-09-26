@@ -1,5 +1,5 @@
-import 'package:lute_for_mobile/features/settings/models/settings.dart';
-import 'package:lute_for_mobile/core/services/server_health_service.dart';
+import 'package:song_mobile/features/settings/models/settings.dart';
+import 'package:song_mobile/core/services/server_health_service.dart';
 
 import 'dart:async';
 import 'package:flutter/services.dart';

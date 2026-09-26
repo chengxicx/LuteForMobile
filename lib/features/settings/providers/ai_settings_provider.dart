@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:lute_for_mobile/features/settings/models/ai_settings.dart';
+import 'package:song_mobile/features/settings/models/ai_settings.dart';
 
 class AISettingsNotifier extends Notifier<AISettings> {
   static const String _providerKey = 'ai_provider';

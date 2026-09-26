@@ -13,10 +13,10 @@
 // 运行：flutter test test/playing_line_test.dart
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/features/reader/models/paragraph.dart';
-import 'package:lute_for_mobile/features/reader/models/text_item.dart';
-import 'package:lute_for_mobile/features/reader/models/youtube_data.dart';
-import 'package:lute_for_mobile/features/reader/utils/playing_line.dart';
+import 'package:song_mobile/features/reader/models/paragraph.dart';
+import 'package:song_mobile/features/reader/models/text_item.dart';
+import 'package:song_mobile/features/reader/models/youtube_data.dart';
+import 'package:song_mobile/features/reader/utils/playing_line.dart';
 
 /// 一个 `.textsentence` span：共享同一个 sentenceId 与服务端段落号的一段词。
 ///

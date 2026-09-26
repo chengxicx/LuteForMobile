@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/core/providers/tts_provider.dart';
-import 'package:lute_for_mobile/core/network/tts_service.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/core/network/tts_service.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 
 class OnDeviceVoiceSelector extends ConsumerStatefulWidget {
   final String? selectedVoice;

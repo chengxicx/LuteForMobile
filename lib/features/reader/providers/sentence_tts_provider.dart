@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/core/network/tts_service.dart';
-import 'package:lute_for_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/core/network/tts_service.dart';
+import 'package:song_mobile/core/providers/tts_provider.dart';
 import '../providers/audio_player_provider.dart';
 
 enum SentenceTTSStatus { idle, loading, playing, error }

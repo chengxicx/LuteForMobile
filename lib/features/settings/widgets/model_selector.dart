@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/core/providers/ai_provider.dart';
+import 'package:song_mobile/core/providers/ai_provider.dart';
 
 class ModelSelector extends ConsumerStatefulWidget {
   final String? selectedModel;

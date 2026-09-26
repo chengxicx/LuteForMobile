@@ -38,7 +38,7 @@ import 'book_completion_celebration_dialog.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../core/network/session_manager.dart';
 import 'audio_player.dart';
-import 'package:lute_for_mobile/app.dart';
+import 'package:song_mobile/app.dart';
 import 'manga_page_view.dart';
 import 'youtube_player_view.dart';
 import 'tts_player_widget.dart';

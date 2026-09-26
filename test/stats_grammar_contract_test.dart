@@ -1,14 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/features/grammar/models/grammar_point.dart';
-import 'package:lute_for_mobile/features/grammar/providers/grammar_provider.dart';
-import 'package:lute_for_mobile/features/reader/models/page_data.dart';
-import 'package:lute_for_mobile/features/reader/models/paragraph.dart';
-import 'package:lute_for_mobile/features/reader/models/text_item.dart';
-import 'package:lute_for_mobile/features/stats/models/level_report.dart';
-import 'package:lute_for_mobile/features/stats/models/term_activity.dart';
-import 'package:lute_for_mobile/features/stats/providers/level_report_provider.dart';
-import 'package:lute_for_mobile/features/stats/providers/stats_provider.dart';
-import 'package:lute_for_mobile/features/stats/providers/term_activity_provider.dart';
+import 'package:song_mobile/features/grammar/models/grammar_point.dart';
+import 'package:song_mobile/features/grammar/providers/grammar_provider.dart';
+import 'package:song_mobile/features/reader/models/page_data.dart';
+import 'package:song_mobile/features/reader/models/paragraph.dart';
+import 'package:song_mobile/features/reader/models/text_item.dart';
+import 'package:song_mobile/features/stats/models/level_report.dart';
+import 'package:song_mobile/features/stats/models/term_activity.dart';
+import 'package:song_mobile/features/stats/providers/level_report_provider.dart';
+import 'package:song_mobile/features/stats/providers/stats_provider.dart';
+import 'package:song_mobile/features/stats/providers/term_activity_provider.dart';
 
 /// Pins the server contracts the new Stats panels and the Grammar screen are
 /// built on, plus the pure derivations that turn those payloads into what the

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
+import 'package:song_mobile/features/settings/providers/settings_provider.dart';
 import '../theme/theme_extensions.dart';
 
 /// Every top-level destination, in the order it is offered.

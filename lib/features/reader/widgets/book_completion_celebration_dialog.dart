@@ -2,11 +2,11 @@ import 'dart:math';
 import 'package:confetti/confetti.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/features/books/models/book.dart';
-import 'package:lute_for_mobile/shared/providers/network_providers.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
-import 'package:lute_for_mobile/shared/widgets/status_distribution_bar.dart';
-import 'package:lute_for_mobile/app.dart';
+import 'package:song_mobile/features/books/models/book.dart';
+import 'package:song_mobile/shared/providers/network_providers.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/shared/widgets/status_distribution_bar.dart';
+import 'package:song_mobile/app.dart';
 
 class BookCompletionCelebrationDialog extends ConsumerStatefulWidget {
   final Book book;

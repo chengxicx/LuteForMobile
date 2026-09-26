@@ -12,7 +12,7 @@ import 'book_card.dart';
 import 'book_details_dialog.dart';
 import 'add_book_dialog.dart';
 import 'series_detail_screen.dart';
-import 'package:lute_for_mobile/app.dart';
+import 'package:song_mobile/app.dart';
 import '../../../shared/theme/theme_extensions.dart';
 
 class BooksScreen extends ConsumerStatefulWidget {
