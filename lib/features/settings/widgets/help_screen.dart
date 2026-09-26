@@ -588,7 +588,7 @@ class HelpScreen extends ConsumerWidget {
             context,
             Icons.list,
             'Multiple dictionary sources',
-            'Configured in Lute Server language settings',
+            'Configured in Song Server language settings',
           ),
           _buildControlItem(
             context,

@@ -46,6 +46,14 @@ class TextItem {
   bool get isWord => wordId != null;
   bool get isSpace => text.trim().isEmpty;
 
+  /// 显示用文本：剥掉词元里的零宽空格（U+200B，Lute 建词/导入时常混入）。
+  ///
+  /// 只用于渲染。正文是拉丁字体，日文和 ZWS 走不同的回退字体；带 ZWS 的词
+  /// 会被拆成多个字体 run，行盒底部多出几像素——整句播放高亮逐词拼色块时
+  /// 底边就参差凸起。剥离后行高恢复一致。回传服务端的载荷（多词选中建词、
+  /// TTS 朗读等）仍用原 [text]，与 web 端行为一致。
+  String get displayText => text.replaceAll('\u200B', '');
+
   Map<String, dynamic> toJson() {
     return {
       'text': text,

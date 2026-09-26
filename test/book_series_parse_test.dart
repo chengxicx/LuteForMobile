@@ -194,5 +194,35 @@ void main() {
       expect(restored.id, 42);
       expect(restored.percent, original.percent);
     });
+
+    test('tags survive toJson -> fromJson', () {
+      final original = Book.fromJson(flatRow());
+      expect(original.tags, ['ai-story', 'sci-fi']);
+
+      // 服务端给的是逗号串，toJson 落缓存的是 JSON 数组 —— 两种形态都要认。
+      // 只认字符串的话，从缓存读回来的书 TagList 全是 null，书架先用缓存
+      // 渲染出无 tag 的卡片，等网络回来才补上，卡片长高、列表整体下移。
+      final restored = Book.fromJson(original.toJson());
+
+      expect(
+        restored.tags,
+        ['ai-story', 'sci-fi'],
+        reason: 'TagList 在缓存往返里丢了，书架上的 tag chip 会晚一拍出现',
+      );
+    });
+
+    test('tag list parsing tolerates both shapes and empties', () {
+      // 缓存形态（已经是数组）
+      expect(
+        Book.fromJson(flatRow()..['TagList'] = ['mp3', ' bilibili ']).tags,
+        ['mp3', 'bilibili'],
+      );
+      // 服务端形态：空串 / 'null' / 全空白 / 结尾多余逗号
+      expect(Book.fromJson(flatRow()..['TagList'] = '').tags, isNull);
+      expect(Book.fromJson(flatRow()..['TagList'] = 'null').tags, isNull);
+      expect(Book.fromJson(flatRow()..['TagList'] = ' , ').tags, isNull);
+      expect(Book.fromJson(flatRow()..['TagList'] = null).tags, isNull);
+      expect(Book.fromJson(flatRow()..['TagList'] = 'mp3,').tags, ['mp3']);
+    });
   });
 }

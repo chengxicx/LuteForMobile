@@ -460,6 +460,49 @@ void main() {
     );
   });
 
+  test('next while looping reads the new sentence exactly once', () async {
+    // Repro: loop on, press next.  Our own stop reports `stopped` late; once
+    // it lands after the new sentence has armed completion handling it is
+    // misread as "that sentence finished", and loop instantly replays it --
+    // on a real player the replayed play collides with the in-flight one and
+    // both go silent while the progress heartbeats on.  The echo here is
+    // scheduled to land after the fetch (120ms) but before the utterance ends.
+    final fake = FakeTtsService(
+      audioMs: 600,
+      fetchMs: 20,
+      stopEventDelayMs: 120,
+    );
+    final container = _containerFor(fake);
+    addTearDown(() {
+      container.dispose();
+      fake.dispose();
+    });
+
+    final notifier = container.read(ttsPlayerProvider.notifier);
+    notifier.loadPage(_page(['あ', 'い', 'う']));
+    await notifier.play();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(
+      container.read(ttsPlayerProvider).currentIndex,
+      0,
+      reason: 'precondition: still reading the first sentence',
+    );
+
+    await notifier.toggleLoopMode();
+    await notifier.next();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    final state = container.read(ttsPlayerProvider);
+    expect(state.currentIndex, 1, reason: 'moved to the next sentence');
+    expect(
+      fake.spoken.where((s) => s == 'い'),
+      hasLength(1),
+      reason:
+          'the late stop echo must not be read as a finished sentence and '
+          'replay the new one; spoke ${fake.spoken}',
+    );
+  });
+
   test('a new page keeps the loop and auto-pause choices', () async {
     final fake = FakeTtsService(audioMs: _utterance.inMilliseconds);
     final container = _containerFor(fake);

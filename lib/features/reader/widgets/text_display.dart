@@ -204,7 +204,7 @@ class TextDisplay extends StatefulWidget {
           ...?glowEffect == null ? null : [glowEffect],
         ],
       ),
-      child: Text(item.text, style: textStyle),
+      child: Text(item.displayText, style: textStyle),
     );
 
     if (item.wordId != null) {

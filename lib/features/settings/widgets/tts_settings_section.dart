@@ -1,3 +1,4 @@
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:song_mobile/core/network/tts_service.dart';
@@ -1015,7 +1016,19 @@ class _TestSpeechButtonState extends ConsumerState<_TestSpeechButton> {
           ? ttsSampleSentenceFor(service.languageCode)
           : 'Hello, this is a test of the text to speech.';
       await service.speak(sample);
-      await Future.delayed(const Duration(seconds: 3));
+      // speak() returns at playback start (async completion mode), so hold
+      // the button until the utterance actually finishes -- otherwise a long
+      // sample reverts to "Test Speech" while the voice is still talking.
+      // Capped: a service whose completion event never arrives must not
+      // leave the button stuck on "Playing...".
+      await service.playerStateStream
+          .firstWhere(
+            (s) => s == PlayerState.completed || s == PlayerState.stopped,
+          )
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () => PlayerState.completed,
+          );
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {

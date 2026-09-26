@@ -3,6 +3,11 @@ import 'package:song_mobile/shared/theme/theme_definitions.dart';
 import 'package:song_mobile/features/settings/models/tts_settings.dart';
 import 'package:song_mobile/features/settings/models/ai_settings.dart';
 
+/// 屏幕方向策略。portrait 为默认：阅读场景里手机小幅倾斜就触发系统
+/// 自动旋转（播放条 + 整页重排）非常影响体验，锁定竖屏能避免；
+/// 漫画/横屏阅读或想跟随系统时再显式切换。
+enum OrientationLock { system, portrait, landscape }
+
 @immutable
 class Settings {
   final String localUrl;
@@ -52,6 +57,9 @@ class Settings {
   /// 目标设备 BOOX Leaf 5C，详见 docs/eink_leaf5c_plan.md。
   final bool eInkMode;
 
+  /// 屏幕方向：跟随系统自动旋转，还是锁定竖屏/横屏。默认锁定竖屏。
+  final OrientationLock orientationLock;
+
   static const String termuxUrl = 'http://127.0.0.1:5001';
 
   const Settings({
@@ -97,6 +105,7 @@ class Settings {
     this.autoRefreshFullStats = false,
     this.experimentalBookDetailsFullStatsEndpoint = false,
     this.eInkMode = false,
+    this.orientationLock = OrientationLock.portrait,
   });
 
   Settings copyWith({
@@ -117,6 +126,7 @@ class Settings {
     int? currentBookLangId,
     int? currentBookPage,
     bool clearCurrentBook = false,
+    bool clearCurrentBookPage = false,
     int? currentBookSentenceIndex,
     int? combineShortSentences,
     bool? showKnownTermsInSentenceReader,
@@ -144,6 +154,7 @@ class Settings {
     bool? autoRefreshFullStats,
     bool? experimentalBookDetailsFullStatsEndpoint,
     bool? eInkMode,
+    OrientationLock? orientationLock,
   }) {
     return Settings(
       localUrl: localUrl ?? this.localUrl,
@@ -166,7 +177,7 @@ class Settings {
       currentBookLangId: clearCurrentBook
           ? null
           : (currentBookLangId ?? this.currentBookLangId),
-      currentBookPage: clearCurrentBook
+      currentBookPage: (clearCurrentBook || clearCurrentBookPage)
           ? null
           : (currentBookPage ?? this.currentBookPage),
       currentBookSentenceIndex:
@@ -210,6 +221,7 @@ class Settings {
           experimentalBookDetailsFullStatsEndpoint ??
           this.experimentalBookDetailsFullStatsEndpoint,
       eInkMode: eInkMode ?? this.eInkMode,
+      orientationLock: orientationLock ?? this.orientationLock,
     );
   }
 
@@ -255,6 +267,7 @@ class Settings {
       autoRefreshFullStats: false,
       experimentalBookDetailsFullStatsEndpoint: false,
       eInkMode: false,
+      orientationLock: OrientationLock.portrait,
     );
   }
 
@@ -305,7 +318,8 @@ class Settings {
         other.autoRefreshFullStats == autoRefreshFullStats &&
         other.experimentalBookDetailsFullStatsEndpoint ==
             experimentalBookDetailsFullStatsEndpoint &&
-        other.eInkMode == eInkMode;
+        other.eInkMode == eInkMode &&
+        other.orientationLock == orientationLock;
   }
 
   @override
@@ -351,6 +365,7 @@ class Settings {
     autoRefreshFullStats,
     experimentalBookDetailsFullStatsEndpoint,
     eInkMode,
+    orientationLock,
   ]);
 
   bool isValidServerUrl(String url) {

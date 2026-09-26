@@ -590,7 +590,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ),
                       const SizedBox(height: 16),
                       ExpansionTile(
-                        title: const Text('Lute Account Login'),
+                        title: const Text('Song Account Login'),
                         subtitle: const Text(
                           'Multi-user mode (lute v3.12+), session kept ~30 days',
                         ),
@@ -603,7 +603,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                 TextFormField(
                                   controller: _luteUserController,
                                   decoration: const InputDecoration(
-                                    labelText: 'Lute Username',
+                                    labelText: 'Song Username',
                                     hintText: 'Your lute account username',
                                     border: OutlineInputBorder(),
                                   ),
@@ -614,7 +614,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                 TextFormField(
                                   controller: _lutePasswordController,
                                   decoration: InputDecoration(
-                                    labelText: 'Lute Password',
+                                    labelText: 'Song Password',
                                     hintText: 'Your lute account password',
                                     border: const OutlineInputBorder(),
                                     suffixIcon: IconButton(
@@ -907,6 +907,59 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ],
               const SizedBox(height: 16),
               _buildSectionHeader(context, 'Reading'),
+              // 屏幕方向锁：跟随系统时手机小幅倾斜就触发整页重排（有播放条
+              // 时尤其扰人），默认锁竖屏；漫画横屏或想跟随系统的再切换。
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Screen Orientation',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Portrait keeps the screen upright while reading; '
+                        'System follows the phone auto-rotate.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: context.appColorScheme.text.secondary,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SegmentedButton<OrientationLock>(
+                        segments: const [
+                          ButtonSegment(
+                            value: OrientationLock.system,
+                            icon: Icon(Icons.screen_rotation),
+                            label: Text('System'),
+                          ),
+                          ButtonSegment(
+                            value: OrientationLock.portrait,
+                            icon: Icon(Icons.screen_lock_portrait),
+                            label: Text('Portrait'),
+                          ),
+                          ButtonSegment(
+                            value: OrientationLock.landscape,
+                            icon: Icon(Icons.screen_lock_landscape),
+                            label: Text('Landscape'),
+                          ),
+                        ],
+                        selected: {settings.orientationLock},
+                        onSelectionChanged: (selection) {
+                          ref
+                              .read(settingsProvider.notifier)
+                              .updateOrientationLock(selection.first);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
               // E-ink gets its own top-level card: buried inside the Reading
               // expansion it was effectively undiscoverable on the device.
               Card(
