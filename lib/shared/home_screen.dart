@@ -14,7 +14,7 @@ class HomeScreen extends ConsumerWidget {
     WidgetLogger.logRebuild('HomeScreen', _buildCount);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('LuteForMobile'),
+        title: const Text('Song Mobile'),
         backgroundColor: context.m3PrimaryContainer,
       ),
       body: Center(

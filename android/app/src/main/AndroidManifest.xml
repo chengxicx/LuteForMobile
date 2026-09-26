@@ -16,7 +16,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:label="LuteForMobile"
+        android:label="Song Mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
@@ -84,5 +84,12 @@
             <data android:mimeType="text/plain"/>
         </intent>
         <package android:name="com.termux" />
+        <!-- Required on Android 11+ (package visibility): without this the app
+             cannot see or bind to the system TTS engine, so flutter_tts fails
+             init (status -1) and On-Device TTS is dead: getVoices returns null
+             and speak() is silent. -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
     </queries>
 </manifest>
