@@ -42,7 +42,19 @@ class BooksDrawerSettings extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsProvider);
-    final languagesState = ref.watch(languageNamesProvider);
+    final languagesState = ref.watch(activeLanguageNamesProvider);
+
+    // 只列未冻结的语言（对齐 web 过滤下拉）。若已保存的过滤值对应的
+    // 语言后来被冻结，先回落到 All，避免 DropdownButton 的 value
+    // 不在 items 里触发断言；过滤栏会在语言列表加载后自动清掉它。
+    final List<String> activeNames =
+        languagesState.asData?.value ?? const <String>[];
+    final savedFilter = settings.languageFilter;
+    final effectiveFilter = savedFilter != null &&
+            activeNames.isNotEmpty &&
+            !activeNames.contains(savedFilter)
+        ? null
+        : savedFilter;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -126,7 +138,7 @@ class BooksDrawerSettings extends ConsumerWidget {
                   vertical: 4,
                 ),
                 child: DropdownButton<String>(
-                  value: settings.languageFilter,
+                  value: effectiveFilter,
                   isExpanded: true,
                   underline: const SizedBox.shrink(),
                   items: [
@@ -134,15 +146,11 @@ class BooksDrawerSettings extends ConsumerWidget {
                       value: null,
                       child: Text('All Languages'),
                     ),
-                    ...languagesState.when(
-                      data: (languages) => languages.map(
-                        (lang) => DropdownMenuItem<String>(
-                          value: lang,
-                          child: Text(lang),
-                        ),
+                    ...activeNames.map(
+                      (lang) => DropdownMenuItem<String>(
+                        value: lang,
+                        child: Text(lang),
                       ),
-                      loading: () => [],
-                      error: (error, _) => [],
                     ),
                   ],
                   onChanged: (value) async {

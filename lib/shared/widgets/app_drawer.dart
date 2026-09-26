@@ -14,11 +14,28 @@ const List<({String route, IconData icon, String label})> kNavDestinations =
       (route: 'reader', icon: Icons.book, label: 'Reader'),
       (route: 'books', icon: Icons.collections_bookmark, label: 'Books'),
       (route: 'grammar', icon: Icons.spellcheck, label: 'Grammar'),
-      (route: 'terms', icon: Icons.translate, label: 'Terms'),
+      (route: 'review', icon: Icons.style, label: 'Review'),
       (route: 'stats', icon: Icons.bar_chart, label: 'Stats'),
+      (route: 'terms', icon: Icons.translate, label: 'Terms'),
       (route: 'help', icon: Icons.help_outline, label: 'Help'),
       (route: 'settings', icon: Icons.settings, label: 'Settings'),
     ];
+
+/// Destinations that live on the primary navigation (the bottom bar on
+/// narrow screens, the rail on wide ones).
+///
+/// Terms is drawer-only now -- it saw too little use for a main-page slot,
+/// and its place went to Review, which the web version also carries in its
+/// main menu.  The drawer is the only way to reach it.
+const List<String> kPrimaryNavRoutes = <String>[
+  'reader',
+  'books',
+  'grammar',
+  'review',
+  'stats',
+  'help',
+  'settings',
+];
 
 /// The context panel for the current screen, plus the destinations the bottom
 /// navigation bar does *not* already offer.

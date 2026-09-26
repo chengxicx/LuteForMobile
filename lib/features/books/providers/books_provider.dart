@@ -24,6 +24,19 @@ class BooksState {
   final bool hasMoreActive;
   final bool hasMoreArchived;
 
+  /// 当前选中的 tag 过滤（对应 web 端的 `filtTag` 精确匹配）。
+  final String? selectedTag;
+
+  /// tag 过滤请求进行中。
+  final bool tagFilterLoading;
+
+  /// tag 过滤的服务端结果（扁平书单，聚合行已被服务端关闭）。
+  /// selectedTag 为 null 时恒为 null。
+  final List<Book>? tagFilteredBooks;
+
+  /// copyWith 的「未传参」哨兵，让 String?/List? 字段能显式置 null。
+  static const Object _unset = Object();
+
   const BooksState({
     this.isLoading = false,
     this.isRefreshing = false,
@@ -35,6 +48,9 @@ class BooksState {
     this.currentBookId,
     this.hasMoreActive = true,
     this.hasMoreArchived = true,
+    this.selectedTag,
+    this.tagFilterLoading = false,
+    this.tagFilteredBooks,
   });
 
   BooksState copyWith({
@@ -48,6 +64,9 @@ class BooksState {
     int? currentBookId,
     bool? hasMoreActive,
     bool? hasMoreArchived,
+    Object? selectedTag = _unset,
+    bool? tagFilterLoading,
+    Object? tagFilteredBooks = _unset,
   }) {
     return BooksState(
       isLoading: isLoading ?? this.isLoading,
@@ -60,6 +79,13 @@ class BooksState {
       currentBookId: currentBookId ?? this.currentBookId,
       hasMoreActive: hasMoreActive ?? this.hasMoreActive,
       hasMoreArchived: hasMoreArchived ?? this.hasMoreArchived,
+      selectedTag: selectedTag == _unset
+          ? this.selectedTag
+          : selectedTag as String?,
+      tagFilterLoading: tagFilterLoading ?? this.tagFilterLoading,
+      tagFilteredBooks: tagFilteredBooks == _unset
+          ? this.tagFilteredBooks
+          : tagFilteredBooks as List<Book>?,
     );
   }
 }
@@ -102,17 +128,49 @@ class BooksNotifier extends Notifier<BooksState> {
     _isLoadingFromNetwork = false;
     _isBackgroundRefreshing = false;
 
+    final serverUrl = settings.serverUrl;
+
     // Always initialize on first build of this notifier instance
     if (!_isInitialized) {
       _isInitialized = true;
-      _previousServerUrl = settings.serverUrl;
+      _previousServerUrl = serverUrl.isEmpty ? null : serverUrl;
       Future.microtask(() => _waitForReaderAndLoadBooks());
-    } else if (_previousServerUrl != settings.serverUrl) {
-      _previousServerUrl = settings.serverUrl;
-      Future.microtask(() => _onServerChanged());
+    } else {
+      final (nextPrevious, serverChanged) = resolveServerUrlChange(
+        _previousServerUrl,
+        serverUrl,
+      );
+      _previousServerUrl = nextPrevious;
+      if (serverChanged) {
+        Future.microtask(() => _onServerChanged());
+      }
     }
 
     return const BooksState();
+  }
+
+  /// 判断「设置里的 serverUrl 变化」该怎么处理。
+  ///
+  /// 返回 `(要记下的 previous 值, 是否算换了服务器)`。
+  ///
+  /// 设置是异步从 SharedPreferences 读出来的，本 provider 的首帧拿到的是
+  /// `Settings.defaultSettings()` 里的**空 URL**。空串绝不能当成「上一次的
+  /// 服务器」记下来：设置加载完成后的真实 URL 会被判成「换了服务器」，于是
+  /// 每次启动都触发 [_onServerChanged]，把书目缓存清空 —— 表现是每次启动都
+  /// 白跑一次全量网络同步，断网时书架直接空白（缓存刚被自己清掉）。
+  /// 用 null 表示「还没拿到过真实 URL」，只有两个真实 URL 之间的切换才算换。
+  @visibleForTesting
+  static (String?, bool) resolveServerUrlChange(
+    String? previous,
+    String current,
+  ) {
+    // 设置还没读出来：这一帧没有可比较的信息。
+    if (current.isEmpty) return (previous, false);
+    // 第一次拿到真实 URL：只记录，不当成切换。
+    if (previous == null || previous.isEmpty) return (current, false);
+    // 真的换了服务器。
+    if (previous != current) return (current, true);
+    return (previous, false);
   }
 
   /// Waits for reader to signal ready, then loads books.
@@ -203,7 +261,12 @@ class BooksNotifier extends Notifier<BooksState> {
       _lastBackgroundRefreshTime = null;
     }
 
-    state = state.copyWith(isLoading: true, errorMessage: null);
+    // 已经有书目时不要翻 isLoading：书架标签每次点开都会走一次 loadBooks，
+    // 翻成 true 就会先闪一屏 "Loading books..." 再跳回列表（下拉刷新同理，
+    // 那种场景该由 RefreshIndicator 自己转）。真的没书可显示时才转圈。
+    final hasBooksToShow =
+        state.activeBooks.isNotEmpty || state.archivedBooks.isNotEmpty;
+    state = state.copyWith(isLoading: !hasBooksToShow, errorMessage: null);
 
     try {
       final activeFromCache = await _repository.getActiveBooksFromCache();
@@ -220,7 +283,7 @@ class BooksNotifier extends Notifier<BooksState> {
       if (hasCachedBooks) {
         state = state.copyWith(
           isLoading: false,
-          activeBooks: _filterByLanguage(activeFromCache),
+          activeBooks: activeFromCache,
           archivedBooks: archivedFromCache ?? state.archivedBooks,
         );
       } else {
@@ -241,14 +304,11 @@ class BooksNotifier extends Notifier<BooksState> {
     }
   }
 
-  /// Filters a list of active books by the selected language filter
-  /// (a language name, or null for "All Languages").  The filter is stored
-  /// in user settings and matched against the server's `LgName`.
-  List<Book> _filterByLanguage(List<Book> books) {
-    final filter = ref.read(settingsProvider).languageFilter;
-    if (filter == null || filter.isEmpty) return books;
-    return books.where((b) => b.language == filter).toList();
-  }
+  /// 语言过滤只在显示层做（books_screen 按设置里的 languageFilter 过滤），
+  /// state.activeBooks 恒存全量：
+  /// 1) 切换语言过滤即时生效，不必等一次完整的网络同步；
+  /// 2) 后台路径（音频解析、统计刷新）把 state 写回缓存时不会再把
+  ///    过滤后的子集存进去污染缓存（实测会：过滤后重启前一直丢书）。
 
   void setCurrentBook(int? bookId) {
     if (bookId != null && bookId != state.currentBookId) {
@@ -550,7 +610,7 @@ class BooksNotifier extends Notifier<BooksState> {
 
         state = state.copyWith(
           isLoading: false,
-          activeBooks: _filterByLanguage(finalActiveBooks),
+          activeBooks: finalActiveBooks,
           archivedBooks: state.archivedBooks,
           hasMoreActive: false,
           errorMessage: null,
@@ -586,7 +646,7 @@ class BooksNotifier extends Notifier<BooksState> {
 
         state = state.copyWith(
           isLoading: false,
-          activeBooks: _filterByLanguage(finalActiveBooks),
+          activeBooks: finalActiveBooks,
           archivedBooks: state.archivedBooks,
           hasMoreActive: networkBooks.length == _pageSize,
           errorMessage: null,
@@ -744,7 +804,7 @@ class BooksNotifier extends Notifier<BooksState> {
       );
 
       state = state.copyWith(
-        activeBooks: _filterByLanguage(finalActiveBooks),
+        activeBooks: finalActiveBooks,
         hasMoreActive: false,
         errorMessage: null,
       );
@@ -877,10 +937,66 @@ class BooksNotifier extends Notifier<BooksState> {
         _isLoadingArchivedBooks = false;
       });
     }
+
+    // tag 过滤对 active / archived 两个列表分别生效（对应 web 端
+    // /book/datatables/active 与 /book/datatables/Archived 各自的 filtTag），
+    // 切换列表后要按新列表重新取一次。
+    final tag = state.selectedTag;
+    if (tag != null) {
+      state = state.copyWith(tagFilterLoading: true);
+      unawaited(_applyTagFilter(tag));
+    }
+  }
+
+  /// 设置 tag 过滤（null/空串 = 清除）。
+  ///
+  /// 服务端语义：`filtTag` 非空时关闭 tag 聚合、返回精确匹配该 tag 的
+  /// 扁平书单（lute/book/datatables.py 的 use_series_aggregation），
+  /// 与 web 端点击 tag pill 过滤完全一致。
+  Future<void> setTagFilter(String? tag) async {
+    final normalized = (tag == null || tag.trim().isEmpty) ? null : tag.trim();
+    if (state.selectedTag == normalized &&
+        (normalized == null || state.tagFilteredBooks != null)) {
+      return;
+    }
+    state = state.copyWith(
+      selectedTag: normalized,
+      tagFilteredBooks: null,
+      tagFilterLoading: normalized != null,
+      errorMessage: null,
+    );
+    if (normalized != null) {
+      await _applyTagFilter(normalized);
+    }
+  }
+
+  Future<void> _applyTagFilter(String tag) async {
+    try {
+      final books = await _repository.getBooksByTag(
+        tag,
+        archived: state.showArchived,
+      );
+      state = state.copyWith(
+        tagFilteredBooks: books,
+        tagFilterLoading: false,
+        errorMessage: null,
+      );
+    } catch (e) {
+      state = state.copyWith(tagFilterLoading: false, errorMessage: e.toString());
+    }
   }
 
   void setSearchQuery(String query) {
     if (state.searchQuery != query) {
+      // 搜索与 tag 过滤互斥（v1 简化）：发起搜索时清掉 tag 过滤，
+      // 避免两个不同来源的列表互相覆盖。
+      if (query.isNotEmpty && state.selectedTag != null) {
+        state = state.copyWith(
+          selectedTag: null,
+          tagFilteredBooks: null,
+          tagFilterLoading: false,
+        );
+      }
       _activePage = 0;
       _archivedPage = 0;
       _pendingSearchReload = false;
@@ -918,7 +1034,7 @@ class BooksNotifier extends Notifier<BooksState> {
         search: state.searchQuery.isEmpty ? null : state.searchQuery,
       );
 
-      final allBooks = _filterByLanguage([
+      final allBooks = _dedupeByIdentity([
         ...state.activeBooks,
         ...newBooks,
       ]);

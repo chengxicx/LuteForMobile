@@ -235,10 +235,7 @@ class Book {
       parsedStatusDist = statusDist.map((e) => e as int).toList();
     }
 
-    List<String>? parsedTags;
-    if (tagList is String && tagList.isNotEmpty && tagList != 'null') {
-      parsedTags = tagList.split(',').map((t) => t.trim()).toList();
-    }
+    final parsedTags = _parseStringList(tagList);
 
     final bookType = (json['BookType'] as String?)?.trim() ?? '';
     final seriesTag = json['SeriesTag'] as String?;
@@ -310,6 +307,25 @@ class Book {
     if (bookCount <= 0) return 0;
     final read = readCount ?? 0;
     return ((read * 100) / bookCount).round().clamp(0, 100);
+  }
+
+  /// 解析字符串列表（目前只有 `TagList` 用它）。
+  ///
+  /// 两种形态都要认：服务端给的是逗号拼接的字符串
+  /// （`TagList = "mp3,bilibili"`），而 [toJson] 往缓存里写的是 JSON 数组。
+  /// 只认字符串会让**从缓存读回来的书丢掉全部 tag** —— 书架先用缓存渲染
+  /// 出无 tag 的卡片，等网络回来才补上 tag，卡片长高、列表整体下移。
+  static List<String>? _parseStringList(dynamic raw) {
+    final Iterable<String> parts;
+    if (raw is List) {
+      parts = raw.map((e) => e?.toString().trim() ?? '');
+    } else if (raw is String && raw.isNotEmpty && raw != 'null') {
+      parts = raw.split(',').map((s) => s.trim());
+    } else {
+      return null;
+    }
+    final items = parts.where((s) => s.isNotEmpty).toList();
+    return items.isEmpty ? null : items;
   }
 
   /// 解析服务端用逗号拼接的 id 列表（如 `SeriesStatsPending = "3,7,12"`）。

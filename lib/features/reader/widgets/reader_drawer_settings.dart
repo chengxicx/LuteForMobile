@@ -20,61 +20,38 @@ class ReaderDrawerSettings extends ConsumerWidget {
     final settings = ref.watch(settingsProvider);
     final termFormSettings = ref.watch(termFormSettingsProvider);
 
-    // The panel is taller than a phone screen as soon as "Text Formatting" is
-    // expanded, and the bottom navigation bar took another ~80px off it.  A
-    // plain Column just overflowed: everything below the fold -- the font and
-    // size controls among it -- was clipped and unreachable, which is why the
-    // reader's font and text size could not be changed at all.
+    // 阅读抽屉的信息层级：最高频的排版调节置顶且不再折叠（折叠的
+    // ExpansionTile 曾把字号控件整个藏起来，字体字号根本调不了），阅读开关
+    // 随后；Word Glow、Tooltip 图片、缓存维护这些设一次就不动的低频项沉到
+    // 底部 More Options。所有选项都留在本抽屉内，不迁全局 Settings。
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 标题用 titleMedium（与抽屉 header 同级），之前用 titleLarge
-          // （22sp）比抽屉自己的标题还大，在 320px 宽的抽屉里显得突兀；
-          // tilePadding/childrenPadding 归零让它与下面的开关行左对齐。
-          ExpansionTile(
-            dense: true,
-            tilePadding: const EdgeInsets.symmetric(horizontal: 4),
-            childrenPadding: EdgeInsets.zero,
-            title: Text(
-              'Text Formatting',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            initiallyExpanded: false,
-            children: [
-              const SizedBox(height: 8),
-              // The preview shows the page being read -- sizing text against a
-              // fixed Latin sample would be wrong for a Chinese or Arabic book,
-              // and the panel covers the page it is meant to be judging.
-              Consumer(
-                builder: (context, ref, _) {
-                  final pageData = ref.watch(
-                    readerProvider.select((s) => s.pageData),
-                  );
-                  return TextFormattingControls(
-                    dense: true,
-                    previewTokens: _previewTokens(pageData),
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-            ],
+          _sectionLabel(context, 'Text Formatting'),
+          const SizedBox(height: 8),
+          // The preview shows the page being read -- sizing text against a
+          // fixed Latin sample would be wrong for a Chinese or Arabic book,
+          // and the panel covers the page it is meant to be judging.
+          Consumer(
+            builder: (context, ref, _) {
+              final pageData = ref.watch(
+                readerProvider.select((s) => s.pageData),
+              );
+              return TextFormattingControls(
+                dense: true,
+                previewTokens: _previewTokens(pageData),
+              );
+            },
           ),
           const SizedBox(height: 16),
           _buildFullscreenToggle(context, ref),
           if (currentRoute != 'sentence-reader') ...[
-            const SizedBox(height: 24),
-            _buildWordGlowToggle(context, ref),
-          ],
-          const SizedBox(height: 24),
-          _buildTooltipImagesToggle(context, ref, termFormSettings),
-          const SizedBox(height: 24),
-          if (currentRoute != 'sentence-reader')
+            const SizedBox(height: 16),
             _buildPageNumbersToggle(context, ref, settings),
-          const SizedBox(height: 24),
+          ],
+          const SizedBox(height: 16),
           Consumer(
             builder: (context, ref, _) {
               final reader = ref.watch(readerProvider);
@@ -87,96 +64,7 @@ class ReaderDrawerSettings extends ConsumerWidget {
             },
           ),
           const SizedBox(height: 24),
-          // Show tooltip cache management when enabled
-          Consumer(
-            builder: (context, ref, _) {
-              final settings = ref.watch(settingsProvider);
-              if (settings.enableTooltipCaching) {
-                // Refresh cache stats when this section is built
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  ref.invalidate(cacheStatsProvider);
-                });
-
-                return Column(
-                  children: [
-                    const SizedBox(height: 16),
-                    Consumer(
-                      builder: (context, ref, _) {
-                        final cacheStats = ref.watch(cacheStatsProvider);
-
-                        return cacheStats.when(
-                          data: (stats) {
-                            int cacheCount = stats['validEntries'] ?? 0;
-
-                            return OutlinedButton.icon(
-                              onPressed: () async {
-                                // Get the tooltip cache service
-                                final tooltipCacheService = ref.read(
-                                  tooltipCacheServiceProvider,
-                                );
-
-                                // Clear the cache
-                                final success = await tooltipCacheService
-                                    .clearAllCache();
-
-                                if (success && context.mounted) {
-                                  // Refresh the cache stats after clearing
-                                  ref.invalidate(cacheStatsProvider);
-
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'Tooltip cache cleared successfully',
-                                      ),
-                                    ),
-                                  );
-                                } else if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'Failed to clear tooltip cache',
-                                      ),
-                                    ),
-                                  );
-                                }
-                              },
-                              icon: const Icon(Icons.refresh),
-                              label: Text(
-                                'Refresh Tooltip Cache ($cacheCount)',
-                              ),
-                              style: OutlinedButton.styleFrom(
-                                minimumSize: const Size(double.infinity, 40),
-                              ),
-                            );
-                          },
-                          loading: () => OutlinedButton.icon(
-                            onPressed: null,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text(
-                              'Refresh Tooltip Cache (Loading...)',
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              minimumSize: const Size(double.infinity, 40),
-                            ),
-                          ),
-                          error: (error, stack) => OutlinedButton.icon(
-                            onPressed: null,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('Refresh Tooltip Cache (Error)'),
-                            style: OutlinedButton.styleFrom(
-                              minimumSize: const Size(double.infinity, 40),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                );
-              }
-              return const SizedBox.shrink();
-            },
-          ),
-          const SizedBox(height: 24),
+          // 句读入口 / 错误面板：出错时就地显示，保持原有行为。
           Consumer(
             builder: (context, ref, _) {
               final error = ref.watch(sentenceReaderProvider).errorMessage;
@@ -362,7 +250,118 @@ class ReaderDrawerSettings extends ConsumerWidget {
               );
             },
           ),
+          const SizedBox(height: 24),
+          const Divider(height: 1),
+          const SizedBox(height: 16),
+          _sectionLabel(context, 'More Options'),
+          const SizedBox(height: 8),
+          if (currentRoute != 'sentence-reader') ...[
+            _buildWordGlowToggle(context, ref),
+            const SizedBox(height: 16),
+          ],
+          _buildTooltipImagesToggle(context, ref, termFormSettings),
+          const SizedBox(height: 24),
+          // Show tooltip cache management when enabled
+          Consumer(
+            builder: (context, ref, _) {
+              final cacheSettings = ref.watch(settingsProvider);
+              if (cacheSettings.enableTooltipCaching) {
+                // Refresh cache stats when this section is built
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  ref.invalidate(cacheStatsProvider);
+                });
+
+                return Column(
+                  children: [
+                    Consumer(
+                      builder: (context, ref, _) {
+                        final cacheStats = ref.watch(cacheStatsProvider);
+
+                        return cacheStats.when(
+                          data: (stats) {
+                            int cacheCount = stats['validEntries'] ?? 0;
+
+                            return OutlinedButton.icon(
+                              onPressed: () async {
+                                // Get the tooltip cache service
+                                final tooltipCacheService = ref.read(
+                                  tooltipCacheServiceProvider,
+                                );
+
+                                // Clear the cache
+                                final success = await tooltipCacheService
+                                    .clearAllCache();
+
+                                if (success && context.mounted) {
+                                  // Refresh the cache stats after clearing
+                                  ref.invalidate(cacheStatsProvider);
+
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Tooltip cache cleared successfully',
+                                      ),
+                                    ),
+                                  );
+                                } else if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Failed to clear tooltip cache',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.refresh),
+                              label: Text(
+                                'Refresh Tooltip Cache ($cacheCount)',
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(double.infinity, 40),
+                              ),
+                            );
+                          },
+                          loading: () => OutlinedButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text(
+                              'Refresh Tooltip Cache (Loading...)',
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size(double.infinity, 40),
+                            ),
+                          ),
+                          error: (error, stack) => OutlinedButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Refresh Tooltip Cache (Error)'),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size(double.infinity, 40),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                );
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+          const SizedBox(height: 8),
         ],
+      ),
+    );
+  }
+
+  /// 分区小标题：titleMedium 与抽屉 header 同级；之前 ExpansionTile 的
+  /// titleLarge（22sp）在 320px 宽的抽屉里过于突兀。
+  Widget _sectionLabel(BuildContext context, String text) {
+    return Text(
+      text,
+      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+        fontWeight: FontWeight.w600,
       ),
     );
   }
