@@ -6,7 +6,7 @@ import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/loading_indicator.dart';
-import 'package:lute_for_mobile/app.dart';
+import 'package:song_mobile/app.dart';
 import '../models/book.dart';
 import '../providers/books_provider.dart';
 import 'book_card.dart';

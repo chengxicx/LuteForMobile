@@ -31,11 +31,11 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/core/network/tts_service.dart';
-import 'package:lute_for_mobile/core/providers/tts_provider.dart';
-import 'package:lute_for_mobile/features/reader/providers/tts_player_provider.dart';
-import 'package:lute_for_mobile/features/settings/models/tts_settings.dart';
-import 'package:lute_for_mobile/features/settings/providers/tts_settings_provider.dart';
+import 'package:song_mobile/core/network/tts_service.dart';
+import 'package:song_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/features/reader/providers/tts_player_provider.dart';
+import 'package:song_mobile/features/settings/models/tts_settings.dart';
+import 'package:song_mobile/features/settings/providers/tts_settings_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// How long one spoken sentence lasts, and how long fetching it takes. See

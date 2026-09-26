@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/shared/utils/tts_language_mapper.dart';
+import 'package:song_mobile/shared/utils/tts_language_mapper.dart';
 
 /// 服务端 `lute/tts/routes.py` 里 VOICE_MAP 的键。
 ///

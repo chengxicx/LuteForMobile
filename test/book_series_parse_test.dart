@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/features/books/models/book.dart';
+import 'package:song_mobile/features/books/models/book.dart';
 
 /// Book Set（服务端 tag 聚合）解析的回归测试。
 ///

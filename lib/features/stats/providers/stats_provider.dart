@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/features/stats/models/stats_cache_entry.dart';
-import 'package:lute_for_mobile/features/stats/models/language_stats.dart';
-import 'package:lute_for_mobile/shared/providers/network_providers.dart';
-import 'package:lute_for_mobile/shared/providers/language_data_provider.dart';
+import 'package:song_mobile/features/stats/models/stats_cache_entry.dart';
+import 'package:song_mobile/features/stats/models/language_stats.dart';
+import 'package:song_mobile/shared/providers/network_providers.dart';
+import 'package:song_mobile/shared/providers/language_data_provider.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 import 'stats_repository_provider.dart';
 

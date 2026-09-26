@@ -17,8 +17,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/core/network/html_parser.dart';
-import 'package:lute_for_mobile/features/reader/models/page_data.dart';
+import 'package:song_mobile/core/network/html_parser.dart';
+import 'package:song_mobile/features/reader/models/page_data.dart';
 
 /// The page body is irrelevant here; only the metadata block is under test.
 const String _textHtml = '<div id="thetext"></div>';

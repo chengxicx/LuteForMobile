@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:lute_for_mobile/features/books/models/book.dart';
-import 'package:lute_for_mobile/features/books/models/book_difficulty.dart';
-import 'package:lute_for_mobile/shared/theme/eink.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/features/books/models/book.dart';
+import 'package:song_mobile/features/books/models/book_difficulty.dart';
+import 'package:song_mobile/shared/theme/eink.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 
 /// 书架卡片上的「新词难度」徽标。
 ///

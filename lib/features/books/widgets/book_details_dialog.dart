@@ -9,7 +9,7 @@ import '../models/book.dart';
 import '../providers/books_provider.dart';
 import 'edit_book_dialog.dart';
 
-import 'package:lute_for_mobile/app.dart';
+import 'package:song_mobile/app.dart';
 
 class BookDetailsDialog extends ConsumerStatefulWidget {
   final Book book;

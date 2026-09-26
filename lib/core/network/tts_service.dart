@@ -4,8 +4,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:lute_for_mobile/core/network/session_manager.dart';
-import 'package:lute_for_mobile/features/settings/models/tts_settings.dart';
+import 'package:song_mobile/core/network/session_manager.dart';
+import 'package:song_mobile/features/settings/models/tts_settings.dart';
 
 class TTSVoice {
   final String name;

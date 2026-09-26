@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
-import 'package:lute_for_mobile/features/settings/widgets/text_formatting_controls.dart';
-import 'package:lute_for_mobile/core/cache/providers/tooltip_cache_provider.dart';
-import 'package:lute_for_mobile/core/cache/providers/cache_stats_provider.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/features/settings/providers/settings_provider.dart';
+import 'package:song_mobile/features/settings/widgets/text_formatting_controls.dart';
+import 'package:song_mobile/core/cache/providers/tooltip_cache_provider.dart';
+import 'package:song_mobile/core/cache/providers/cache_stats_provider.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 import '../providers/sentence_reader_provider.dart';
 import '../providers/reader_provider.dart';
 import '../models/page_data.dart';

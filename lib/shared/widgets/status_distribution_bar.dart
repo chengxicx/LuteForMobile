@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:lute_for_mobile/features/books/models/book.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/features/books/models/book.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 
 class StatusDistributionBar extends StatelessWidget {
   final Book book;

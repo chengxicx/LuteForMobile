@@ -2,7 +2,7 @@ import 'dart:developer' as developer;
 import 'package:openai_dart/openai_dart.dart';
 import 'package:dio/dio.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:lute_for_mobile/features/settings/models/ai_settings.dart';
+import 'package:song_mobile/features/settings/models/ai_settings.dart';
 
 void _logAIPrompt({
   required String service,

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/features/books/models/book.dart';
-import 'package:lute_for_mobile/features/books/models/book_difficulty.dart';
-import 'package:lute_for_mobile/shared/utils/book_type_icons.dart';
+import 'package:song_mobile/features/books/models/book.dart';
+import 'package:song_mobile/features/books/models/book_difficulty.dart';
+import 'package:song_mobile/shared/utils/book_type_icons.dart';
 
 /// 服务端 datatables 一行里与本特性无关的字段，集中放一份避免重复。
 Map<String, dynamic> _baseRow() => {

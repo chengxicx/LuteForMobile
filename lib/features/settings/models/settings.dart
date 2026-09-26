@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:lute_for_mobile/shared/theme/theme_definitions.dart';
-import 'package:lute_for_mobile/features/settings/models/tts_settings.dart';
-import 'package:lute_for_mobile/features/settings/models/ai_settings.dart';
+import 'package:song_mobile/shared/theme/theme_definitions.dart';
+import 'package:song_mobile/features/settings/models/tts_settings.dart';
+import 'package:song_mobile/features/settings/models/ai_settings.dart';
 
 @immutable
 class Settings {

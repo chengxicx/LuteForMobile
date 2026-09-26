@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:lute_for_mobile/core/services/termux_service.dart';
+import 'package:song_mobile/core/services/termux_service.dart';
 
 class StorageService {
   static Future<bool> checkStoragePermissions() async {

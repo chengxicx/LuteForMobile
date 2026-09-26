@@ -16,7 +16,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/core/network/tts_service.dart';
+import 'package:song_mobile/core/network/tts_service.dart';
 
 Response<dynamic> _response(int status, Object? body) => Response<dynamic>(
   requestOptions: RequestOptions(path: '/tts/ja-JP/%E3%80%8D'),

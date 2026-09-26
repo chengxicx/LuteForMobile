@@ -1,8 +1,8 @@
 import 'package:hive_ce/hive.dart';
-import 'package:lute_for_mobile/core/network/content_service.dart';
-import 'package:lute_for_mobile/features/stats/models/stats_cache_entry.dart';
-import 'package:lute_for_mobile/features/stats/models/language_stats.dart';
-import 'package:lute_for_mobile/features/stats/models/stats_data.dart';
+import 'package:song_mobile/core/network/content_service.dart';
+import 'package:song_mobile/features/stats/models/stats_cache_entry.dart';
+import 'package:song_mobile/features/stats/models/language_stats.dart';
+import 'package:song_mobile/features/stats/models/stats_data.dart';
 import '../../../core/cache/cache_logger.dart';
 
 class StatsRepository {

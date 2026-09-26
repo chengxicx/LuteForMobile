@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lute_for_mobile/shared/utils/number_input.dart';
+import 'package:song_mobile/shared/utils/number_input.dart';
 
 void main() {
   const min = 1;

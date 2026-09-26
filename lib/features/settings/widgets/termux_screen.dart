@@ -9,12 +9,12 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lute_for_mobile/core/services/termux_service.dart';
-import 'package:lute_for_mobile/core/services/backup_service.dart';
-import 'package:lute_for_mobile/core/services/storage_service.dart';
-import 'package:lute_for_mobile/features/settings/providers/settings_provider.dart';
-import 'package:lute_for_mobile/features/settings/models/settings.dart';
-import 'package:lute_for_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/core/services/termux_service.dart';
+import 'package:song_mobile/core/services/backup_service.dart';
+import 'package:song_mobile/core/services/storage_service.dart';
+import 'package:song_mobile/features/settings/providers/settings_provider.dart';
+import 'package:song_mobile/features/settings/models/settings.dart';
+import 'package:song_mobile/shared/theme/theme_extensions.dart';
 
 class TermuxScreen extends ConsumerStatefulWidget {
   const TermuxScreen({super.key});
