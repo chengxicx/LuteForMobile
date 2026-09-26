@@ -72,6 +72,9 @@ class TextDisplay extends StatefulWidget {
     this.textDirection,
   });
 
+  /// One tappable word.  [displayOverride] replaces only the rendered
+  /// string (manga's vertical columns render one character per tap cell);
+  /// taps still report the full [item], so lookups keep the whole word.
   static Widget buildInteractiveWord(
     BuildContext context,
     TextItem item, {
@@ -95,6 +98,7 @@ class TextDisplay extends StatefulWidget {
     int? highlightedOrder,
     Set<int> highlightedSentenceIds = const {},
     bool isSelected = false,
+    String? displayOverride,
   }) {
     Color? textColor;
     Color? backgroundColor;
@@ -204,7 +208,7 @@ class TextDisplay extends StatefulWidget {
           ...?glowEffect == null ? null : [glowEffect],
         ],
       ),
-      child: Text(item.displayText, style: textStyle),
+      child: Text(displayOverride ?? item.displayText, style: textStyle),
     );
 
     if (item.wordId != null) {
