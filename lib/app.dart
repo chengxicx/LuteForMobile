@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +8,7 @@ import 'package:song_mobile/features/reader/widgets/reader_screen.dart';
 import 'package:song_mobile/features/reader/widgets/reader_drawer_settings.dart';
 import 'package:song_mobile/features/reader/widgets/sentence_reader_screen.dart';
 import 'package:song_mobile/features/reader/providers/audio_player_provider.dart';
+import 'package:song_mobile/features/reader/providers/sentence_tts_provider.dart';
 import 'package:song_mobile/features/reader/providers/current_book_provider.dart';
 
 import 'package:song_mobile/features/settings/widgets/settings_screen.dart';
@@ -15,6 +18,7 @@ import 'package:song_mobile/features/books/widgets/books_drawer_settings.dart';
 import 'package:song_mobile/features/terms/widgets/terms_screen.dart';
 import 'package:song_mobile/features/stats/widgets/stats_screen.dart';
 import 'package:song_mobile/features/grammar/widgets/grammar_screen.dart';
+import 'package:song_mobile/features/review/widgets/review_screen.dart';
 import 'package:song_mobile/shared/theme/app_theme.dart';
 import 'package:song_mobile/shared/theme/eink.dart';
 import 'package:song_mobile/shared/theme/theme_definitions.dart';
@@ -198,7 +202,7 @@ class App extends ConsumerWidget {
       enabled: eInk,
       child: RestartWidget(
         child: MaterialApp(
-          title: 'LuteForMobile',
+          title: 'Song Mobile',
           debugShowCheckedModeBanner: false,
           theme: eInk ? applyEInkTheme(lightTheme) : lightTheme,
           darkTheme: eInk ? applyEInkTheme(darkTheme) : darkTheme,
@@ -243,6 +247,8 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
   final GlobalKey<State<StatefulWidget>> _helpKey =
       GlobalKey<State<StatefulWidget>>();
   final GlobalKey<State<StatefulWidget>> _grammarKey =
+      GlobalKey<State<StatefulWidget>>();
+  final GlobalKey<State<StatefulWidget>> _reviewKey =
       GlobalKey<State<StatefulWidget>>();
   bool _needsDataRefresh = false;
 
@@ -348,8 +354,14 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
       ref.read(lastMainRouteProvider.notifier).setRoute(route);
     }
 
-    if (_currentRoute == 'reader' && route != 'reader') {
+    // 从阅读或复习页离开时停掉音频。MP3 有声书在 audioPlayerProvider 的
+    // 播放器上,发音 TTS 在 sentenceTTSProvider 自己的播放器上,两处都要停。
+    final leavingAudioScreen =
+        (_currentRoute == 'reader' || _currentRoute == 'review') &&
+        route != _currentRoute;
+    if (leavingAudioScreen) {
       ref.read(audioPlayerProvider.notifier).reset();
+      unawaited(ref.read(sentenceTTSProvider.notifier).stop());
     }
 
     setState(() {
@@ -372,33 +384,44 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
   ///
   /// Settings 与 Help 不在其中：侧边栏（抽屉）里已经有它们的入口，
   /// 底栏再放一个只是重复占位。空出来的中间位置给 Grammar。
+  /// Terms 同样只在抽屉里 —— 主页位置让给了 Review（web 版主导航里
+  /// 也是 Review 而不是 Terms）。
   static const List<String> _navBarRoutes = <String>[
     'reader',
     'books',
     'grammar',
-    'terms',
+    'review',
     'stats',
   ];
 
-  /// Routes the drawer offers: only what the bar cannot.
+  /// 阅读中的两屏：rail 隐藏、抽屉恢复，见 build 里的说明。
+  bool get _isReadingRoute =>
+      _currentRoute == 'reader' || _currentRoute == 'sentence-reader';
+
+  /// Routes the drawer offers: only what the bar/rail cannot reach.
   ///
-  /// Where the bar is on screen it already carries the five main sections, so
-  /// the drawer offers Help / Settings.  Repeating the bar's own destinations
-  /// gave two copies of every entry point and cost the panel a quarter of its
-  /// width.  Where the bar is hidden there is no other way to move, so the
-  /// drawer offers everything.
-  List<String> get _drawerRoutes {
-    if (_navBarIndex == null) {
-      return kNavDestinations.map((d) => d.route).toList(growable: false);
+  /// 窄屏：底栏在屏时抽屉补 Terms / Help / Settings；底栏隐藏的屏（help /
+  /// settings / sentence-reader）没有其他移动途径，抽屉列出全部。
+  /// 宽屏：rail 是除阅读屏之外所有屏的主导航（那些屏抽屉只补 Terms）；
+  /// 阅读屏 rail 隐藏，抽屉接管，列全部目的地。
+  List<String> _drawerRoutes(bool isWide) {
+    final Set<String> onPrimary;
+    if (!isWide) {
+      onPrimary = _navBarIndex == null ? const <String>{} : _navBarRoutes.toSet();
+    } else {
+      onPrimary = _isReadingRoute ? const <String>{} : kPrimaryNavRoutes.toSet();
     }
-    return const <String>['help', 'settings'];
+    return kNavDestinations
+        .map((d) => d.route)
+        .where((r) => !onPrimary.contains(r))
+        .toList(growable: false);
   }
 
   /// Selected destination for the wide-screen rail; null when the current
-  /// route is not one of them.
+  /// route is not on it.
   int? get _railIndex {
     final route = _currentRoute == 'sentence-reader' ? 'reader' : _currentRoute;
-    final index = kNavDestinations.indexWhere((d) => d.route == route);
+    final index = kPrimaryNavRoutes.indexOf(route);
     return index == -1 ? null : index;
   }
 
@@ -423,6 +446,7 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
     'terms': 3,
     'stats': 4,
     'settings': 5,
+    'review': 6,
   };
 
   void _handleNavBarTap(int index) {
@@ -442,7 +466,13 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
     if (settings.currentBookId == null) return;
 
     if (_readerKey.currentState != null) {
-      await _readerKey.currentState!.loadBook(settings.currentBookId!);
+      // 连页码一起恢复：reader 拿到页码就能直接读本地页缓存，正文在
+      // 一两帧内出现。页码传 null（还没记录过，例如升级后第一次启动）时
+      // 行为与从前一致 —— reader 先向服务端问「读到第几页」再拉正文。
+      await _readerKey.currentState!.loadBook(
+        settings.currentBookId!,
+        settings.currentBookPage,
+      );
     }
   }
 
@@ -510,22 +540,25 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
       }
     });
 
-    // 宽屏（平板 / 横屏）：左侧常驻 NavigationRail，抽屉与底栏都收起 ——
-    // 两者并存时必然重复，而宽屏有位置把导航常驻出来。
+    // 宽屏（平板 / 横屏）：左侧常驻 NavigationRail，底栏收起 —— 两者并存时
+    // 必然重复，而宽屏有位置把导航常驻出来。抽屉任何屏都可用：rail/底栏
+    // 够不着的 Terms（以及 Help / Settings）从这里进。
+    // 例外：阅读屏（reader / sentence-reader）把 rail 整条退场 —— rail 上
+    // 没有任何阅读中用得到的入口，却 permanent 吃掉 ~52dp 行宽；导航改由
+    // AppBar 汉堡 + 抽屉承担（抽屉此刻要列出全部目的地）。
     final isWide = MediaQuery.sizeOf(context).width >= _wideLayoutMinWidth;
 
     return Scaffold(
       key: _scaffoldKey,
-      drawer: isWide
-          ? null
-          : AppDrawer(
-              currentRoute: ref.watch(currentScreenRouteProvider),
-              onNavigate: _handleNavTap,
-              routes: _drawerRoutes,
-            ),
-      // 底部导航：Reader | Books | Grammar | Terms | Stats。
-      // 抽屉与各屏幕原有的汉堡按钮全部保留，Help / Settings 也只在抽屉里，
-      // 所以这一屏即使表现不如预期，原有的操作路径依然可用。
+      // 抽屉补齐主导航（底栏 / rail）够不着的目的地：Terms、Help、Settings。
+      drawer: AppDrawer(
+        currentRoute: ref.watch(currentScreenRouteProvider),
+        onNavigate: _handleNavTap,
+        routes: _drawerRoutes(isWide),
+      ),
+      // 底部导航：Reader | Books | Grammar | Review | Stats。
+      // Help / Settings / Terms 只在抽屉里，所以这一屏即使表现不如预期，
+      // 原有的操作路径依然可用。
       bottomNavigationBar: isWide || _navBarIndex == null
           ? null
           : DecoratedBox(
@@ -561,8 +594,8 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
                     label: 'Grammar',
                   ),
                   NavigationDestination(
-                    icon: Icon(Icons.translate),
-                    label: 'Terms',
+                    icon: Icon(Icons.style),
+                    label: 'Review',
                   ),
                   NavigationDestination(
                     icon: Icon(Icons.bar_chart),
@@ -613,10 +646,15 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
                   scaffoldKey: _scaffoldKey,
                 ),
               ),
+              Consumer(
+                builder: (context, ref, child) =>
+                    ReviewScreen(key: _reviewKey, scaffoldKey: _scaffoldKey),
+              ),
             ],
           );
 
-    if (!isWide) return content;
+    // 阅读屏不包 rail：正文直接满宽（见 build 里的说明）。
+    if (!isWide || _isReadingRoute) return content;
 
     return Row(
       children: [
@@ -630,22 +668,27 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
   /// Wide-screen navigation: one permanent rail holding every destination,
   /// Help and Settings included.  Unlike the bottom bar it can express "on a
   /// screen that is not one of these" (selectedIndex null), so no screen has
-  /// to hide it.
+  /// to hide it.  阅读屏除外 —— 那两屏不进这个 Row。
   Widget _buildRail() {
     final width = MediaQuery.sizeOf(context).width;
     return NavigationRail(
       extended: width >= _extendedRailMinWidth,
       selectedIndex: _railIndex,
       onDestinationSelected: (index) =>
-          _handleNavTap(kNavDestinations[index].route),
+          _handleNavTap(kPrimaryNavRoutes[index]),
       backgroundColor: context.appColorScheme.background.surface,
       destinations: <NavigationRailDestination>[
-        for (final destination in kNavDestinations)
+        for (final route in kPrimaryNavRoutes)
           NavigationRailDestination(
-            icon: Icon(destination.icon),
-            label: Text(destination.label),
+            icon: Icon(_destinationFor(route).icon),
+            label: Text(_destinationFor(route).label),
           ),
       ],
     );
+  }
+
+  /// Look up the icon/label of a primary route in [kNavDestinations].
+  ({String route, IconData icon, String label}) _destinationFor(String route) {
+    return kNavDestinations.firstWhere((d) => d.route == route);
   }
 }
