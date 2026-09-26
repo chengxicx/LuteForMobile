@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../features/settings/providers/settings_provider.dart';
 
+// EInkScope / context.eInk 搬去了只依赖 material 的 eink_scope.dart（取色层
+// 要读它，不该顺带把 settings 整条依赖链拖进来）。这里 re-export，原有
+// `import 'theme/eink.dart'` 的调用点一行都不用改。
+export 'eink_scope.dart';
+
 /// 墨水屏模式总开关（设置 -> Reading -> E-ink mode）。
 ///
 /// 打开后：动画时长归零、去掉水波纹与阴影、加载圈换成静态文案、翻页从
@@ -10,25 +15,6 @@ import '../../features/settings/providers/settings_provider.dart';
 final einkModeProvider = Provider<bool>(
   (ref) => ref.watch(settingsProvider).eInkMode,
 );
-
-/// 把开关送进 widget 树，让拿不到 ref 的地方（静态 build 方法、纯
-/// StatelessWidget）也能用 context 读到。
-class EInkScope extends InheritedWidget {
-  final bool enabled;
-
-  const EInkScope({super.key, required this.enabled, required super.child});
-
-  static bool maybeOf(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<EInkScope>()?.enabled ?? false;
-
-  @override
-  bool updateShouldNotify(EInkScope oldWidget) => oldWidget.enabled != enabled;
-}
-
-extension EInkContextX on BuildContext {
-  /// 当前是否处于墨水屏模式。
-  bool get eInk => EInkScope.maybeOf(this);
-}
 
 /// 墨水屏下把动画时长归零：E-Ink 上任何补间都是一串全屏刷新。
 Duration einkDuration(Duration duration, {required bool eInk}) =>
@@ -39,17 +25,22 @@ Duration einkDuration(Duration duration, {required bool eInk}) =>
 /// 彩色状态底在 Kaleido 3 上只有 150ppi，切到黑白模式后 16 灰阶里各种彩底
 /// 挤成一团难分彼此。这里把学习状态映射成 4 档灰底：1（新词）最深，
 /// 2/3/4 渐浅，5（已学）/ 98 / 99 无底色。深色主题用暗灰系反向渐变。
+///
+/// 取值按 16 级灰阶校准（每级 255/17 ≈ 17）：浅色 1/2/3/4 分别落在
+/// 第 10/11/12/13 级，页底为第 15/16 级 —— 最早一版 status 2/3 用
+/// C8/DA，量化后挤进第 12/13 级，跟白底只差一两档，双击置 3 后基本
+/// 看不出来（2026-09-25 真机反馈）。现在各状态间隔至少 2 级灰。
 Color? einkStatusBackground(BuildContext context, String status) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   switch (status) {
     case '1':
-      return dark ? const Color(0xFF4A4A4A) : const Color(0xFFB4B4B4);
+      return dark ? const Color(0xFF5C5C5C) : const Color(0xFFA8A8A8);
     case '2':
-      return dark ? const Color(0xFF3A3A3A) : const Color(0xFFC8C8C8);
+      return dark ? const Color(0xFF464646) : const Color(0xFFBEBEBE);
     case '3':
-      return dark ? const Color(0xFF2E2E2E) : const Color(0xFFDADADA);
+      return dark ? const Color(0xFF343434) : const Color(0xFFCCCCCC);
     case '4':
-      return dark ? const Color(0xFF262626) : const Color(0xFFE8E8E8);
+      return dark ? const Color(0xFF262626) : const Color(0xFFE0E0E0);
     default:
       return null;
   }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'theme_definitions.dart';
 import 'theme_presets.dart';
 import 'app_theme.dart';
+import 'eink_scope.dart';
 
 extension BuildContextExtension on BuildContext {
   AppThemeColorScheme get appColorScheme {
@@ -14,8 +15,20 @@ extension BuildContextExtension on BuildContext {
     return extension?.statusModes ?? defaultStatusModes();
   }
 
-  Color get audioPlayerBackground => appColorScheme.audio.background;
-  Color get audioPlayerIcon => appColorScheme.audio.icon;
+  /// 播放条的图标色。
+  ///
+  /// 墨水屏下换成页面文字色：`audio.icon` 是给深紫卡面（`audio.background`）
+  /// 配的白色，而 YouTube 条、漫画顶条这类"直接画在页面上"的播放控件在墨水屏
+  /// 下卡面是页面本身 —— 白图标落在白纸上等于隐身（2026-09-26 Leaf 5C 反馈）。
+  /// 卡面内的播放条另有 [playerPalette]，那边连底带边一起换。
+  Color get audioPlayerIcon =>
+      eInk ? appColorScheme.text.primary : appColorScheme.audio.icon;
+
+  /// 播放条卡面。墨水屏下换成页面底色，轮廓交给 2px 描边
+  /// （Kaleido 3 的彩色层只有 150ppi，深紫量化后是脏灰）。
+  Color get audioPlayerBackground =>
+      eInk ? appColorScheme.background.surface : appColorScheme.audio.background;
+
   Color get audioBookmark => appColorScheme.audio.bookmark;
   Color get audioError => appColorScheme.audio.error;
   Color get audioErrorBackground => appColorScheme.audio.errorBackground;

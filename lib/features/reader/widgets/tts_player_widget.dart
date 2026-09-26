@@ -1,295 +1,141 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../providers/player_mode_provider.dart';
 import '../providers/tts_player_provider.dart';
-import '../../../shared/theme/eink.dart';
-import '../../../shared/theme/theme_extensions.dart';
+import 'player/player_card.dart';
+import 'player/player_controls.dart';
+import 'player/player_timeline.dart';
 
 /// Full TTS read-aloud player bar (timeline + controls) for text books.
 ///
-/// Mirrors the web reader's TTS player and reuses the same visual language as
-/// the MP3 [AudioPlayerWidget]: a timeline slider over the whole page plus
-/// previous / play-pause / next controls.  It reads the page's sentences
-/// sequentially via the configured TTS service.
+/// Mirrors the web reader's TTS player and reuses the same card components as
+/// the MP3 [AudioPlayerWidget].  It reads the page's sentences sequentially
+/// via the configured TTS service.
 ///
-/// The aux controls on the right match the web player's: a − / + rate control
-/// (tap the number to reset) and the Loop / Auto-pause toggles.  Loop repeats
-/// the sentence being read; auto-pause stops at the end of each one.  Loop
-/// wins when both are on.
+/// The aux row carries the − / + rate control (tap the number to reset), the
+/// Loop / Auto-pause toggles, and — for books that have uploaded audio — the
+/// switch back to the MP3 player.  Loop repeats the sentence being read;
+/// auto-pause stops at the end of each one.  Loop wins when both are on.
 class TTSPlayerWidget extends ConsumerStatefulWidget {
-  const TTSPlayerWidget({super.key});
+  /// 带音频的书才显示"切回 MP3"的按钮(纯文本书没有 MP3 可切)。
+  final bool showMp3Toggle;
+
+  const TTSPlayerWidget({super.key, this.showMp3Toggle = false});
 
   @override
   ConsumerState<TTSPlayerWidget> createState() => _TTSPlayerWidgetState();
 }
 
 class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
-  bool _isDragging = false;
-  double? _dragSeconds;
-
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(ttsPlayerProvider);
-
-    return Container(
-      decoration: BoxDecoration(
-        color: context.audioPlayerBackground,
-        border: Border(
-          bottom: BorderSide(
-            color: context.appColorScheme.border.outline,
-            width: 1,
-          ),
-        ),
-      ),
-      padding: EdgeInsets.fromLTRB(16.0, 4.0, 16.0, 4.0),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (state.errorMessage != null)
-            Container(
-              width: double.infinity,
-              padding: EdgeInsets.all(8.0),
-              margin: EdgeInsets.only(bottom: 4.0),
-              color: context.audioErrorBackground,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Error: ${state.errorMessage}',
-                      style: TextStyle(color: context.audioError),
-                    ),
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      Icons.close,
-                      size: 18,
-                      color: context.audioError,
-                    ),
-                    onPressed: () {
-                      ref
-                          .read(ttsPlayerProvider.notifier)
-                          .play(tickPosition: !context.eInk);
-                    },
-                    padding: EdgeInsets.zero,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ],
-              ),
-            ),
-          _buildProgressBar(context, state),
-          _buildControlRow(context, state),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProgressBar(BuildContext context, TTSPlayerState state) {
-    final totalSeconds = state.totalDuration.inMilliseconds / 1000.0;
-    final positionSeconds = state.position.inMilliseconds / 1000.0;
-    final maxDuration = totalSeconds > 0 ? totalSeconds : 1.0;
-
-    double sliderValue = _isDragging
-        ? (_dragSeconds ?? positionSeconds)
-        : positionSeconds;
-    if (sliderValue > maxDuration) sliderValue = maxDuration;
+    final notifier = ref.read(ttsPlayerProvider.notifier);
 
     final sentenceLabel = state.hasSnippets
         ? '${state.currentIndex.clamp(0, state.snippets.length - 1) + 1}/${state.snippets.length}'
         : '0/0';
 
-    return Container(
-      width: double.infinity,
-      child: Stack(
-        alignment: Alignment.center,
+    final errorMessage = state.errorMessage;
+
+    return PlayerCard(
+      errorMessage: errorMessage == null ? null : 'Error: $errorMessage',
+      onDismissError: errorMessage == null
+          ? null
+          : notifier.clearError,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 4.0,
-              thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6.0),
-              overlayShape: RoundSliderOverlayShape(overlayRadius: 12.0),
-            ),
-            child: Slider(
-              value: sliderValue,
-              min: 0.0,
-              max: maxDuration,
-              onChanged: (value) {
-                setState(() {
-                  _isDragging = true;
-                  _dragSeconds = value;
-                });
-              },
-              onChangeEnd: (value) {
-                final target = Duration(milliseconds: (value * 1000).round());
-                final index = _indexForPosition(target, state);
-                setState(() {
-                  _isDragging = false;
-                  _dragSeconds = null;
-                });
-                ref.read(ttsPlayerProvider.notifier).seekTo(index);
-              },
-            ),
+          PlayerTimeline(
+            position: state.position,
+            total: state.totalDuration,
+            centerLabel: sentenceLabel,
+            onSeekEnd: (target) {
+              final index = _indexForPosition(target, state);
+              if (index >= 0) notifier.seekTo(index);
+            },
           ),
-          Positioned(
-            left: 0,
-            right: 0,
-            child: IgnorePointer(
-              child: Center(
-                child: Text(
-                  '${_formatDuration(state.position)} / ${_formatDuration(state.totalDuration)} · $sentenceLabel',
-                  style: TextStyle(
-                    color: context.audioPlayerIcon,
-                    fontSize: 12,
-                    shadows: [
-                      Shadow(
-                        blurRadius: 3.0,
-                        color: context.appColorScheme.text.disabled.withValues(
-                          alpha: 0.7,
-                        ),
-                        offset: Offset(0, 0),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
+          _buildMainControls(context, state),
+          _buildAuxControls(context, state),
         ],
       ),
     );
   }
 
-  Widget _buildControlRow(BuildContext context, TTSPlayerState state) {
+  Widget _buildMainControls(BuildContext context, TTSPlayerState state) {
     final notifier = ref.read(ttsPlayerProvider.notifier);
-
-    IconData playPauseIcon;
-    VoidCallback playPauseAction;
-    if (state.isLoading) {
-      playPauseIcon = Icons.hourglass_empty;
-      playPauseAction = () {};
-    } else if (state.isPlaying) {
-      playPauseIcon = Icons.pause;
-      playPauseAction = () => notifier.pause();
-    } else {
-      playPauseIcon = Icons.play_arrow;
-      playPauseAction = () => notifier.toggle();
-    }
-
-    return Padding(
-      padding: EdgeInsets.only(bottom: 2.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          IconButton(
-            icon: Icon(Icons.navigate_before),
-            onPressed: state.canGoPrevious ? () => notifier.previous() : null,
-            color: context.audioPlayerIcon,
-            iconSize: 22,
-            padding: EdgeInsets.all(4),
-            tooltip: 'Previous sentence',
-          ),
-          IconButton(
-            icon: Icon(playPauseIcon),
-            onPressed: playPauseAction,
-            color: context.audioPlayerIcon,
-            iconSize: 32,
-          ),
-          IconButton(
-            icon: Icon(Icons.navigate_next),
-            onPressed: state.canGoNext ? () => notifier.next() : null,
-            color: context.audioPlayerIcon,
-            iconSize: 22,
-            padding: EdgeInsets.all(4),
-            tooltip: 'Next sentence',
-          ),
-          SizedBox(width: 4),
-          _buildRateControl(context, state),
-          _buildToggle(
-            context,
-            icon: state.loopMode ? Icons.repeat_on : Icons.repeat,
-            isOn: state.loopMode,
-            tooltip: state.loopMode
-                ? 'Loop current sentence: on'
-                : 'Loop current sentence: off',
-            onPressed: () => notifier.toggleLoopMode(),
-          ),
-          _buildToggle(
-            context,
-            icon: state.autoPauseMode
-                ? Icons.pause_circle
-                : Icons.pause_circle_outline,
-            isOn: state.autoPauseMode,
-            tooltip: state.autoPauseMode
-                ? 'Auto-pause at each sentence: on'
-                : 'Auto-pause at each sentence: off',
-            onPressed: () => notifier.toggleAutoPauseMode(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// − / + rate control with the current value between them.  Tapping the
-  /// value resets to 1x, matching the web player's rate indicator.
-  Widget _buildRateControl(BuildContext context, TTSPlayerState state) {
-    final notifier = ref.read(ttsPlayerProvider.notifier);
-    final label = _formatRate(state.playbackRate);
 
     return Row(
-      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        IconButton(
-          icon: Icon(Icons.remove),
-          onPressed: () =>
-              notifier.nudgePlaybackRate(-TTSPlayerNotifier.playbackRateStep),
-          color: context.audioPlayerIcon,
-          iconSize: 18,
-          padding: EdgeInsets.all(4),
-          visualDensity: VisualDensity.compact,
-          tooltip: 'Slower',
+        PlayerIconButton(
+          icon: Icons.navigate_before,
+          tooltip: 'Previous sentence',
+          onPressed: state.canGoPrevious ? notifier.previous : null,
         ),
-        GestureDetector(
-          onTap: () => notifier.resetPlaybackRate(),
-          child: Container(
-            constraints: BoxConstraints(minWidth: 34),
-            alignment: Alignment.center,
-            padding: EdgeInsets.symmetric(horizontal: 2, vertical: 4),
-            child: Text(
-              label,
-              style: TextStyle(
-                color: context.audioPlayerIcon,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        ),
-        IconButton(
-          icon: Icon(Icons.add),
+        const SizedBox(width: 8),
+        PlayerPlayButton(
+          playing: state.isPlaying,
+          loading: state.isLoading,
           onPressed: () =>
-              notifier.nudgePlaybackRate(TTSPlayerNotifier.playbackRateStep),
-          color: context.audioPlayerIcon,
-          iconSize: 18,
-          padding: EdgeInsets.all(4),
-          visualDensity: VisualDensity.compact,
-          tooltip: 'Faster',
+              state.isPlaying ? notifier.pause() : notifier.toggle(),
+        ),
+        const SizedBox(width: 8),
+        PlayerIconButton(
+          icon: Icons.navigate_next,
+          tooltip: 'Next sentence',
+          onPressed: state.canGoNext ? notifier.next : null,
         ),
       ],
     );
   }
 
-  Widget _buildToggle(
-    BuildContext context, {
-    required IconData icon,
-    required bool isOn,
-    required String tooltip,
-    required VoidCallback onPressed,
-  }) {
-    return IconButton(
-      icon: Icon(icon),
-      onPressed: onPressed,
-      color: isOn ? context.audioBookmark : context.audioPlayerIcon,
-      iconSize: 22,
-      padding: EdgeInsets.all(4),
-      tooltip: tooltip,
+  Widget _buildAuxControls(BuildContext context, TTSPlayerState state) {
+    final notifier = ref.read(ttsPlayerProvider.notifier);
+
+    // FittedBox:窄屏上整行等比缩小,不裁切也不换行。
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          PlayerRateStepper(
+            label: _formatRate(state.playbackRate),
+            onDecrease: () =>
+                notifier.nudgePlaybackRate(-TTSPlayerNotifier.playbackRateStep),
+            onIncrease: () =>
+                notifier.nudgePlaybackRate(TTSPlayerNotifier.playbackRateStep),
+            onReset: notifier.resetPlaybackRate,
+          ),
+          PlayerIconButton(
+            icon: state.loopMode ? Icons.repeat_on : Icons.repeat,
+            active: state.loopMode,
+            tooltip: state.loopMode
+                ? 'Loop current sentence: on'
+                : 'Loop current sentence: off',
+            onPressed: notifier.toggleLoopMode,
+          ),
+          PlayerIconButton(
+            icon: state.autoPauseMode
+                ? Icons.pause_circle
+                : Icons.pause_circle_outline,
+            active: state.autoPauseMode,
+            tooltip: state.autoPauseMode
+                ? 'Auto-pause at each sentence: on'
+                : 'Auto-pause at each sentence: off',
+            onPressed: notifier.toggleAutoPauseMode,
+          ),
+          if (widget.showMp3Toggle)
+            PlayerIconButton(
+              icon: Icons.music_note,
+              tooltip: 'Switch to MP3 audio',
+              onPressed: () => ref
+                  .read(playerModeProvider.notifier)
+                  .setMode(PlayerMode.mp3),
+            ),
+        ],
+      ),
     );
   }
 
@@ -310,12 +156,5 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
       acc = next;
     }
     return state.snippets.isEmpty ? -1 : state.snippets.length - 1;
-  }
-
-  String _formatDuration(Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '$minutes:$seconds';
   }
 }
