@@ -252,8 +252,56 @@ book.audio_bookmarks = data.get("bookmarks")
 
 ---
 
-## 6. 未处理
+## 6. 收尾（2026-09-27 晚，两件事都已处理）
 
-- 静态目录 `/opt/lute/lute/static/` 里累积 **20 个交付 APK，约 560MB**（整个 static 目录 916M）。
-  按 `AGENTS.md` 约定"等用户确认后再清理"，尚未删除。
-- 工作区未提交改动（本轮新增/修改见 `git status`）。
+### 6.1 `video or audio or 0` 把"位置 0"当成"没位置"（已修）
+
+同一个 null-vs-zero 陷阱，只是落在位置列上：
+
+```python
+# 旧
+video_current_pos=book.video_current_pos or book.audio_current_pos or 0,
+```
+
+Python 的 `or` 把 `0.0` 判为假，所以**用户拖到开头（位置正好 0.0）时，会掉回
+遗留的 audio 列**。书 274 的 audio 列是 `191.814`（旧 app 留下的陈旧值），
+于是"拖回开头"再重开，会跳到 03:11 而不是 00:00。
+
+```python
+# 新
+video_current_pos=(
+    book.video_current_pos
+    if book.video_current_pos is not None
+    else (book.audio_current_pos or 0)
+),
+```
+
+NULL 才是"这一列从没写过"，`0.0` 是"听众在开头"—— 与书签那边是同一条原则。
+`else` 分支刻意保留：`video` 为 NULL 的遗留行仍要能回退到 audio 列
+（路由里原有的注释就是在说这件事）。
+
+**等价性已证明，不是假设**：差异只可能出现在 `video = 0` 且 `audio` 非空的行上，
+而全服两个用户库查下来是 0 行（chengxi 280 本 / momo 0 本）。所以这次改动
+在现有数据上**行为完全一致**，只是把陷阱堵上。
+
+验证方式：用 `ast` 把改完文件里那个表达式**原样取出来**，对 5 组桩数据求值
+（`0.0/191.814`、`86.989/191.814`、`None/191.814`、`None/None`、`0.0/0.0`），
+全部分支符合预期 —— 验的是将要跑的代码，不是它的副本。备份
+`read/routes.py.bak_20260927_videopos`，`py_compile` 通过，服务已重启
+（`HTTP 302`，跳登录，正常）。
+
+### 6.2 静态目录与未提交改动
+
+- 静态目录已按"只留最新一个"清理：删掉 23 个 APK / 615MB，只留
+  `_lute_bmfresh_20260927-0227.apk`；`static/` 916M → **408M**。
+- 工作区 117 处改动已分 9 个提交落库，`git status` 干净。其中包名重命名
+  `lute_for_mobile` → `song_mobile` 单独成提交（98 文件），其余按功能分组。
+- `release-apk/`（214MB 构建产物）已加入 `.gitignore`，与既有 `/dist/` 规则一致。
+
+## 7. 仍未处理
+
+- **页面缓存的读时效性**：阅读页整页有 14 天 TTL 的 Hive 缓存，播放器数据
+  （位置、书签）是页面的一部分，所以另一台设备/浏览器上的改动最多 14 天
+  不会在本机出现。破坏性的一面已堵（自动保存不再写书签），剩下的是
+  "看不到"以及"编辑时会把本机旧列表+新书签一起写回"。
+  解法涉及"离线优先 vs 跨设备新鲜度"的取舍，留给用户拍板。

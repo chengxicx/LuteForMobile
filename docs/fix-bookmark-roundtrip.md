@@ -179,9 +179,11 @@ here for every backend it drives, audio included*）。
    可能十几天内不在 app 里出现。非破坏性（自动保存已经不带书签了），
    但"用户改完书签、在 app 里编辑"这一条路径仍会把 app 的旧列表写回去。
    彻底的解法是把播放器数据从整页缓存里摘出来，或播放前强制刷新元数据页。
-2. **`BkAudioCurrentPos` 现在是死列**：app 改走统一列之后只写
-   `BkVideoCurrentPos`。服务端读取是 `video or audio or 0`，
-   而 Python 的 `or` 把 `0.0` 当假值 —— 若某本书的 video 列被重置成 0，
-   会掉回 audio 列的陈旧值。属服务端既有设计问题，未动。
+   取舍是"离线优先 vs 跨设备新鲜度"，见 `fix-resume-position.md` §7。
+2. ~~`BkAudioCurrentPos` 现在是死列~~ —— 已处理。app 改走统一列之后只写
+   `BkVideoCurrentPos`，服务端读取的 `video or audio or 0` 里那个 `or`
+   会把合法的 `0.0` 判成假值、掉回陈旧的 audio 列，已改成
+   `video if video is not None else (audio or 0)`，并证明在全服现有数据上
+   行为完全一致（0 行差异）。详见 `fix-resume-position.md` §6.1。
 3. **全库书签已不可恢复**：这个 bug 已经把所有书的书签清空了。
    唯一记录了原值的是书 274（`86.989`），需要的话可以手动填回。
