@@ -129,7 +129,7 @@ class ReaderRepository {
     required int page,
     required double position,
     required double duration,
-    required List<double> bookmarks,
+    List<double>? bookmarks,
   }) async {
     try {
       await contentService.saveAudioPlayerData(

@@ -32,8 +32,14 @@ class HtmlParser {
     final pageCount = _extractPageCount(metadataDocument);
     final paragraphs = _extractParagraphs(textDocument);
     final audioFilename = _extractAudioFilename(metadataDocument);
-    final audioCurrentPos = _extractAudioCurrentPos(metadataDocument);
-    final audioBookmarks = _extractAudioBookmarks(metadataDocument);
+    final audioCurrentPos = _extractAudioCurrentPos(
+      metadataDocument,
+      textDocument,
+    );
+    final audioBookmarks = _extractAudioBookmarks(
+      metadataDocument,
+      textDocument,
+    );
     final mangaPage = _extractManga(textDocument, currentPage);
     // The LUTE_YT_DATA block (YouTube videoId + MP3 audioUrl) is part of
     // the page body (the youtube/audio player include), which can arrive in
@@ -933,26 +939,29 @@ class HtmlParser {
 
   List<Language> parseLanguagesWithIds(String htmlContent) {
     final document = html_parser.parse(htmlContent);
-    final languageLinks = document.querySelectorAll(
-      'table tbody tr a[href^="/language/edit/"]',
-    );
 
-    final parsedLanguages = languageLinks
-        .map((link) {
-          final href = link.attributes['href'] ?? '';
-          final idMatch = RegExp(r'/language/edit/(\d+)').firstMatch(href);
-          final id = idMatch != null
-              ? int.tryParse(idMatch.group(1) ?? '')
-              : null;
-          final name = link.text.trim();
+    // 逐行解析而不是只抓 <a>：Song 的语言页（/language/index）每行有
+    // 状态列 '● Active' / '● Frozen'，冻结语言要从行文本里识别出来，
+    // 对齐 web 端语言过滤下拉排除冻结语言的行为。
+    final rows = document.querySelectorAll('table tbody tr');
 
-          if (id != null && name.isNotEmpty) {
-            return Language(id: id, name: name);
-          }
-          return null;
-        })
-        .whereType<Language>()
-        .toList();
+    final parsedLanguages = <Language>[];
+    for (final row in rows) {
+      final link = row.querySelector('a[href^="/language/edit/"]');
+      if (link == null) continue;
+
+      final href = link.attributes['href'] ?? '';
+      final idMatch = RegExp(r'/language/edit/(\d+)').firstMatch(href);
+      final id = idMatch != null
+          ? int.tryParse(idMatch.group(1) ?? '')
+          : null;
+      final name = link.text.trim();
+      if (id == null || name.isEmpty) continue;
+
+      // 旧版语言页没有 Frozen 状态列，row.text 不含 'Frozen'，默认全部 active。
+      final isActive = !row.text.contains('Frozen');
+      parsedLanguages.add(Language(id: id, name: name, isActive: isActive));
+    }
 
     // Keep only one entry per ID to avoid invalid dropdown states when
     // upstream HTML contains duplicate language links.
@@ -1232,7 +1241,35 @@ class HtmlParser {
     return value;
   }
 
-  Duration? _extractAudioCurrentPos(html.Document document) {
+  /// Where the MP3 player should resume, or null when the page carries no
+  /// position at all.
+  ///
+  /// Two sources, tried in order:
+  ///
+  ///  1. `input#book_audio_current_pos` -- the hidden field rendered by the
+  ///     *old* audio player.  Kept first so a server that still ships that
+  ///     player keeps working.
+  ///  2. `LUTE_YT_DATA.startPos` -- what the current server actually emits.
+  ///     MP3 books reuse the video player include (`lute/templates/read/index.html`:
+  ///     `{% if book.audio_filename %}{% include "read/youtube_player.html" %}`),
+  ///     and that include renders `window.LUTE_YT_DATA.startPos = {{ video_current_pos }}`,
+  ///     where the server folds the legacy column in
+  ///     (`read/routes.py`: `video_current_pos=book.video_current_pos or book.audio_current_pos or 0`).
+  ///
+  /// Reading only source 1 silently returns null against this server -- the
+  /// old player was removed, so the input no longer exists -- and the player
+  /// then resumes at 00:00 on every open even though the position is saved
+  /// correctly on every tick.  Verified on a Leaf5C against the live server:
+  /// the row held `BkAudioCurrentPos = 191.814` while the UI showed
+  /// `00:00 / 05:24`, both after backgrounding and after a cold start.
+  ///
+  /// [textDocument] is searched too because which endpoint delivers the
+  /// player block varies (full `/read/<id>` vs the per-page partial), the same
+  /// reason `_extractYoutubeData` is tried against both documents.
+  Duration? _extractAudioCurrentPos(
+    html.Document document, [
+    html.Document? textDocument,
+  ]) {
     final positionInput = document.querySelector(
       'input[id="book_audio_current_pos"]',
     );
@@ -1240,36 +1277,143 @@ class HtmlParser {
     if (positionStr != null && positionStr.isNotEmpty) {
       final position = double.tryParse(positionStr);
       if (position != null) {
-        return Duration(seconds: position.toInt());
+        ApiLogger.logLoading(
+          '_extractAudioCurrentPos',
+          details: 'legacy input, ${position}s',
+        );
+        return _secondsToDuration(position);
+      }
+    }
+
+    for (final candidate in <html.Document?>[document, textDocument]) {
+      if (candidate == null) continue;
+      final startPos = _findPlayerStartPos(candidate);
+      if (startPos != null) {
+        ApiLogger.logLoading(
+          '_extractAudioCurrentPos',
+          details: 'LUTE_YT_DATA.startPos, ${startPos}s',
+        );
+        return _secondsToDuration(startPos);
       }
     }
     return null;
   }
 
-  List<double> _extractAudioBookmarks(html.Document document) {
+  /// Seconds (as the server stores them, a float) to a [Duration].  Keeps the
+  /// fractional part: the save side posts `inMilliseconds / 1000.0`, so
+  /// truncating here would throw away a resumed listener's place on every
+  /// reopen.
+  Duration _secondsToDuration(double seconds) =>
+      Duration(milliseconds: (seconds * 1000).round());
+
+  /// Reads `LUTE_YT_DATA.startPos` from whichever script block carries it,
+  /// or null when no block does -- as opposed to a real `0`, which means
+  /// "start at the beginning".  The distinction only matters for logging and
+  /// for the load signature; both skip the seek.
+  double? _findPlayerStartPos(html.Document document) {
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('LUTE_YT_DATA.startPos')) continue;
+      return _extractStartPos(text);
+    }
+    return null;
+  }
+
+  /// The bookmarks the server holds for this book, or null when the page
+  /// carried no bookmark data at all.
+  ///
+  /// Two sources, tried in order -- the same pair as [_extractAudioCurrentPos]:
+  ///
+  ///  1. `input#book_audio_bookmarks` -- the hidden field the *old* audio
+  ///     player rendered (kept first so a server that still ships it keeps
+  ///     working).  Its value is authoritative even when empty.
+  ///  2. `LUTE_YT_DATA.bookmarks` -- what the current server emits
+  ///     (`read/youtube_player.html`), as the semicolon-separated seconds
+  ///     string the column stores.
+  ///
+  /// **null and `[]` mean different things, and the difference is load
+  /// bearing.** `[]` is "the server says this book has no bookmarks"; null is
+  /// "this page did not tell us".  Only the former may be written back -- see
+  /// `_savePosition` in `audio_player_provider.dart`.  Collapsing the two is
+  /// how every bookmark in the library got wiped: the app posted an empty
+  /// list over the stored one every 2 s (measured on a Leaf5C:
+  /// `BkAudioBookmarks` went `86.989` -> NULL on a plain reopen).
+  List<double>? _extractAudioBookmarks(
+    html.Document document, [
+    html.Document? textDocument,
+  ]) {
     final bookmarksInput =
         document.querySelector('input[id="book_audio_bookmarks"]') ??
         document.querySelector('input[name="audio_bookmarks"]');
     final bookmarksStr = bookmarksInput?.attributes['value']?.trim();
-    if (bookmarksStr != null && bookmarksStr.isNotEmpty) {
-      try {
-        final bookmarks = jsonDecode(bookmarksStr) as List;
-        return bookmarks.map((b) => (b as num).toDouble()).toList();
-      } catch (e) {
-        try {
-          return bookmarksStr
-              .split(';')
-              .where((s) => s.isNotEmpty)
-              .map((s) => double.tryParse(s.trim()))
-              .where((d) => d != null)
-              .cast<double>()
-              .toList();
-        } catch (e2) {
-          return [];
-        }
+    if (bookmarksStr != null) {
+      ApiLogger.logLoading(
+        '_extractAudioBookmarks',
+        details: 'legacy input, ${bookmarksStr.length} chars',
+      );
+      return _parseBookmarkList(bookmarksStr);
+    }
+
+    for (final candidate in <html.Document?>[document, textDocument]) {
+      if (candidate == null) continue;
+      final raw = _findPlayerBookmarks(candidate);
+      if (raw != null) {
+        ApiLogger.logLoading(
+          '_extractAudioBookmarks',
+          details: 'LUTE_YT_DATA.bookmarks, ${raw.length} chars',
+        );
+        return _parseBookmarkList(raw);
       }
     }
-    return [];
+    return null;
+  }
+
+  /// Reads the `LUTE_YT_DATA.bookmarks` literal out of whichever script block
+  /// carries it.
+  ///
+  /// The server renders it through `tojson`, so it is always a quoted JS
+  /// string -- `""` when the book has no bookmarks.  Returns null when the
+  /// assignment is absent, which is deliberately **not** the same as `""`;
+  /// [_readJsonString] cannot be reused here because it folds both to null.
+  String? _findPlayerBookmarks(html.Document document) {
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('LUTE_YT_DATA.bookmarks')) continue;
+      final match = RegExp(
+        r'LUTE_YT_DATA\.bookmarks\s*=\s*("(?:[^"\\]|\\.)*")',
+      ).firstMatch(text);
+      if (match == null) continue;
+      try {
+        final value = jsonDecode(match.group(1)!);
+        return value is String ? value : '';
+      } catch (_) {
+        return '';
+      }
+    }
+    return null;
+  }
+
+  /// Parses a bookmark payload in either shape the server has used: a JSON
+  /// array, or the semicolon-separated seconds string the mobile client posts
+  /// (`bookmarks.map((b) => b.toString()).join(';')`).  Anything unparseable
+  /// degrades to "no bookmarks" rather than throwing -- a malformed list must
+  /// not take the player down with it.
+  List<double> _parseBookmarkList(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is List) {
+        return decoded.whereType<num>().map((b) => b.toDouble()).toList();
+      }
+    } catch (_) {
+      // Not JSON -- fall through to the semicolon form.
+    }
+    return trimmed
+        .split(';')
+        .map((s) => double.tryParse(s.trim()))
+        .whereType<double>()
+        .toList();
   }
 
   List<Term> parseTermsFromDatatables(String jsonData) {

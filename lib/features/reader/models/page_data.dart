@@ -11,7 +11,15 @@ class PageData {
   final String? audioFilename;
   final String? audioUrl;
   final Duration? audioCurrentPos;
-  final List<double> audioBookmarks;
+
+  /// Audio bookmarks in seconds, or null when the page carried none.
+  ///
+  /// **null and `[]` are not interchangeable.** `[]` means the server says
+  /// this book has no bookmarks; null means the page never told us.  The
+  /// player must only write back a list it actually loaded -- posting an
+  /// empty one over the stored value is what wiped every bookmark in the
+  /// library (see `_extractAudioBookmarks`).
+  final List<double>? audioBookmarks;
   final MangaPageData? mangaPage;
   final YoutubeData? youtube;
   final BilibiliData? bilibili;
@@ -42,7 +50,7 @@ class PageData {
     this.audioFilename,
     this.audioUrl,
     this.audioCurrentPos,
-    this.audioBookmarks = const [],
+    this.audioBookmarks,
     this.mangaPage,
     this.youtube,
     this.bilibili,
