@@ -66,6 +66,7 @@ docs/termimage.md
 
 # Local build artifacts and tooling memory
 /dist/
+/release-apk/
 /.workbuddy-ai/
 
 # Loose screenshots dumped at the repo root (app icons live under android/ios)
