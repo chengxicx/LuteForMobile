@@ -307,6 +307,19 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       }
 
       if (audioCurrentPos != null && audioCurrentPos > Duration.zero) {
+        // 先把目标位置落进 state，再 seek。
+        //
+        // `state.position` **只**由 `onPositionChanged` 更新（见
+        // `_handlePositionChanged`），而 seek 之后播放器不保证会推一个位置事件
+        // —— 暂停态、以及刚 `setSource` 完还没准备好的时候都可能一个事件都不发。
+        // 这时 `state.position` 会一直停在 `_reset()` 留下的 0，而 2 秒后的
+        // 自动保存就把这个 0 写回服务端：**打开一本书就把库里的位置清成 0**。
+        // 实测（2026-09-27 Leaf 5C）：种入 `149.277379`，重开一次后库里变成
+        // `0.0`，界面回到 00:00。与"书签被清空"是同一类破坏。
+        //
+        // 乐观写入不会掩盖真实进度：一旦播放器真的开始推位置事件，
+        // `_handlePositionChanged` 会立刻用真实值覆盖它。
+        state = state.copyWith(position: audioCurrentPos);
         await _audioPlayer!.seek(audioCurrentPos);
       }
 
@@ -415,6 +428,9 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
   Future<void> seek(Duration position) async {
     await _audioPlayer!.seek(position);
+    // 同上：暂停态的 seek 不保证推位置事件，而下面立刻就要 `_savePosition()`。
+    // 不显式写 state 的话，拖到开头会保存旧位置、拖到别处会保存 0。
+    state = state.copyWith(position: position);
     if (state.playerState == PlayerState.stopped) {
       await Future.delayed(Duration(milliseconds: 50));
       await _audioPlayer!.resume();
