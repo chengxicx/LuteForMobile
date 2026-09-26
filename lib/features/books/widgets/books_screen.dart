@@ -11,6 +11,7 @@ import '../models/book.dart';
 import 'book_card.dart';
 import 'book_details_dialog.dart';
 import 'add_book_dialog.dart';
+import 'book_filter_bar.dart';
 import 'series_detail_screen.dart';
 import 'package:song_mobile/app.dart';
 import '../../../shared/theme/theme_extensions.dart';
@@ -25,9 +26,12 @@ class BooksScreen extends ConsumerStatefulWidget {
 }
 
 class _BooksScreenState extends ConsumerState<BooksScreen> {
-  final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   int _buildCount = 0;
+
+  /// 过滤面板（语言/tag chips）的展开状态：AppBar 过滤图标点击展开，
+  /// 选中任一过滤后自动缩回。
+  bool _filtersExpanded = false;
 
   @override
   void initState() {
@@ -37,7 +41,6 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
 
   @override
   void dispose() {
-    _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -67,6 +70,59 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
         leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
         title: const Text('Books'),
         actions: [
+          // 搜索收进图标（对齐 web 顶栏的低存在感）：有激活搜索词时加小圆点提示。
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Search books',
+                icon: const Icon(Icons.search),
+                onPressed: _showSearchDialog,
+              ),
+              if (state.searchQuery.isNotEmpty)
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          // 语言/tag 过滤入口：点击展开面板，选中过滤后自动缩回。
+          // 有生效的语言或 tag 过滤时加小圆点提示。
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Filter by language / tag',
+                icon: Icon(
+                  _filtersExpanded ? Icons.filter_alt : Icons.filter_alt_outlined,
+                ),
+                onPressed: () =>
+                    setState(() => _filtersExpanded = !_filtersExpanded),
+              ),
+              if (state.selectedTag != null ||
+                  settings.languageFilter != null)
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
+          ),
           IconButton(
             tooltip: 'Add Book',
             icon: const Icon(Icons.add),
@@ -97,45 +153,58 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
         },
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: ValueListenableBuilder<TextEditingValue>(
-                valueListenable: _searchController,
-                builder: (context, value, child) {
-                  return TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Search books...',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: value.text.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: () {
-                                _searchController.clear();
-                                ref
-                                    .read(booksProvider.notifier)
-                                    .setSearchQuery('');
-                              },
-                            )
-                          : null,
-                      border: const OutlineInputBorder(),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                    ),
-                    onChanged: (val) {
-                      ref.read(booksProvider.notifier).setSearchQuery(val);
-                    },
-                  );
-                },
+            if (_filtersExpanded)
+              BookFilterBar(
+                onFilterSelected: () =>
+                    setState(() => _filtersExpanded = false),
               ),
-            ),
             Expanded(child: _buildBody(context, state, settings)),
           ],
         ),
       ),
     );
+  }
+
+  /// 搜索词通过弹窗输入（书架页顶栏保持干净）。
+  /// 提交空串 = 清除搜索；取消不做任何改动。
+  Future<void> _showSearchDialog() async {
+    final controller = TextEditingController(
+      text: ref.read(booksProvider).searchQuery,
+    );
+    final query = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Search books'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Title contains...',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          if (controller.text.isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(''),
+              child: const Text('Clear'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('Search'),
+          ),
+        ],
+      ),
+    );
+    if (query != null) {
+      ref.read(booksProvider.notifier).setSearchQuery(query.trim());
+    }
   }
 
   Widget _buildNoServerConfigured(BuildContext context) {
@@ -157,7 +226,7 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Please configure your Lute server in settings.',
+              'Please configure your Song server in settings.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: context.appColorScheme.text.secondary,
               ),
@@ -195,7 +264,15 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
       );
     }
 
-    var books = state.showArchived ? state.archivedBooks : state.activeBooks;
+    // tag 过滤激活时展示服务端返回的扁平书单（filtTag 精确匹配，
+    // 聚合行已被服务端关闭）；否则按 Active/Archived 展示。
+    if (state.selectedTag != null && state.tagFilterLoading) {
+      return const LoadingIndicator(message: 'Filtering by tag...');
+    }
+
+    var books = state.selectedTag != null
+        ? (state.tagFilteredBooks ?? const <Book>[])
+        : (state.showArchived ? state.archivedBooks : state.activeBooks);
 
     if (settings.languageFilter != null) {
       books = books
@@ -217,12 +294,16 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
               ),
               const SizedBox(height: 16),
               Text(
-                'No books found.',
+                state.selectedTag != null
+                    ? 'No books with tag "${state.selectedTag}".'
+                    : 'No books found.',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                'Add books in Lute server first.',
+                state.selectedTag != null
+                    ? 'Try another tag or clear the filter.'
+                    : 'Add books in Song server first.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: context.appColorScheme.text.secondary,
                 ),
@@ -283,7 +364,7 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Configure your Lute server in Settings first.'),
+          content: Text('Configure your Song server in Settings first.'),
         ),
       );
       return;

@@ -67,6 +67,13 @@ class BooksRepository {
     }
   }
 
+  /// tag 过滤：对齐 web 端书单点击 tag pill 的 `filtTag` 精确匹配。
+  ///
+  /// 服务端收到非空 `filtTag` 会关闭聚合、返回携带该 tag 的扁平书单，
+  /// 请求链路与 [getSeriesBooks] 相同（同一 endpoint + 参数），直接复用。
+  Future<List<Book>> getBooksByTag(String tag, {bool archived = false}) =>
+      getSeriesBooks(tag, archived: archived);
+
   Future<List<Book>> getArchivedBooks({
     int page = 0,
     int pageSize = 10,

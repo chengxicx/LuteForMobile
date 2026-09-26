@@ -44,17 +44,16 @@ class BookCard extends ConsumerWidget {
                 children: [
                   // 书籍类型图标（text / manga / youtube / mp3 / …）。
                   // 配色取自服务端 lute/book/types.py 的同一份注册表。
+                  //
+                  // 这里只留类型图标：原先并排的「TTS 小喇叭」（book.hasAudio）
+                  // 与「阅读完成」（book.isCompleted）已去掉 —— 右侧的
+                  // pageProgress 徽标已经把完成度说清楚，喇叭又和 mp3 类型图标
+                  // 语义重叠，三个图标挤在标题左边只会把标题推窄。
                   Tooltip(
                     message: typeIcon.label,
                     child: Icon(typeIcon.icon, size: 20, color: typeIcon.color),
                   ),
                   const SizedBox(width: 8),
-                  if (book.isCompleted)
-                    Icon(Icons.check_circle, size: 20, color: context.success),
-                  if (book.isCompleted) const SizedBox(width: 8),
-                  if (book.hasAudio)
-                    Icon(Icons.volume_up, size: 20, color: context.m3Primary),
-                  if (book.hasAudio) const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       book.title,
