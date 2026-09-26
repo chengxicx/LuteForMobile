@@ -24,6 +24,7 @@ class BackToMainButton extends ConsumerWidget {
       'books' => 'Books',
       'grammar' => 'Grammar',
       'terms' => 'Terms',
+      'review' => 'Review',
       'stats' => 'Stats',
       _ => 'Reader',
     };
