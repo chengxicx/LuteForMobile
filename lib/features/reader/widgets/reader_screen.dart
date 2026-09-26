@@ -172,6 +172,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   TextItem? _originalTextItem;
   bool _isMultiTermSelecting = false;
 
+  /// Manga 页文字框的「全部显示」开关，挂在顶栏的眼睛图标上（web 端
+  /// 对应 mokuro 的 text-visible 模式）。框的单独点显/钉住由
+  /// MangaPageView 自己管理。翻页不重置：缩放一样是跨页的阅读偏好。
+  bool _mangaRevealAll = false;
+
   /// Bumped on every word tap.  _handleTap has to await a fetch before it can
   /// show the card, and the second tap of a double tap can land inside that
   /// window: the stale response then re-opens the card on top of whatever the
@@ -236,12 +241,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   bool _canSwipePages(PageData? pageData) {
     if (_isMultiTermSelecting) return false;
     if (pageData == null || pageData.pageCount <= 1) return false;
-    // 漫画页用 InteractiveViewer 缩放/平移，翻页走屏幕控件
-    if (pageData.isManga) return false;
     // 墨水屏下翻页只剩点击区域与物理键两条路，都不经过拖动手势，
     // 不该被「swipe navigation」这个触屏开关连坐（Leaf 5C 实测该开关
     // 默认关，会把两种翻页全部掐死）。
     if (context.eInk) return true;
+    // 漫画页的翻页手势（点按分区、横滑）画在 MangaPageView 内部，是漫画
+    // 阅读本身的一部分，也不受 swipeNavigation 开关连坐。
+    if (pageData.isManga) return true;
     if (!ref.read(textFormattingSettingsProvider).swipeNavigationEnabled) {
       return false;
     }
@@ -933,6 +939,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               _buildBooksButton(),
               if (_playerAvailable(pageData, settings))
                 _buildPlayerToggleButton(pageData, settings),
+              if (pageData?.isManga == true)
+                IconButton(
+                  icon: Icon(
+                    _mangaRevealAll ? Icons.visibility : Icons.visibility_off,
+                  ),
+                  tooltip: _mangaRevealAll
+                      ? 'Hide all text overlays'
+                      : 'Reveal all text overlays',
+                  onPressed: () =>
+                      setState(() => _mangaRevealAll = !_mangaRevealAll),
+                ),
               IconButton(
                 icon: const Icon(Icons.text_fields),
                 tooltip: 'Text formatting',
@@ -988,6 +1005,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         _buildBooksButton(),
         if (_playerAvailable(pageData, settings))
           _buildPlayerToggleButton(pageData, settings),
+        if (pageData?.isManga == true)
+          IconButton(
+            icon: Icon(
+              _mangaRevealAll ? Icons.visibility : Icons.visibility_off,
+            ),
+            tooltip: _mangaRevealAll
+                ? 'Hide all text overlays'
+                : 'Reveal all text overlays',
+            onPressed: () =>
+                setState(() => _mangaRevealAll = !_mangaRevealAll),
+          ),
         IconButton(
           icon: const Icon(Icons.text_fields),
           tooltip: 'Text formatting',
@@ -1419,6 +1447,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             manga: mangaPage,
             imageUrl: '${settings.serverUrl}${mangaPage.imagePath}',
             imageHeaders: _mangaImageHeaders(settings),
+            revealAll: _mangaRevealAll,
+            onTurnPage: (forward) =>
+                _turnPage(forward ? -1 : 1, pageData),
             onTap: (item, context) {
               _handleTap(item, context);
             },
@@ -1434,7 +1465,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             fontFamily: textSettings.fontFamily,
             fontWeight: textSettings.fontWeight,
             isItalic: textSettings.isItalic,
-            bottomControlWidget: _buildPageControls(context, pageData),
           )
         : textDisplay;
 
@@ -1515,27 +1545,40 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                       }
                     }
                   },
-                  onHorizontalDragStart: (details) {
-                    // 墨水屏下不跟手：拖动过程中的每一帧位移都是一次全屏刷新。
-                    // 翻页改走左右区域点击（见 onTap）。
-                    if (context.eInk) return;
-                    if (!_canSwipePages(pageData)) return;
-                    _isDragActive = true;
-                  },
-                  onHorizontalDragUpdate: (details) {
-                    if (!_isDragActive) return;
-                    setState(() {
-                      _dragOffset += details.delta.dx;
-                    });
-                  },
-                  onHorizontalDragCancel: () {
-                    if (!_isDragActive) return;
-                    setState(() {
-                      _isDragActive = false;
-                      _dragOffset = 0;
-                    });
-                  },
-                  onHorizontalDragEnd: (details) async {
+                  // 漫画页必须给拖动识别器传 null（而不是让处理器提前
+                  // return）：HorizontalDragGestureRecognizer 只要参与手势
+                  // 竞技场，就会在横向位移超过 slop 时抢先判赢，Interactive
+                  // Viewer 的缩放识别器被整个拒掉 —— 双指捏合永远失灵。
+                  // 漫画页的横向快滑翻页由 MangaPageView 内部自己检测。
+                  onHorizontalDragStart: pageData.isManga
+                      ? null
+                      : (details) {
+                          // 墨水屏下不跟手：拖动过程中的每一帧位移都是一次全屏刷新。
+                          // 翻页改走左右区域点击（见 onTap）。
+                          if (context.eInk) return;
+                          if (!_canSwipePages(pageData)) return;
+                          _isDragActive = true;
+                        },
+                  onHorizontalDragUpdate: pageData.isManga
+                      ? null
+                      : (details) {
+                          if (!_isDragActive) return;
+                          setState(() {
+                            _dragOffset += details.delta.dx;
+                          });
+                        },
+                  onHorizontalDragCancel: pageData.isManga
+                      ? null
+                      : () {
+                          if (!_isDragActive) return;
+                          setState(() {
+                            _isDragActive = false;
+                            _dragOffset = 0;
+                          });
+                        },
+                  onHorizontalDragEnd: pageData.isManga
+                      ? null
+                      : (details) async {
                     final wasDragging = _isDragActive;
                     _isDragActive = false;
                     final dragOffset = _dragOffset;
