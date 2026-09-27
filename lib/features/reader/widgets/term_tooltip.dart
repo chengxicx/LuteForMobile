@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/term_tooltip.dart';
 import '../../../shared/theme/theme_extensions.dart';
+import '../../../shared/theme/eink_scope.dart';
 import '../../../core/network/session_manager.dart';
 import '../../settings/providers/settings_provider.dart';
 
@@ -86,23 +87,29 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
 
   @override
   Widget build(BuildContext context) {
+    final card = _TooltipContent(
+      termTooltip: widget.termTooltip,
+      onSpeak: widget.onSpeak,
+      onSentenceTranslation: widget.onSentenceTranslation,
+    );
+
     return Positioned(
       key: widget.widgetKey,
       left: widget.position.dx,
       top: widget.position.dy,
       child: GestureDetector(
         onTap: widget.onClose,
-        child: FadeTransition(
-          opacity: _fadeAnimation,
-          child: ScaleTransition(
-            scale: _scaleAnimation,
-            child: _TooltipContent(
-              termTooltip: widget.termTooltip,
-              onSpeak: widget.onSpeak,
-              onSentenceTranslation: widget.onSentenceTranslation,
-            ),
-          ),
-        ),
+        // 墨水屏：不做淡入/缩放动画 —— 每一帧局部刷新都会留残影，
+        // 直接整卡落墨（Leaf 5C 反馈：词卡看不清、闪）。
+        child: context.eInk
+            ? card
+            : FadeTransition(
+                opacity: _fadeAnimation,
+                child: ScaleTransition(
+                  scale: _scaleAnimation,
+                  child: card,
+                ),
+              ),
       ),
     );
   }
@@ -124,24 +131,33 @@ class _TooltipContent extends ConsumerWidget {
     final showTooltipImages = ref.watch(
       termFormSettingsProvider.select((settings) => settings.showTooltipImages),
     );
+    final eink = context.eInk;
 
     return Material(
-      elevation: 8,
+      // 墨水屏不要 elevation：阴影的高斯模糊量化成一圈脏灰残影，
+      // 卡片轮廓交给实线描边。
+      elevation: eink ? 0 : 8,
       borderRadius: BorderRadius.circular(8),
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 220),
+        constraints: const BoxConstraints(maxWidth: 240),
         decoration: BoxDecoration(
           color: context.appColorScheme.background.surface,
-          boxShadow: [
-            BoxShadow(
-              color: context.appColorScheme.text.primary.withValues(alpha: 0.2),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
+          boxShadow: eink
+              ? null
+              : [
+                  BoxShadow(
+                    color: context.appColorScheme.text.primary.withValues(
+                      alpha: 0.2,
+                    ),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
           border: Border.all(
-            color: context.appColorScheme.border.outline.withValues(alpha: 0.2),
-            width: 1,
+            color: eink
+                ? context.appColorScheme.border.outline
+                : context.appColorScheme.border.outline.withValues(alpha: 0.2),
+            width: eink ? 1.5 : 1,
           ),
           borderRadius: BorderRadius.circular(8),
         ),
@@ -171,9 +187,10 @@ class _TooltipContent extends ConsumerWidget {
             ],
             Text(
               termTooltip.term,
-              style: Theme.of(
-                context,
-              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                fontSize: eink ? 15 : null,
+              ),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
@@ -181,13 +198,17 @@ class _TooltipContent extends ConsumerWidget {
               const SizedBox(height: 4),
               Text(
                 _formatTranslation(termTooltip.translation),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontStyle: FontStyle.italic,
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withValues(alpha: 0.7),
-                ),
-                maxLines: 3,
+                // 墨水屏下释义用正文字号 + 全不透明：半透明灰在 e-ink 上
+                // 就是浅灰底浅灰字，是"看不清"的主因。
+                style: (eink
+                        ? Theme.of(context).textTheme.bodyMedium
+                        : Theme.of(context).textTheme.bodySmall)!
+                    .copyWith(
+                      fontStyle: FontStyle.italic,
+                      color: Theme.of(context).colorScheme.onSurface
+                          .withValues(alpha: eink ? 1.0 : 0.7),
+                    ),
+                maxLines: eink ? 5 : 3,
                 overflow: TextOverflow.ellipsis,
               ),
             ],
@@ -214,9 +235,8 @@ class _TooltipContent extends ConsumerWidget {
                         _formatTranslation(parent.translation),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           fontStyle: FontStyle.italic,
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withValues(alpha: 0.7),
+                          color: Theme.of(context).colorScheme.onSurface
+                              .withValues(alpha: eink ? 1.0 : 0.7),
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
@@ -321,6 +341,7 @@ class TermTooltipClass {
     _makeVisibleRequested = false;
 
     final screenSize = MediaQuery.of(context).size;
+    final eink = context.eInk;
     _isHidden = false;
 
     _currentEntry = OverlayEntry(
@@ -384,7 +405,7 @@ class TermTooltipClass {
         }
       }
     });
-    _setupAutoDismiss();
+    _setupAutoDismiss(eink: eink);
   }
 
   static void makeVisible() {
@@ -412,9 +433,11 @@ class TermTooltipClass {
     }
   }
 
-  static void _setupAutoDismiss() {
+  static void _setupAutoDismiss({required bool eink}) {
     _dismissTimer?.cancel();
-    _dismissTimer = Timer(const Duration(seconds: 3), () {
+    // 墨水屏上读写卡本身就慢（残影消退、视线回到正文都要时间），
+    // 3 秒自动消失基本等于没看清就走；延到 10 秒，点卡片随时可关。
+    _dismissTimer = Timer(Duration(seconds: eink ? 10 : 3), () {
       close();
     });
   }

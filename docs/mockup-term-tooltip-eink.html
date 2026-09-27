@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>词卡（Tooltip）e-ink 修复对比 · Leaf 5C</title>
+<style>
+  :root{
+    --paper:#e8e8e4;      /* e-ink 纸面 */
+    --ink:#1a1a1a;
+    --g40:#8f8f8a; --g25:#b4b4af;
+    font-family:-apple-system,"PingFang SC",sans-serif;
+  }
+  body{background:#26282e;color:#d8dae0;margin:0;padding:32px;}
+  h1{font-size:18px;margin:0 0 4px;}
+  .sub{font-size:12px;color:#8a8d95;margin-bottom:28px;}
+  .row{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:28px;}
+  .frame{
+    width:300px;background:var(--paper);border-radius:6px;padding:40px 18px 60px;
+    position:relative;min-height:340px;
+  }
+  .frame .label{position:absolute;top:-26px;left:0;font-size:13px;font-weight:600;}
+  .frame .tag{position:absolute;bottom:12px;left:0;right:0;text-align:center;font-size:10.5px;color:#77776f;}
+  .bad .label{color:#e06c75;} .good .label{color:#98c379;}
+  /* 阅读正文 */
+  .para{font-size:15px;line-height:1.9;color:var(--ink);}
+  .para .target{background:#cfcfc9;padding:1px 3px;}
+  /* ---------- 修复前 ---------- */
+  .card-old{
+    position:relative;margin:26px 2px 6px;background:#f6f6f4;
+    border:1px solid rgba(0,0,0,.2);   /* 边框 20% 透明，e-ink 上几乎不可见 */
+    border-radius:8px;padding:12px;max-width:220px;
+    box-shadow:0 2px 8px rgba(0,0,0,.2); /* 高斯阴影 → 量化成一圈脏灰 */
+  }
+  .card-old .term{font-size:14px;font-weight:700;color:var(--ink);}
+  .card-old .mean{font-size:12px;font-style:italic;color:rgba(0,0,0,.7);margin-top:4px;}
+  .card-old .kana{font-size:12px;font-style:italic;color:rgba(0,0,0,.55);margin-top:2px;}
+  /* ---------- 修复后 ---------- */
+  .card-new{
+    position:relative;margin:26px 2px 6px;background:#f6f6f4;
+    border:1.5px solid #33322f;   /* 实线描边，无阴影 */
+    border-radius:8px;padding:12px;max-width:240px;
+  }
+  .card-new .term{font-size:15px;font-weight:700;color:#111;}
+  .card-new .mean{font-size:14px;font-style:italic;color:#111;margin-top:5px;line-height:1.5;}
+  .actions{margin-top:8px;font-size:11px;color:#55554f;}
+  .note{
+    flex:1;min-width:260px;font-size:13px;line-height:1.8;color:#b8bbc4;
+  }
+  .note b{color:#e6e8ee;}
+  .note ul{padding-left:18px;margin:6px 0;}
+  .fix{color:#98c379;}
+  .prob{color:#e06c75;}
+  .meta{font-size:12px;color:#8a8d95;border-top:1px solid #3a3d45;padding-top:14px;}
+</style>
+</head>
+<body>
+<h1>单词卡 Tooltip · e-ink 可读性与释义修复对比</h1>
+<div class="sub">Leaf 5C（1264×1680，灰阶模拟）· 2026-09-27 · 仅本地 mockup，未部署</div>
+
+<div class="row">
+  <div class="frame bad">
+    <div class="label">修复前</div>
+    <div class="para">この　問題は　<span class="target">動きます</span>　と　言います。</div>
+    <div class="card-old">
+      <div class="term">動きます (動く)</div>
+      <div class="kana">うごきます</div>
+      <div class="mean">（释义被读音段顶掉，用户看到的是假名）</div>
+    </div>
+    <div class="tag">① 3 秒自动消失 ② 半透明文字+阴影糊成一团</div>
+  </div>
+
+  <div class="frame good">
+    <div class="label">修复后</div>
+    <div class="para">この　問題は　<span class="target">動きます</span>　と　言います。</div>
+    <div class="card-new">
+      <div class="term">動きます (動く)</div>
+      <div class="mean">[自动词・五段/一类] 变动；移动；动弹。摇动；摆动。（状态）改变，变化。</div>
+      <div class="actions">🔊 Pronounce　⇄ Sentence</div>
+    </div>
+    <div class="tag">① 墨水屏停留 10 秒，点卡即关 ② 实线描边、全对比、无动画无阴影</div>
+  </div>
+
+  <div class="note">
+    <b>根因与修复</b>
+    <ul>
+      <li><span class="prob">释义丢失</span>：App 解析 /read/termpopup 时固定取第 2 个 &lt;p&gt;；日语词带假名读音段 <code>&lt;p&gt;&lt;i&gt;うごきます&lt;/i&gt;&lt;/p&gt;</code>，读音被当成释义，真释义被丢弃。→ 改为逐段跳过 flash 提示 / 纯斜体读音段 / Components 标题，并排除 parents·components 分区（body 直接子段落才参与），取第一个普通段落为释义。</li>
+      <li><span class="prob">看不清</span>：e-ink 上半透明灰字（alpha 0.7）、20% 透明细边框、高斯阴影量化后全部糊掉。→ 墨水屏下：释义用正文字号 + 全不透明，1.5px 实线描边，去掉 elevation/阴影/淡入缩放动画（防残影）。</li>
+      <li><span class="prob">消失太快</span>：固定 3 秒自动关闭。→ 墨水屏 10 秒，其余设备保持 3 秒；点卡片随时可手动关闭。</li>
+    </ul>
+    <b>改动文件</b>
+    <ul>
+      <li><code>lib/core/network/html_parser.dart</code> — parseTermTooltip 释义定位重写</li>
+      <li><code>lib/features/reader/widgets/term_tooltip.dart</code> — e-ink 分支渲染 + 停留时长</li>
+      <li><code>test/term_tooltip_parser_test.dart</code> — 新增 5 个用例（生产 HTML 节选）</li>
+    </ul>
+    <div class="meta">验证：flutter analyze 0 error · 新增测试 5/5 · 相邻解析测试（manga/youtube cues）全部通过。同步验证树完成，未构建 APK、未部署生产。</div>
+  </div>
+</div>
+</body>
+</html>
