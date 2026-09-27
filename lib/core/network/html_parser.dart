@@ -6,6 +6,7 @@ import '../../features/reader/models/text_item.dart';
 import '../../features/reader/models/paragraph.dart';
 import '../../features/reader/models/page_data.dart';
 import '../../features/reader/models/manga_page.dart';
+import '../../features/reader/models/pdf_page.dart';
 import '../../features/reader/models/youtube_data.dart';
 import '../../features/reader/models/term_tooltip.dart';
 import '../../features/reader/models/term_form.dart';
@@ -41,13 +42,15 @@ class HtmlParser {
       textDocument,
     );
     final mangaPage = _extractManga(textDocument, currentPage);
+    final pdfPage = _extractPdf(textDocument, currentPage);
     // The LUTE_YT_DATA block (YouTube videoId + MP3 audioUrl) is part of
     // the page body (the youtube/audio player include), which can arrive in
     // the text or the metadata document depending on endpoint.  The bilibili
     // include renders into the same block (bilibiliUrl/mpdUrl), so it is
     // searched the same way.
     final youtube =
-        _extractYoutubeData(metadataDocument) ?? _extractYoutubeData(textDocument);
+        _extractYoutubeData(metadataDocument) ??
+        _extractYoutubeData(textDocument);
     final bilibili =
         _extractBilibiliData(metadataDocument) ??
         _extractBilibiliData(textDocument);
@@ -71,6 +74,7 @@ class HtmlParser {
       audioCurrentPos: audioCurrentPos,
       audioBookmarks: audioBookmarks,
       mangaPage: mangaPage,
+      pdfPage: pdfPage,
       youtube: youtube,
       bilibili: bilibili,
       cues: cues,
@@ -225,6 +229,47 @@ class HtmlParser {
   double _extractPercent(String style, String property) {
     final match = RegExp('$property\\s*:\\s*([0-9.]+)%').firstMatch(style);
     return match != null ? double.tryParse(match.group(1)!) ?? 0 : 0;
+  }
+
+  /// Extracts a PDF book page (file URL + word boxes) from the page HTML
+  /// served by the web app (`pdf_page.html` template).  Returns null when
+  /// the page is a regular text page.
+  ///
+  /// Word boxes are % of the page, estimated server-side from pypdf
+  /// geometry; the tokens inside each box are the same textitem spans as
+  /// text pages, so [_extractTextItems] parses them directly.
+  PdfPageData? _extractPdf(html.Document document, int pageNum) {
+    final pdfPageEl = document.querySelector('.pdf-page');
+    if (pdfPageEl == null) return null;
+
+    final words = <PdfWord>[];
+    final wordEls = pdfPageEl.querySelectorAll('.pdf-word');
+    for (final wordEl in wordEls) {
+      final style = wordEl.attributes['style'] ?? '';
+      final items = _extractTextItems(wordEl);
+      if (items.isEmpty) continue;
+      words.add(
+        PdfWord(
+          left: _extractPercent(style, 'left'),
+          top: _extractPercent(style, 'top'),
+          width: _extractPercent(style, 'width'),
+          height: _extractPercent(style, 'height'),
+          items: items,
+        ),
+      );
+    }
+
+    return PdfPageData(
+      pdfPath: pdfPageEl.attributes['data-pdf-url'] ?? '',
+      pageWidth:
+          double.tryParse(pdfPageEl.attributes['data-page-width'] ?? '') ?? 100,
+      pageHeight:
+          double.tryParse(pdfPageEl.attributes['data-page-height'] ?? '') ??
+          100,
+      pageNum:
+          int.tryParse(pdfPageEl.attributes['data-page-num'] ?? '') ?? pageNum,
+      words: words,
+    );
   }
 
   double _extractCqw(String style) {
@@ -389,8 +434,7 @@ class HtmlParser {
         if (decoded is! List) continue;
         return decoded
             .map(
-              (value) =>
-                  value is num ? value.toInt() : int.tryParse('$value'),
+              (value) => value is num ? value.toInt() : int.tryParse('$value'),
             )
             .whereType<int>()
             .toList();
@@ -962,9 +1006,7 @@ class HtmlParser {
 
       final href = link.attributes['href'] ?? '';
       final idMatch = RegExp(r'/language/edit/(\d+)').firstMatch(href);
-      final id = idMatch != null
-          ? int.tryParse(idMatch.group(1) ?? '')
-          : null;
+      final id = idMatch != null ? int.tryParse(idMatch.group(1) ?? '') : null;
       final name = link.text.trim();
       if (id == null || name.isEmpty) continue;
 

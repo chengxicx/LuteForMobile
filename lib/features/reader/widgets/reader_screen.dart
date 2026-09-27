@@ -42,6 +42,7 @@ import '../../../core/network/session_manager.dart';
 import 'audio_player.dart';
 import 'package:song_mobile/app.dart';
 import 'manga_page_view.dart';
+import 'pdf_page_view.dart';
 import 'youtube_player_view.dart';
 import 'tts_player_widget.dart';
 
@@ -177,6 +178,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// MangaPageView 自己管理。翻页不重置：缩放一样是跨页的阅读偏好。
   bool _mangaRevealAll = false;
 
+  /// Manga 页的「适应全屏」开关，挂在顶栏的 fit 图标上（web 端对应
+  /// lute.js 的 "Fit page to screen"）。关 = 适应宽度（整页纵向平移），
+  /// 开 = 整页缩放进可视区、左右留白。翻页不重置，与缩放偏好同理。
+  bool _mangaFitToScreen = false;
+
   /// Bumped on every word tap.  _handleTap has to await a fetch before it can
   /// show the card, and the second tap of a double tap can land inside that
   /// window: the stale response then re-opens the card on top of whatever the
@@ -246,8 +252,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     // 默认关，会把两种翻页全部掐死）。
     if (context.eInk) return true;
     // 漫画页的翻页手势（点按分区、横滑）画在 MangaPageView 内部，是漫画
-    // 阅读本身的一部分，也不受 swipeNavigation 开关连坐。
-    if (pageData.isManga) return true;
+    // 阅读本身的一部分，也不受 swipeNavigation 开关连坐。PDF 页同理
+    // （手势在 PdfPageView 内部）。
+    if (pageData.isManga || pageData.isPdf) return true;
     if (!ref.read(textFormattingSettingsProvider).swipeNavigationEnabled) {
       return false;
     }
@@ -319,6 +326,19 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             if (langId != null && langId != 0) {
               return langId;
             }
+          }
+        }
+      }
+    }
+
+    // PDF 页同理：paragraphs 恒为空，词项挂在 pdfPage.words 上。
+    final pdfPage = pageData.pdfPage;
+    if (pdfPage != null) {
+      for (final word in pdfPage.words) {
+        for (final item in word.items) {
+          final langId = item.langId;
+          if (langId != null && langId != 0) {
+            return langId;
           }
         }
       }
@@ -563,7 +583,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// unless the user explicitly switched the bar to TTS mode.
   bool _showTtsPlayer(PageData? pageData, Settings settings) {
     if (pageData == null || !settings.showAudioPlayer) return false;
-    if (pageData.isManga || pageData.isVideoBook) {
+    if (pageData.isManga || pageData.isPdf || pageData.isVideoBook) {
       return false;
     }
     final ttsSettings = ref.read(ttsSettingsProvider);
@@ -1034,6 +1054,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             onPressed: () =>
                 setState(() => _mangaRevealAll = !_mangaRevealAll),
           ),
+        if (pageData?.isManga == true)
+          IconButton(
+            icon: Icon(
+              _mangaFitToScreen ? Icons.fit_screen : Icons.fullscreen,
+            ),
+            tooltip: _mangaFitToScreen
+                ? 'Fit page to width'
+                : 'Fit page to screen',
+            onPressed: () =>
+                setState(() => _mangaFitToScreen = !_mangaFitToScreen),
+          ),
         IconButton(
           icon: const Icon(Icons.text_fields),
           tooltip: 'Text formatting',
@@ -1459,6 +1490,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     );
 
     final mangaPage = pageData.mangaPage;
+    final pdfPage = pageData.pdfPage;
     final content = mangaPage != null
         ? MangaPageView(
             key: _pageKey,
@@ -1466,6 +1498,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             imageUrl: '${settings.serverUrl}${mangaPage.imagePath}',
             imageHeaders: _mangaImageHeaders(settings),
             revealAll: _mangaRevealAll,
+            fitToScreen: _mangaFitToScreen,
             onTurnPage: (forward) =>
                 _turnPage(forward ? -1 : 1, pageData),
             onTap: (item, context) {
@@ -1483,6 +1516,22 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             fontFamily: textSettings.fontFamily,
             fontWeight: textSettings.fontWeight,
             isItalic: textSettings.isItalic,
+          )
+        : pdfPage != null
+        ? PdfPageView(
+            key: _pageKey,
+            bookId: pageData.bookId,
+            pdf: pdfPage,
+            pdfUrl: '${settings.serverUrl}${pdfPage.pdfPath}',
+            pdfHeaders: _mangaImageHeaders(settings),
+            onTurnPage: (forward) =>
+                _turnPage(forward ? -1 : 1, pageData),
+            onTap: (item, context) {
+              _handleTap(item, context);
+            },
+            onLongPress: (item) {
+              _handleLongPress(item);
+            },
           )
         : textDisplay;
 
@@ -1568,7 +1617,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                   // 竞技场，就会在横向位移超过 slop 时抢先判赢，Interactive
                   // Viewer 的缩放识别器被整个拒掉 —— 双指捏合永远失灵。
                   // 漫画页的横向快滑翻页由 MangaPageView 内部自己检测。
-                  onHorizontalDragStart: pageData.isManga
+                  onHorizontalDragStart: pageData.isManga || pageData.isPdf
                       ? null
                       : (details) {
                           // 墨水屏下不跟手：拖动过程中的每一帧位移都是一次全屏刷新。
@@ -1577,7 +1626,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                           if (!_canSwipePages(pageData)) return;
                           _isDragActive = true;
                         },
-                  onHorizontalDragUpdate: pageData.isManga
+                  onHorizontalDragUpdate: pageData.isManga || pageData.isPdf
                       ? null
                       : (details) {
                           if (!_isDragActive) return;
@@ -1585,7 +1634,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                             _dragOffset += details.delta.dx;
                           });
                         },
-                  onHorizontalDragCancel: pageData.isManga
+                  onHorizontalDragCancel: pageData.isManga || pageData.isPdf
                       ? null
                       : () {
                           if (!_isDragActive) return;
@@ -1594,7 +1643,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                             _dragOffset = 0;
                           });
                         },
-                  onHorizontalDragEnd: pageData.isManga
+                  onHorizontalDragEnd: pageData.isManga || pageData.isPdf
                       ? null
                       : (details) async {
                     final wasDragging = _isDragActive;

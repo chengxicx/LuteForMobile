@@ -1,5 +1,6 @@
 import 'paragraph.dart';
 import 'manga_page.dart';
+import 'pdf_page.dart';
 import 'youtube_data.dart';
 
 class PageData {
@@ -21,6 +22,7 @@ class PageData {
   /// library (see `_extractAudioBookmarks`).
   final List<double>? audioBookmarks;
   final MangaPageData? mangaPage;
+  final PdfPageData? pdfPage;
   final YoutubeData? youtube;
   final BilibiliData? bilibili;
 
@@ -52,6 +54,7 @@ class PageData {
     this.audioCurrentPos,
     this.audioBookmarks,
     this.mangaPage,
+    this.pdfPage,
     this.youtube,
     this.bilibili,
     this.cues = const [],
@@ -67,6 +70,8 @@ class PageData {
       (audioUrl != null && audioUrl!.isNotEmpty);
 
   bool get isManga => mangaPage != null;
+
+  bool get isPdf => pdfPage != null;
 
   bool get isYoutube => youtube != null;
 
@@ -87,6 +92,7 @@ class PageData {
     Duration? audioCurrentPos,
     List<double>? audioBookmarks,
     MangaPageData? mangaPage,
+    PdfPageData? pdfPage,
     YoutubeData? youtube,
     BilibiliData? bilibili,
     List<YoutubeCue>? cues,
@@ -103,6 +109,7 @@ class PageData {
       audioCurrentPos: audioCurrentPos ?? this.audioCurrentPos,
       audioBookmarks: audioBookmarks ?? this.audioBookmarks,
       mangaPage: mangaPage ?? this.mangaPage,
+      pdfPage: pdfPage ?? this.pdfPage,
       youtube: youtube ?? this.youtube,
       bilibili: bilibili ?? this.bilibili,
       cues: cues ?? this.cues,
