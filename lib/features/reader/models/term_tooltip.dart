@@ -1,5 +1,6 @@
 class TermTooltip {
   final String term;
+  final String? romanization;
   final String? translation;
   final int? termId;
   final String status;
@@ -14,6 +15,7 @@ class TermTooltip {
 
   TermTooltip({
     required this.term,
+    this.romanization,
     this.translation,
     this.termId,
     required this.status,
@@ -56,6 +58,7 @@ class TermTooltip {
 
   TermTooltip copyWith({
     String? term,
+    String? romanization,
     String? translation,
     int? termId,
     String? status,
@@ -70,6 +73,7 @@ class TermTooltip {
   }) {
     return TermTooltip(
       term: term ?? this.term,
+      romanization: romanization ?? this.romanization,
       translation: translation ?? this.translation,
       termId: termId ?? this.termId,
       status: status ?? this.status,

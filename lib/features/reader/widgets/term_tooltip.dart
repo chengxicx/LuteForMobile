@@ -194,6 +194,23 @@ class _TooltipContent extends ConsumerWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
+            if (termTooltip.romanization != null) ...[
+              const SizedBox(height: 2),
+              Text(
+                termTooltip.romanization!,
+                // 读音独立一行（斜体），释义紧随其后；e-ink 同样不用半透明。
+                style: (eink
+                        ? Theme.of(context).textTheme.bodySmall
+                        : Theme.of(context).textTheme.bodySmall)!
+                    .copyWith(
+                      fontStyle: FontStyle.italic,
+                      color: Theme.of(context).colorScheme.onSurface
+                          .withValues(alpha: eink ? 1.0 : 0.55),
+                    ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
             if (termTooltip.translation != null) ...[
               const SizedBox(height: 4),
               Text(
@@ -204,9 +221,8 @@ class _TooltipContent extends ConsumerWidget {
                         ? Theme.of(context).textTheme.bodyMedium
                         : Theme.of(context).textTheme.bodySmall)!
                     .copyWith(
-                      fontStyle: FontStyle.italic,
                       color: Theme.of(context).colorScheme.onSurface
-                          .withValues(alpha: eink ? 1.0 : 0.7),
+                          .withValues(alpha: eink ? 1.0 : 0.85),
                     ),
                 maxLines: eink ? 5 : 3,
                 overflow: TextOverflow.ellipsis,

@@ -522,13 +522,15 @@ class HtmlParser {
         .where((p) => p.parent?.localName == 'body')
         .toList();
     String? translation;
+    String? romanization;
     // 服务端 termpopup.html 的段落顺序是：术语、（可选 flash 提示）、
     // （可选读音 <p><i>うごきます</i></p>）、释义、（可选 parents/components
     // 分区）。以前直接取 paragraphs[1]，日语词一带假名读音就把读音当成了
     // 释义 —— 编辑表单里有含义、点词卡上却没有。改成从第 2 段起逐段挑：
-    // 跳过 flash 提示、纯 <i> 的读音段和 Components 标题，第一个普通段落
-    // 才是释义。parents/components 分区里的段落都包在带样式的 div 里，
-    // 用"body 直接子元素"一票排除。
+    // flash 提示跳过，纯 <i> 的读音段捕获为 romanization（词卡上与释义
+    // 分行同显），第一个普通段落才是释义。parents/components 分区里的段落
+    // 都包在带样式的 div 里，用"body 直接子元素"一票排除（含同型的
+    // <p><i>Components</i></p> 标题，它的父节点是 div 不是 body）。
     String? plainTextOf(html.Element paragraph) {
       final innerHtml = paragraph.innerHtml;
       String text;
@@ -560,13 +562,17 @@ class HtmlParser {
       if (paragraph.classes.contains('small-flash-notice')) continue;
 
       // 读音段整段只有一个 <i> 叶子（<p><i>うごきます</i></p>）；Components
-      // 分区的标题段 <p><i>Components</i></p> 同型，一并跳过。
+      // 分区的标题段 <p><i>Components</i></p> 同型但父节点是 div，已被
+      // body 直接子元素过滤排除，所以这里命中的就是读音 —— 捕获后继续找释义。
       final elementChildren = paragraph.children;
       final isReadingLabel = elementChildren.length == 1 &&
           elementChildren.first.localName == 'i' &&
           elementChildren.first.children.isEmpty &&
           !paragraph.innerHtml.contains('<br');
-      if (isReadingLabel) continue;
+      if (isReadingLabel) {
+        romanization ??= plainTextOf(paragraph);
+        continue;
+      }
 
       translation = plainTextOf(paragraph);
       if (translation != null) break;
@@ -768,6 +774,7 @@ class HtmlParser {
 
     return TermTooltip(
       term: term,
+      romanization: romanization,
       translation: translation,
       termId: termId,
       status: status,
