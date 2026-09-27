@@ -360,10 +360,14 @@ class TermTooltipClass {
     );
 
     Overlay.of(context).insert(_currentEntry!);
+    debugPrint(
+      'Tooltip: measurement entry inserted, term="${termTooltip.term}"',
+    );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final renderBox =
           _tooltipKey.currentContext?.findRenderObject() as RenderBox?;
+      debugPrint('Tooltip: postFrame renderBox=${renderBox?.size}');
       if (renderBox != null) {
         final tooltipSize = renderBox.size;
         final tooltipWidth = tooltipSize.width;
@@ -435,9 +439,10 @@ class TermTooltipClass {
 
   static void _setupAutoDismiss({required bool eink}) {
     _dismissTimer?.cancel();
-    // 墨水屏上读写卡本身就慢（残影消退、视线回到正文都要时间），
-    // 3 秒自动消失基本等于没看清就走；延到 10 秒，点卡片随时可关。
-    _dismissTimer = Timer(Duration(seconds: eink ? 10 : 3), () {
+    // 3 秒体感等于"没有卡"：边听 TTS 边点词时，读音还在响、卡片已经没了，
+    // 用户看到的就是"有声音但看不到词卡"（OnePlus 复现实录）。统一 10 秒，
+    // 点卡片或点正文任意处随时可关。
+    _dismissTimer = Timer(const Duration(seconds: 10), () {
       close();
     });
   }
