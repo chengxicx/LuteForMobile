@@ -693,7 +693,15 @@ class _SentenceTranslationWidgetState
       },
       itemCount: _dictionaries.length,
       itemBuilder: (context, index) {
-        return _buildWebViewPage(context, _dictionaries[index], index);
+        // 必须按词典身份给 Key：InAppWebView 的 initialUrlRequest 只在
+        // 元素首次创建时生效。后台刷新会在列表前部插入新词典，若无 Key，
+        // index 0 会复用旧 webview 元素，显示错词典的页面。
+        return KeyedSubtree(
+          key: ValueKey(
+            '${_dictionaries[index].name}\u0000${_dictionaries[index].urlTemplate}',
+          ),
+          child: _buildWebViewPage(context, _dictionaries[index], index),
+        );
       },
     );
   }
