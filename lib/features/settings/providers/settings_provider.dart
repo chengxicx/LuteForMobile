@@ -136,7 +136,10 @@ class SettingsNotifier extends Notifier<Settings> {
     final enableTripleTapToMarkKnown =
         prefs.getBool(_keyEnableTripleTapToMarkKnown) ?? false;
     final autoPronounceOnTap = prefs.getBool(_keyAutoPronounceOnTap) ?? true;
-    final enablePagePreload = prefs.getBool(_keyEnablePagePreload) ?? false;
+    // On by default: the next page is one tap away, and preloading its
+    // content (and, for manga, its image) is what makes a page turn
+    // instant.  Users can still turn it off in settings.
+    final enablePagePreload = prefs.getBool(_keyEnablePagePreload) ?? true;
     final termuxIntegrationEnabled =
         prefs.getBool(_keyTermuxIntegrationEnabled) ?? false;
     final statsCalcSampleSize = prefs.getInt(_keyStatsCalcSampleSize) ?? 5;

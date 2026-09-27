@@ -4,11 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:meta/meta.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/content_service.dart';
+import '../../../core/network/session_manager.dart';
 import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../models/term_form.dart';
 import '../models/language_sentence_settings.dart';
 import '../repositories/reader_repository.dart';
+import '../services/manga_image_prefetch.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 
@@ -238,6 +240,13 @@ class ReaderNotifier extends Notifier<ReaderState> {
           // Cache hit: update state with cached data
           state = state.copyWith(isLoading: false, pageData: pageData);
 
+          // Preload the next page FIRST: the reader is one tap away from
+          // it, so the preload head start is the whole point.  It used to
+          // queue behind the status refresh below, whose 3 retries with
+          // backoff can hold this serial queue for seconds and nullify
+          // the head start.
+          _triggerNextPagePreload(pageData);
+
           // Only background-refresh statuses when this load can actually come
           // from cache (explicit page requests). For pageNum == null, the
           // initial load already fetched fresh network data.
@@ -247,14 +256,6 @@ class ReaderNotifier extends Notifier<ReaderState> {
             );
           }
           _enqueuePrefetch(() => preloadTooltipsForCurrentPage());
-
-          if (pageData.currentPage < pageData.pageCount) {
-            final settings = ref.read(settingsProvider);
-            if (settings.enablePagePreload) {
-              _enqueuePrefetch(() => preloadNextPage());
-              _enqueuePrefetch(() => preloadTooltipsForNextPage());
-            }
-          }
 
           // Signal that reader is ready for other operations to begin
           if (updateReaderState && !refreshStatuses) {
@@ -354,6 +355,9 @@ class ReaderNotifier extends Notifier<ReaderState> {
         isLoading: false,
         pageData: freshPage,
       );
+      // This load came off the network, so the next page is certainly not
+      // cached either -- start its preload now.
+      _triggerNextPagePreload(freshPage);
     } else if (currentData.currentPage == freshPage.currentPage) {
       // Same page - merge statuses with existing data
       final mergedData = _mergePageStatuses(currentData, freshPage);
@@ -447,6 +451,64 @@ class ReaderNotifier extends Notifier<ReaderState> {
       'preloadNextPage',
       details: 'DONE - bookId=${currentPageData.bookId}, page=$nextPageNum',
     );
+  }
+
+  /// Kicks off the next-page preload chain when the reader has a page in
+  /// view and a next page exists: the page HTML via [preloadNextPage], and
+  /// -- for manga -- the next page's image into the disk cache.
+  void _triggerNextPagePreload(PageData pageData) {
+    if (pageData.currentPage >= pageData.pageCount) return;
+    final settings = ref.read(settingsProvider);
+    if (!settings.enablePagePreload) return;
+
+    _enqueuePrefetch(() async {
+      await preloadNextPage();
+      // Fire and forget: a page image is multi-MB, and holding the serial
+      // prefetch queue (status refresh, tooltips) behind its download
+      // would trade one latency for another.
+      unawaited(_preloadNextMangaImage(pageData));
+    });
+    _enqueuePrefetch(() => preloadTooltipsForNextPage());
+  }
+
+  /// If the page just loaded is manga, prefetch the next page's image into
+  /// the disk cache.  Runs after [preloadNextPage] has cached the next
+  /// page's HTML, which is where the image path comes from.
+  Future<void> _preloadNextMangaImage(PageData currentPageData) async {
+    try {
+      if (currentPageData.mangaPage == null) return;
+      final nextPageNum = currentPageData.currentPage + 1;
+      if (nextPageNum > currentPageData.pageCount) return;
+
+      final cached = await ref
+          .read(pageCacheServiceProvider)
+          .getFromCache(currentPageData.bookId, nextPageNum);
+      if (cached == null) return;
+
+      final nextManga = ref
+          .read(contentServiceProvider)
+          .parser
+          .parsePage(
+            cached.pageTextHtml,
+            cached.metadataHtml,
+            bookId: currentPageData.bookId,
+          )
+          .mangaPage;
+      if (nextManga == null || nextManga.imagePath.isEmpty) return;
+
+      final serverUrl = ref.read(settingsProvider).serverUrl;
+      if (serverUrl.isEmpty) return;
+
+      final headers = SessionManager.authHeaders();
+      await ref
+          .read(mangaImagePrefetchProvider)
+          .prefetch(
+            '$serverUrl${nextManga.imagePath}',
+            headers.isEmpty ? null : headers,
+          );
+    } catch (e) {
+      ApiLogger.logError('preloadNextMangaImage', e);
+    }
   }
 
   /// Preload tooltips for terms on the current page if caching is enabled

@@ -12,7 +12,9 @@
 //   4. 点任何一个字，回调带的仍是整词的 TextItem（查词/高亮语义不变）；
 //   5. 横排块不受影响：仍按整词渲染；
 //   6. 翻页：点画面右 1/3 下一页、左 1/3 上一页、中间不翻；框被钉住时
-//      第一下点击只收起；横向快滑翻页；缩放状态下不翻页。
+//      第一下点击只收起；横向快滑翻页；放大状态下平移到横向边界后
+//      再快滑才翻页（边界内快滑仍是平移）；
+//   7. 适应全屏（fitToScreen）：整页缩放进视口、水平居中留白，1x 不裁边。
 //
 // 运行：flutter test test/manga_vertical_render_test.dart
 
@@ -69,6 +71,7 @@ Widget _host(
   void Function(TextItem)? onTap,
   void Function(bool forward)? onTurnPage,
   bool revealAll = false,
+  bool fitToScreen = false,
   double height = 700,
 }) {
   return MaterialApp(
@@ -80,6 +83,7 @@ Widget _host(
           manga: page,
           imageUrl: 'https://example.test/001.jpg',
           revealAll: revealAll,
+          fitToScreen: fitToScreen,
           onTurnPage: onTurnPage,
           onTap: onTap == null ? null : (item, _) => onTap(item),
         ),
@@ -280,5 +284,78 @@ void main() {
     await tester.tapAt(const Offset(350, 300));
     await tester.pump();
     expect(turns, [true]);
+  });
+
+  testWidgets('适应全屏：整页缩放进视口、水平居中留白，不再裁边', (tester) async {
+    // 视口 400x300，页 1080x1530：适应宽度会裁掉下半页（页高 566），
+    // 适应全屏则按高度缩放（页 212x300），两侧留白 (400-212)/2 = 94。
+    await tester.pumpWidget(
+      _host(_page(), revealAll: true, fitToScreen: true, height: 300),
+    );
+    final chi = tester.getRect(find.text('ち'));
+    // 字号随页宽缩放（10cqw ≈ 21），框移进留白右侧的页内。
+    expect(chi.width, lessThan(30));
+    expect(chi.left, greaterThan(130));
+    // 整页可见：页面内容不再伸出视口。
+    expect(chi.top, greaterThanOrEqualTo(0));
+    final pageBottom = tester.getRect(find.text('いいのですか')).bottom;
+    expect(pageBottom, lessThanOrEqualTo(300));
+
+    // 对照：适应宽度时字更大、贴着左缘。
+    await tester.pumpWidget(
+      _host(_page(), revealAll: true, height: 300),
+    );
+    await tester.pump();
+    final chiWidth = tester.getRect(find.text('ち'));
+    expect(chiWidth.left, lessThan(130));
+    expect(chiWidth.width, greaterThan(30));
+  });
+
+  testWidgets('放大状态下：平移到横向边界后再快滑才翻页', (tester) async {
+    final turns = <bool>[];
+    await tester.pumpWidget(
+      _host(_page(), revealAll: true, height: 400,
+          onTurnPage: (forward) => turns.add(forward)),
+    );
+
+    // 双指捏合放大（同 pinch 测试：焦距居中，平移停在页中间）。
+    final g1 = await tester.startGesture(const Offset(120, 200));
+    final g2 = await tester.startGesture(const Offset(280, 200));
+    await g1.moveBy(const Offset(-60, 0));
+    await g2.moveBy(const Offset(60, 0));
+    await tester.pump();
+    await g1.moveBy(const Offset(-60, 0));
+    await g2.moveBy(const Offset(60, 0));
+    await tester.pump();
+    await g1.up();
+    await g2.up();
+    await tester.pump();
+
+    // 不在边界：左滑只是平移，不翻页。
+    await tester.flingFrom(const Offset(300, 200), const Offset(-250, 0), 800);
+    await tester.pump();
+    expect(turns, isEmpty);
+
+    // 一路平移到最右侧边界。每步都低于 70px 快滑阈值，只平移不翻页
+    // （大幅拖动按下时若已在边界，会被当成边界快滑翻页——那是真机上的
+    // 正确行为，但不是这一步想要的）。
+    for (var i = 0; i < 14; i++) {
+      await tester.dragFrom(const Offset(350, 200), const Offset(-60, 0));
+      await tester.pump();
+    }
+
+    // 已在右边界：再左滑 → 下一页。
+    await tester.flingFrom(const Offset(300, 200), const Offset(-250, 0), 800);
+    await tester.pump();
+    expect(turns, [true]);
+
+    // 平移回最左边界：右滑 → 上一页。
+    for (var i = 0; i < 14; i++) {
+      await tester.dragFrom(const Offset(50, 200), const Offset(60, 0));
+      await tester.pump();
+    }
+    await tester.flingFrom(const Offset(100, 200), const Offset(250, 0), 800);
+    await tester.pump();
+    expect(turns, [true, false]);
   });
 }
