@@ -69,6 +69,46 @@ class _SentenceTranslationWidgetState
     _loadPopupHeight();
     _loadStartCollapsed();
     _loadDictionaries();
+    _refreshDictionariesInBackground();
+  }
+
+  /// 后台静默刷新词典列表（方案 A）。
+  ///
+  /// 先用本地缓存把弹窗画出来，再拉一次服务器语言设置页；列表真有变化
+  /// 才重建 UI —— e-ink 上无谓的重绘就是一次闪屏。
+  Future<void> _refreshDictionariesInBackground() async {
+    final refreshed = await widget.dictionaryService
+        .refreshDictionariesForLanguage(widget.languageId);
+    if (!refreshed || !mounted) return;
+
+    final dictionaries = await widget.dictionaryService
+        .getSentenceDictionariesForLanguage(widget.languageId);
+    if (!mounted) return;
+
+    final merged = _withAIPages(dictionaries);
+    if (sameDictionaries(merged, _dictionaries)) return;
+
+    // 保留用户当前停留的词典页；找不到了就留在原位（越界由 PageView 兜底归零）。
+    String? currentName = _dictionaries.isNotEmpty
+        ? _dictionaries[_currentPage].name
+        : null;
+    int newPage = currentName == null
+        ? 0
+        : merged.indexWhere((d) => d.name == currentName);
+    if (newPage < 0 || newPage >= merged.length) newPage = 0;
+
+    setState(() {
+      _dictionaries = merged;
+      _currentPage = newPage;
+      _preloadedPages.clear();
+      _pageController.dispose();
+      _pageController = PageController(initialPage: newPage);
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _loadCurrentPageContent();
+    });
   }
 
   Future<void> _loadPopupHeight() async {
@@ -91,21 +131,8 @@ class _SentenceTranslationWidgetState
     }
   }
 
-  Future<void> _loadDictionaries() async {
-    if (!mounted) return;
-
-    final dictionaries = await widget.dictionaryService
-        .getSentenceDictionariesForLanguage(widget.languageId);
-
-    if (!mounted) return;
-
-    final lastUsed = await widget.dictionaryService
-        .getLastUsedSentenceDictionary(widget.languageId);
-
-    if (!mounted) return;
-
-    int initialPage = 0;
-
+  /// 词典列表 + 按设置动态附加的 AI 翻译页 / AI 虚拟词典页。
+  List<DictionarySource> _withAIPages(List<DictionarySource> dictionaries) {
     final aiSettings = ref.read(aiSettingsProvider);
     final aiConfig = aiSettings.promptConfigs[AIPromptType.sentenceTranslation];
     final shouldAddAI =
@@ -142,6 +169,25 @@ class _SentenceTranslationWidgetState
         ),
       );
     }
+    return allDictionaries;
+  }
+
+  Future<void> _loadDictionaries() async {
+    if (!mounted) return;
+
+    final dictionaries = await widget.dictionaryService
+        .getSentenceDictionariesForLanguage(widget.languageId);
+
+    if (!mounted) return;
+
+    final lastUsed = await widget.dictionaryService
+        .getLastUsedSentenceDictionary(widget.languageId);
+
+    if (!mounted) return;
+
+    int initialPage = 0;
+
+    final allDictionaries = _withAIPages(dictionaries);
 
     if (lastUsed != null && allDictionaries.isNotEmpty) {
       final index = allDictionaries.indexWhere((d) => d.name == lastUsed);
@@ -164,8 +210,7 @@ class _SentenceTranslationWidgetState
     });
   }
 
-  void _loadCurrentPageContent() {
-    if (_dictionaries.isEmpty || _currentPage >= _dictionaries.length) return;
+  void _loadCurrentPageContent() {    if (_dictionaries.isEmpty || _currentPage >= _dictionaries.length) return;
 
     final currentDict = _dictionaries[_currentPage];
     if (!currentDict.isAI) return;
