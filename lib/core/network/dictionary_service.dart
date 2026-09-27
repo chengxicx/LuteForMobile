@@ -5,6 +5,18 @@ import 'html_parser.dart';
 
 enum AIType { translation, virtualDictionary }
 
+/// 后台刷新后与当前列表比对：字典名/URL 模板/AI 属性全一致才算没变化，
+/// 决定词典弹窗是否需要重建 UI。
+bool sameDictionaries(List<DictionarySource> a, List<DictionarySource> b) {
+  if (a.length != b.length) return false;
+  String sig(DictionarySource d) =>
+      '${d.name}\u0000${d.urlTemplate}\u0000${d.isAI}\u0000${d.aiType}';
+  for (var i = 0; i < a.length; i++) {
+    if (sig(a[i]) != sig(b[i])) return false;
+  }
+  return true;
+}
+
 class DictionarySource {
   final String name;
   final String urlTemplate;
@@ -170,17 +182,36 @@ class DictionaryService {
     ]);
   }
 
-  Future<void> refreshDictionariesForLanguage(int languageId) async {
-    final htmlContent = await _fetchLanguageSettingsHtml(languageId) ?? '';
-    final dictionaries = htmlContent.isEmpty
-        ? <DictionarySource>[]
-        : _htmlParser.parseLanguageDictionaries(htmlContent);
-    final sentenceDictionaries = htmlContent.isEmpty
-        ? <DictionarySource>[]
-        : _htmlParser.parseSentenceDictionaries(htmlContent);
+  /// 从服务器重拉语言设置页并覆盖本地词典缓存。
+  ///
+  /// 后台静默刷新用：网络失败或解析为空时返回 false 且**不清空现有缓存**
+  /// —— 不能让一次抖动把用户已配置的词典冲掉。部分成功（某类列表为空）
+  /// 只覆盖非空的那类。
+  Future<bool> refreshDictionariesForLanguage(int languageId) async {
+    String htmlContent;
+    try {
+      htmlContent = await _fetchLanguageSettingsHtml(languageId) ?? '';
+    } catch (_) {
+      return false;
+    }
+    if (htmlContent.isEmpty) return false;
 
-    await setDictionariesForLanguage(languageId, dictionaries);
-    await setSentenceDictionariesForLanguage(languageId, sentenceDictionaries);
+    final dictionaries = _htmlParser.parseLanguageDictionaries(htmlContent);
+    final sentenceDictionaries = _htmlParser.parseSentenceDictionaries(
+      htmlContent,
+    );
+    if (dictionaries.isEmpty && sentenceDictionaries.isEmpty) return false;
+
+    if (dictionaries.isNotEmpty) {
+      await setDictionariesForLanguage(languageId, dictionaries);
+    }
+    if (sentenceDictionaries.isNotEmpty) {
+      await setSentenceDictionariesForLanguage(
+        languageId,
+        sentenceDictionaries,
+      );
+    }
+    return true;
   }
 
   Future<String?> getLastUsedDictionary(int languageId) async {

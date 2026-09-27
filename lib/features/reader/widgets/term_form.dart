@@ -103,6 +103,21 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
         _dictionaries = dictionaries;
       });
     }
+    // 后台静默刷新：先画缓存列表，再拉服务器覆盖缓存；有变化才重建。
+    // 词典缓存原本只在为空时才从服务器拉一次，之后永远不更新，
+    // 服务器上新增的词典在 App 里永远看不到。
+    final refreshed = await _dictionaryService.refreshDictionariesForLanguage(
+      languageId,
+    );
+    if (!refreshed || !mounted) return;
+    final fresh = await _dictionaryService.getDictionariesForLanguage(
+      languageId,
+    );
+    if (!mounted) return;
+    if (sameDictionaries(fresh, _dictionaries)) return;
+    setState(() {
+      _dictionaries = fresh;
+    });
   }
 
   @override
