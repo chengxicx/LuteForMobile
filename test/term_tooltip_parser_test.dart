@@ -37,6 +37,21 @@ void main() {
         reason: '读音段（纯 <i> 段）不能被当成释义',
       );
       expect(tooltip.translation, contains('变动；移动；动弹'));
+      // 读音要单独捕获，词卡上与释义分行同显。
+      expect(tooltip.romanization, 'うごきます');
+    });
+
+    test('英语词无读音：romanization 为 null', () {
+      final html = '''
+<p>
+  <b style="font-size:120%">
+    pageantry
+  </b>
+</p>
+<p>盛典</p>
+''';
+      final tooltip = parser.parseTermTooltip(html);
+      expect(tooltip.romanization, isNull);
     });
 
     test('英语词无读音：第一段普通段落即释义', () {

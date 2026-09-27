@@ -378,7 +378,6 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final settings = ref.watch(termFormSettingsProvider);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeInOut,
@@ -403,10 +402,10 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                   _buildHeader(context),
                   const SizedBox(height: 12),
                   _buildTranslationField(context),
-                  if (settings.showParentsInDictionary) ...[
-                    const SizedBox(height: 12),
-                    _buildParentsSection(context),
-                  ],
+                  // 操作行：父词 chips + Add Parent + Cancel/Save。
+                  // Save/Cancel 与 Add Parent 同行，词典视图占满剩余高度。
+                  const SizedBox(height: 12),
+                  _buildParentsSection(context),
                   const SizedBox(height: 12),
                   Expanded(child: _buildDictionaryView(context)),
                 ],
@@ -1695,33 +1694,57 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
 
   Widget _buildParentsSection(BuildContext context) {
     final settings = ref.watch(termFormSettingsProvider);
-    final isInDictionaryMode =
-        _isDictionaryOpen && settings.showParentsInDictionary;
+    final isInDictionaryMode = _isDictionaryOpen;
 
     if (isInDictionaryMode) {
-      return SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            ...widget.termForm.parents.map((parent) {
-              return Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: _buildParentChip(context, parent),
-              );
-            }),
+      // 词典展开模式：父词 chips + Add Parent + Cancel/Save 同一行，
+      // chips 过多时仅 chips 区域横向滚动，操作按钮始终可见。
+      final actionButtonPadding = const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 4,
+      );
+      return Row(
+        children: [
+          if (settings.showParentsInDictionary)
+            Flexible(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    ...widget.termForm.parents.map((parent) {
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _buildParentChip(context, parent),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            )
+          else
+            const Spacer(),
+          if (settings.showParentsInDictionary) ...[
             ElevatedButton.icon(
               onPressed: () => _showAddParentDialog(context),
               icon: const Icon(Icons.add),
               label: const Text('Add Parent'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 4,
-                ),
-              ),
+              style: ElevatedButton.styleFrom(padding: actionButtonPadding),
             ),
+            const SizedBox(width: 8),
           ],
-        ),
+          OutlinedButton(
+            onPressed: widget.onCancel,
+            style: OutlinedButton.styleFrom(padding: actionButtonPadding),
+            child: const Text('Cancel'),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: _handleSave,
+            icon: const Icon(Icons.save),
+            label: const Text('Save'),
+            style: ElevatedButton.styleFrom(padding: actionButtonPadding),
+          ),
+        ],
       );
     }
 
