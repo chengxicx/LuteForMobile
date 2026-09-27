@@ -61,6 +61,7 @@ class _SentenceTranslationWidgetState
   bool _isPreloading = false;
   bool _isOriginalCollapsed = true;
   int _popupHeight = DictionaryService.defaultPopupHeight;
+  Future<void>? _loadFuture;
 
   @override
   void initState() {
@@ -68,7 +69,7 @@ class _SentenceTranslationWidgetState
     _pageController = PageController(initialPage: 0);
     _loadPopupHeight();
     _loadStartCollapsed();
-    _loadDictionaries();
+    _loadFuture = _loadDictionaries();
     _refreshDictionariesInBackground();
   }
 
@@ -77,6 +78,11 @@ class _SentenceTranslationWidgetState
   /// 先用本地缓存把弹窗画出来，再拉一次服务器语言设置页；列表真有变化
   /// 才重建 UI —— e-ink 上无谓的重绘就是一次闪屏。
   Future<void> _refreshDictionariesInBackground() async {
+    // 必须等首载完成：两边都写 _dictionaries/_pageController，并发会
+    // dispose 掉 PageView 正在使用的 controller（曾导致弹窗直接崩掉）。
+    if (_loadFuture != null) await _loadFuture;
+    if (!mounted) return;
+
     final refreshed = await widget.dictionaryService
         .refreshDictionariesForLanguage(widget.languageId);
     if (!refreshed || !mounted) return;
@@ -88,7 +94,7 @@ class _SentenceTranslationWidgetState
     final merged = _withAIPages(dictionaries);
     if (sameDictionaries(merged, _dictionaries)) return;
 
-    // 保留用户当前停留的词典页；找不到了就留在原位（越界由 PageView 兜底归零）。
+    // 保留用户当前停留的词典页；找不到了就回到第一页。
     String? currentName = _dictionaries.isNotEmpty
         ? _dictionaries[_currentPage].name
         : null;
@@ -97,13 +103,23 @@ class _SentenceTranslationWidgetState
         : merged.indexWhere((d) => d.name == currentName);
     if (newPage < 0 || newPage >= merged.length) newPage = 0;
 
+    final oldPage = _currentPage;
     setState(() {
       _dictionaries = merged;
       _currentPage = newPage;
       _preloadedPages.clear();
-      _pageController.dispose();
-      _pageController = PageController(initialPage: newPage);
     });
+
+    // 不重建 PageController（已 attach 到 PageView，dispose 会崩），
+    // 列表变了之后把页面跳到原词典的新位置即可。
+    if (newPage != oldPage) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_pageController.hasClients) return;
+        if (newPage < merged.length) {
+          _pageController.jumpToPage(newPage);
+        }
+      });
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -210,7 +226,8 @@ class _SentenceTranslationWidgetState
     });
   }
 
-  void _loadCurrentPageContent() {    if (_dictionaries.isEmpty || _currentPage >= _dictionaries.length) return;
+  void _loadCurrentPageContent() {
+    if (_dictionaries.isEmpty || _currentPage >= _dictionaries.length) return;
 
     final currentDict = _dictionaries[_currentPage];
     if (!currentDict.isAI) return;
