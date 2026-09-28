@@ -95,6 +95,7 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     await contentService.setUserSetting(
       'stats_calc_sample_size',
       refreshSampleSize.toString(),
+      noQueue: true,
     );
 
     try {
@@ -106,6 +107,7 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
       await contentService.setUserSetting(
         'stats_calc_sample_size',
         defaultSampleSize.toString(),
+        noQueue: true,
       );
     }
   }

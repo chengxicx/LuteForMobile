@@ -140,8 +140,22 @@ class ContentService {
     return 1;
   }
 
-  Future<PageData> markPageDone(int bookId, int pageNum, bool restKnown) async {
-    await _apiService.postPageDone(bookId, pageNum, restKnown);
+  /// [bypassQueue] is for the offline outbox.  It already owns durable retry
+  /// with backoff and persistence across process death, so parking the call
+  /// in `ApiRequestQueue` would only hand it to a replay that carries no
+  /// session interceptor and drops the request after a single attempt.
+  Future<PageData> markPageDone(
+    int bookId,
+    int pageNum,
+    bool restKnown, {
+    bool bypassQueue = false,
+  }) async {
+    await _apiService.postPageDone(
+      bookId,
+      pageNum,
+      restKnown,
+      bypassQueue: bypassQueue,
+    );
 
     // Load from cache first for instant UX, then let background refresh update statuses
     final pageData = await getPageContent(
@@ -159,12 +173,30 @@ class ContentService {
     return pageData;
   }
 
-  Future<void> markPageReadOnly(int bookId, int pageNum) async {
-    await _apiService.postPageDone(bookId, pageNum, false);
+  Future<void> markPageReadOnly(
+    int bookId,
+    int pageNum, {
+    bool bypassQueue = false,
+  }) async {
+    await _apiService.postPageDone(
+      bookId,
+      pageNum,
+      false,
+      bypassQueue: bypassQueue,
+    );
   }
 
-  Future<void> markPageKnownOnly(int bookId, int pageNum) async {
-    await _apiService.postPageDone(bookId, pageNum, true);
+  Future<void> markPageKnownOnly(
+    int bookId,
+    int pageNum, {
+    bool bypassQueue = false,
+  }) async {
+    await _apiService.postPageDone(
+      bookId,
+      pageNum,
+      true,
+      bypassQueue: bypassQueue,
+    );
   }
 
   /// Preloads a page by fetching it from the network and caching it.
@@ -285,8 +317,14 @@ class ContentService {
     return parser.parseTermForm(htmlContent, termId: null);
   }
 
-  Future<TermForm> getTermFormById(int termId) async {
-    final response = await _apiService.getTermFormById(termId);
+  Future<TermForm> getTermFormById(
+    int termId, {
+    bool bypassQueue = false,
+  }) async {
+    final response = await _apiService.getTermFormById(
+      termId,
+      bypassQueue: bypassQueue,
+    );
     final htmlContent = response.data ?? '';
     return parser.parseTermForm(htmlContent, termId: termId);
   }
@@ -294,13 +332,23 @@ class ContentService {
   Future<void> saveTermForm(
     int langId,
     String text,
-    Map<String, dynamic> data,
-  ) async {
-    await _apiService.postTermForm(langId, text, data);
+    Map<String, dynamic> data, {
+    bool bypassQueue = false,
+  }) async {
+    await _apiService.postTermForm(
+      langId,
+      text,
+      data,
+      bypassQueue: bypassQueue,
+    );
   }
 
-  Future<void> editTerm(int termId, Map<String, dynamic> data) async {
-    await _apiService.editTerm(termId, data);
+  Future<void> editTerm(
+    int termId,
+    Map<String, dynamic> data, {
+    bool bypassQueue = false,
+  }) async {
+    await _apiService.editTerm(termId, data, bypassQueue: bypassQueue);
   }
 
   Future<TermImageUploadResult> saveTermImageFromUrl(
@@ -1174,8 +1222,14 @@ class ContentService {
         5;
   }
 
-  Future<void> setUserSetting(String key, String value) async {
-    await _apiService.setUserSetting(key, value);
+  /// [noQueue] 透传给 [ApiService.setUserSetting] —— 书架的各条加载路径要传
+  /// `true`，否则离线时这个偏好写会排在队列里，把后面的列表读一起卡到 30s 上限。
+  Future<void> setUserSetting(
+    String key,
+    String value, {
+    bool noQueue = false,
+  }) async {
+    await _apiService.setUserSetting(key, value, noQueue: noQueue);
   }
 
   Future<LanguageSentenceSettings> getLanguageSentenceSettings(

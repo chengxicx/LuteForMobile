@@ -24,6 +24,7 @@ import '../widgets/sentence_ai_translation_widget.dart';
 import '../utils/sentence_parser.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../../core/outbox/providers/outbox_provider.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/error_display.dart';
@@ -175,10 +176,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   /// Bumped on every word tap; see reader_screen.dart for the full rationale.
   /// The card is shown only if no newer tap has happened while it was fetching.
   int _tooltipSeq = 0;
-
-  /// Per-word chain of status writes, one in flight per word -- cycling is a
-  /// read-modify-write, so overlapping cycles would collapse into one step.
-  final Map<int, Future<void>> _statusWrites = {};
 
   /// Double tap cycles through these, skipping 2/4/5 to stay a predictable
   /// three-way toggle (matches the web reader's _quick_cycle_status).
@@ -1408,41 +1405,20 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
 
     HapticFeedback.mediumImpact();
 
-    // Repaint immediately; the write below is a fetch-then-post.
+    // Repaint immediately; the write below is a local outbox record.
     unawaited(_applyStatusLocally(wordId, next));
 
     _originalTextItem = item;
     _triggerWordGlow();
 
-    final previousWrite = _statusWrites[wordId] ?? Future<void>.value();
-    _statusWrites[wordId] = previousWrite.then(
-      (_) => _persistStatus(wordId, next, current),
+    // The outbox keeps at most one intent per term and the newest status wins,
+    // so two rapid cycles collapse onto whatever status the user landed on --
+    // no per-word serialisation needed, and no round trip to wait for.
+    unawaited(
+      ref
+          .read(outboxProvider.notifier)
+          .enqueueTermStatus(wordId, next, langId: item.langId),
     );
-  }
-
-  /// Post [status] for one word, undoing the optimistic update if the write does
-  /// not stick.  Goes through the term form because `/read/edit_term/<id>`
-  /// submits a whole term -- a bare status would blank the term's other fields.
-  Future<void> _persistStatus(
-    int wordId,
-    String status,
-    String previous,
-  ) async {
-    try {
-      final termForm = await ref
-          .read(readerProvider.notifier)
-          .fetchTermFormById(wordId);
-      if (termForm == null) {
-        await _revertStatus(wordId, previous);
-        return;
-      }
-      final success = await ref
-          .read(readerProvider.notifier)
-          .saveTerm(termForm.copyWith(status: status));
-      if (!success) await _revertStatus(wordId, previous);
-    } catch (e) {
-      await _revertStatus(wordId, previous);
-    }
   }
 
   /// Show [status] on screen at once: the reader view owns the status, and the
@@ -1451,21 +1427,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   Future<void> _applyStatusLocally(int wordId, String status) async {
     await ref.read(readerProvider.notifier).updateTermStatus(wordId, status);
     ref.read(sentenceReaderProvider.notifier).syncStatusFromPageData();
-  }
-
-  Future<void> _revertStatus(int wordId, String previous) async {
-    try {
-      await _applyStatusLocally(wordId, previous);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not update status'),
-          duration: Duration(milliseconds: 1500),
-        ),
-      );
-    } catch (e) {
-      return;
-    }
   }
 
   /// Long press on a single word opens its term edit form.

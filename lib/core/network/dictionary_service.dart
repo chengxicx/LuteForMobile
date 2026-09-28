@@ -248,6 +248,30 @@ class DictionaryService {
   static const int maxPopupHeight = 600;
   static const int popupHeightStep = 50;
 
+  /// 弹窗高度存的是「手机等效高度」，这是换算基准的 webview 宽度。
+  ///
+  /// 有道这类词典页会随 CSS 视口宽度整体放大：Leaf 5C 是 300dpi 的屏
+  /// （dpr 1.875），逻辑宽 674，弹窗里的 webview 宽 634 CSS px，而手机只有
+  /// 440 左右 —— 同一个页面在这台机器上文字大 ~1.5 倍。高度却是写死的
+  /// 300 逻辑像素，于是只能露出手机上 2/3 的内容，翻译结果被顶到折叠线
+  /// 以下，必须手动滚动才看得到（2026-09-28 Leaf 5C 反馈）。
+  static const int referenceWebviewWidth = 440;
+
+  /// 页面放大倍数略大于视口宽度比（Leaf 5C 实测：宽度比 1.44、字号比 1.50），
+  /// 留一点余量，免得换算完还差最后一行。
+  static const double popupHeightHeadroom = 1.05;
+
+  /// 把「手机等效高度」换算成 [webviewWidth] 宽设备上的实际高度。
+  ///
+  /// 只放大、不缩小：手机（webview ≤ 440）行为完全不变，宽视口设备按比例
+  /// 加高，让两边露出的内容量一致（Leaf 5C：300 → 454）。
+  static int resolvePopupHeight(int height, double webviewWidth) {
+    if (webviewWidth <= referenceWebviewWidth) return height;
+    final scale =
+        (webviewWidth / referenceWebviewWidth) * popupHeightHeadroom;
+    return (height * scale).round().clamp(minPopupHeight, maxPopupHeight);
+  }
+
   Future<int> getSentenceTranslationPopupHeight() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getInt('sentence_translation_popup_height') ??

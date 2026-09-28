@@ -83,7 +83,12 @@ class Settings {
     this.showKnownTermsInSentenceReader = true,
     this.doubleTapTimeout = 300,
     this.pageTurnAnimations = true,
-    this.enableTooltipCaching = false,
+    // On by default: this switch gates the per-page tooltip prefetch, and
+    // leaving it off made every single word tap a bare network round trip
+    // (the card only appears once that fetch returns).  It also gates
+    // offline reuse: prefetch warms the on-disk cache so term cards keep
+    // working on the subway.
+    this.enableTooltipCaching = true,
     this.showStatsBar = true,
     this.showKnownTermsCount = false,
     this.showTermStatsCard = false,
@@ -245,7 +250,7 @@ class Settings {
       showKnownTermsInSentenceReader: true,
       doubleTapTimeout: 300,
       pageTurnAnimations: true,
-      enableTooltipCaching: false,
+      enableTooltipCaching: true,
       showStatsBar: true,
       showKnownTermsCount: false,
       showTermStatsCard: false,

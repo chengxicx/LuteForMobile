@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/logger/api_logger.dart';
+import '../../../shared/providers/server_status_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
 import '../../../shared/widgets/error_display.dart';
@@ -33,6 +36,9 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
   String? _error;
   bool _isLoading = true;
 
+  /// 断网且本地没有这个书集的缓存时的状态。
+  bool _offline = false;
+
   /// 聚合行的标题就是 tag 名（服务端 `agg.tagtext AS BkTitle`）。
   String get _tag =>
       (widget.series.seriesTag?.isNotEmpty ?? false)
@@ -42,36 +48,95 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
   @override
   void initState() {
     super.initState();
+    // 网络回来时自己恢复。用户在隧道里看到 Offline，出了隧道不该还要手动点
+    // 一次 Retry —— 而刚恢复的那几秒可达性标志可能还是旧值，此时点 Retry
+    // 只会再看到一次 Offline，看起来像按钮坏了。
+    ServerStatusManager.addListener(_onReachabilityChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
+  void _onReachabilityChanged() {
+    if (!mounted) return;
+    if (ServerStatusManager.isReachable && _offline) {
+      unawaited(_load());
+    }
+  }
+
+  @override
+  void dispose() {
+    ServerStatusManager.removeListener(_onReachabilityChanged);
+    super.dispose();
+  }
+
+  /// 服务端对同一个 tag 会按语言各出一行聚合行（GROUP BY seriestag, BkLgID），
+  /// 所以成员列表也按本行语言收敛，保证卡片上的「N 本」和列表条数一致。
+  ///
+  /// 过滤只在显示层做，缓存里存的是全量：否则换个语言过滤就得再打一次网络。
+  List<Book> _filterByLanguage(List<Book> all) {
+    final lang = widget.series.language;
+    if (lang.isEmpty) return all;
+    return all.where((b) => b.language == lang).toList();
+  }
+
   Future<void> _load() async {
+    final hasBooksToShow = _books?.isNotEmpty ?? false;
+
     if (mounted) {
       setState(() {
-        _isLoading = true;
+        // 已经有列表时不要翻 _isLoading：否则一次刷新会把已有内容换成整屏
+        // "Loading books..."。真的没东西可显示时才转。
+        _isLoading = !hasBooksToShow;
         _error = null;
+        _offline = false;
       });
+    }
+
+    // 先吃缓存。离线时这是唯一能让聚合行真正可点的东西 —— 书架缓存画得出
+    // 聚合行，成员列表原先却只能打网络，于是断网点进去就永远停在 loading。
+    if (!hasBooksToShow) {
+      final cached = await ref
+          .read(booksRepositoryProvider)
+          .getSeriesBooksFromCache(_tag);
+      if (cached != null && cached.isNotEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _books = _filterByLanguage(cached);
+          _isLoading = false;
+        });
+      }
+    }
+
+    // 不可达时直接停手，不要去排队：ApiRequestQueue 会把请求扣在内存里，
+    // 离线期间它的 completer 永不完成，await 就永远不返回 —— 这个屏原先
+    // 就是被这一点挂住的（阅读器侥幸有 15s UI 超时兜着，这里没有）。
+    if (!ServerStatusManager.isReachable) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _offline = _books == null || _books!.isEmpty;
+      });
+      return;
     }
 
     try {
       final all = await ref.read(booksRepositoryProvider).getSeriesBooks(_tag);
-      // 服务端对同一个 tag 会按语言各出一行聚合行（GROUP BY seriestag, BkLgID），
-      // 所以成员列表也按本行语言收敛，保证卡片上的「N 本」和列表条数一致。
-      final lang = widget.series.language;
-      final books = lang.isEmpty
-          ? all
-          : all.where((b) => b.language == lang).toList();
+      await ref
+          .read(booksRepositoryProvider)
+          .saveSeriesBooksToCache(_tag, all);
       if (!mounted) return;
       setState(() {
-        _books = books;
+        _books = _filterByLanguage(all);
         _isLoading = false;
       });
     } catch (e) {
       ApiLogger.logError('SeriesDetailScreen._load', e);
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
         _isLoading = false;
+        // 已有缓存内容时不要把整屏换成错误页，保留能看的那份。
+        if (_books == null || _books!.isEmpty) {
+          _error = e.toString();
+        }
       });
     }
   }
@@ -124,6 +189,18 @@ class _SeriesDetailScreenState extends ConsumerState<SeriesDetailScreen> {
 
     if (_error != null) {
       return ErrorDisplay(message: _error!, onRetry: _load);
+    }
+
+    if (_offline) {
+      return ErrorDisplay(
+        title: 'Offline',
+        icon: Icons.cloud_off_outlined,
+        message:
+            'This book set has not been opened on this device yet, so there '
+            'is nothing cached to show. Connect once and it will open '
+            'without a connection afterwards.',
+        onRetry: _load,
+      );
     }
 
     final books = _books ?? const <Book>[];

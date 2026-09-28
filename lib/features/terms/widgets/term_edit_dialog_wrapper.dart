@@ -1,10 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/term.dart';
+import '../../../core/outbox/providers/outbox_provider.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../reader/models/term_form.dart';
 import '../../reader/widgets/term_form.dart' show TermFormWidget;
+
+/// 词条编辑器保存表单的**唯一出口**：进 outbox，不直接 POST。
+///
+/// `/read/edit_term/<id>` 提交的是整条词，而这条链路随时可能断（用户就是在地铁
+/// 上读）。直接发的话，失败等于「Failed to update term」加一条已经丢掉的编辑。
+/// outbox 收的是**意图**（"这个词该是这些字段"），重放时再拼请求，所以断网也
+/// 不会丢。
+///
+/// 和阅读页双击改状态共用 `term:<id>` 这个合并键：先改表单再双击，`coalesce`
+/// 会把这里的 formData 快照保住（见 `pending_intent.dart` 的 `coalesce`）。
+///
+/// 提成函数是为了能测：它是纯的（只碰 outbox），不需要搭 widget 树就能断言
+/// 「表单编辑变成了 TermEditIntent 且带着完整快照」。见
+/// `test/term_edit_outbox_wiring_test.dart`。
+@visibleForTesting
+Future<void> queueTermFormEdit(OutboxNotifier outbox, TermForm form) async {
+  final termId = form.termId;
+  if (termId == null) {
+    // 还没有服务端 id 的词不能合并、也不能就地显示，只能按「新建」排队。
+    await outbox.enqueueTermCreate(
+      form.languageId,
+      form.term,
+      form.toFormData(),
+    );
+    return;
+  }
+
+  await outbox.enqueueTermStatus(
+    termId,
+    form.status,
+    langId: form.languageId,
+    formData: form.toFormData(),
+  );
+}
 
 class TermEditDialogWrapper extends ConsumerStatefulWidget {
   final Term term;
@@ -149,10 +184,9 @@ class _TermEditDialogWrapperState extends ConsumerState<TermEditDialogWrapper> {
                 termForm: _termForm!,
                 onSave: (updatedForm) async {
                   try {
-                    final contentService = ref.read(contentServiceProvider);
-                    await contentService.editTerm(
-                      updatedForm.termId!,
-                      updatedForm.toFormData(),
+                    await queueTermFormEdit(
+                      ref.read(outboxProvider.notifier),
+                      updatedForm,
                     );
                     if (mounted) {
                       final updatedTerm = _createTermFromForm(updatedForm);
@@ -162,7 +196,9 @@ class _TermEditDialogWrapperState extends ConsumerState<TermEditDialogWrapper> {
                   } catch (e) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Failed to update term: $e')),
+                        SnackBar(
+                          content: Text('Failed to queue term update: $e'),
+                        ),
                       );
                     }
                   }
@@ -175,10 +211,11 @@ class _TermEditDialogWrapperState extends ConsumerState<TermEditDialogWrapper> {
                     setState(() {
                       _isSaving = true;
                     });
-                    final contentService = ref.read(contentServiceProvider);
-                    await contentService.editTerm(
-                      updatedForm.termId!,
-                      updatedForm.toFormData(),
+                    // 同 onSave：先入队再反映到界面。入队是本地 Hive 写，断网
+                    // 也成立，所以这里不再有「离线就报错」的分支。
+                    await queueTermFormEdit(
+                      ref.read(outboxProvider.notifier),
+                      updatedForm,
                     );
                     if (mounted) {
                       final updatedTerm = _createTermFromForm(updatedForm);
@@ -187,7 +224,9 @@ class _TermEditDialogWrapperState extends ConsumerState<TermEditDialogWrapper> {
                   } catch (e) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Failed to update term: $e')),
+                        SnackBar(
+                          content: Text('Failed to queue term update: $e'),
+                        ),
                       );
                     }
                   } finally {

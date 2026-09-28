@@ -15,10 +15,16 @@ import '../../../shared/providers/network_providers.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 
 import 'sentence_reader_provider.dart';
+import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/cache/providers/tooltip_cache_provider.dart';
 import '../../../core/cache/providers/page_cache_provider.dart';
 import '../../../features/terms/providers/terms_provider.dart';
 import '../../../shared/providers/app_startup_providers.dart';
+import '../../../shared/providers/server_status_provider.dart';
+import '../services/page_load_strategy.dart';
+import '../../../core/outbox/providers/outbox_provider.dart';
+import '../../../core/outbox/status_overlay.dart';
+import '../../../core/outbox/models/pending_intent.dart';
 
 @immutable
 class ReaderState {
@@ -125,8 +131,69 @@ class ReaderNotifier extends Notifier<ReaderState> {
     state = const ReaderState();
   }
 
+  /// Shown when a book has nothing usable on disk and the server cannot be
+  /// reached.  Deliberately distinct from the generic network error: this
+  /// one is not worth retrying until there is signal.
+  static const String _offlineNoPageMessage =
+      'You are offline and this page has not been downloaded yet. '
+      'Connect to load it.';
+
   String _getRequestKey(int bookId, int? pageNum) {
     return '${bookId}_${pageNum ?? 0}';
+  }
+
+  /// Whether [pageNum] of [bookId] is already on disk.
+  ///
+  /// A plain cache read that never touches the network -- this runs on the
+  /// book-open path, so a miss has to be cheap and silent.  Expired entries
+  /// count as absent (the cache service deletes them as it reports the miss).
+  Future<bool> _isPageCached(int bookId, int pageNum) async {
+    try {
+      final entry = await ref
+          .read(pageCacheServiceProvider)
+          .getFromCache(bookId, pageNum);
+      return entry != null;
+    } catch (e) {
+      ApiLogger.logError('isPageCached', e, details: 'bookId=$bookId');
+      return false;
+    }
+  }
+
+  /// Term statuses the user changed but the server has not confirmed yet.
+  ///
+  /// Keyed by term id, valued by the status *string* the UI uses
+  /// (`'0'`..`'5'`, `'98'`, `'99'`).  Failed intents are included: the user
+  /// still asked for that status, and the page must not silently disagree
+  /// with the intent list they can see.
+  ///
+  /// [serverPage] must be the copy that came off the network, never the local
+  /// one.  When an "All Known" is still queued, the words it covers are found
+  /// by looking for status-0 items *in that copy* -- locally there are none
+  /// left, because the optimistic flip already turned them known, and the
+  /// merge would then happily copy the server's status-0 back over them.
+  Map<int, String> _pendingStatusesFor(PageData serverPage) {
+    final intents = ref.read(outboxServiceProvider).intents;
+    if (intents.isEmpty) return const {};
+
+    final pending = pendingStatusByTermId(intents);
+    if (hasPendingPageKnown(intents, serverPage.bookId, serverPage.currentPage)) {
+      // Cannot disagree with the per-word map: the words this flips are
+      // exactly the ones sitting at status 0, which no term intent covers.
+      pending.addAll(unknownWordStatuses(serverPage));
+    }
+    return pending;
+  }
+
+  /// Re-applies pending offline edits on top of a page that just arrived.
+  ///
+  /// The server has never heard of an unsynced edit, so every response it
+  /// sends is stale *by construction*.  Without this, a background refresh
+  /// one second after a tap would hand back the old status and the word
+  /// would visibly revert -- the worst possible feedback for a subway edit.
+  PageData _overlayPendingStatuses(PageData page) {
+    final pending = _pendingStatusesFor(page);
+    if (pending.isEmpty) return page;
+    return applyPendingStatuses(page, pending);
   }
 
   String _formatError(dynamic error) {
@@ -183,8 +250,50 @@ class ReaderNotifier extends Notifier<ReaderState> {
       return;
     }
 
+    // Decide where this load actually starts, before touching any state.
+    //
+    // Opening a book from the shelf passes no page number, which used to
+    // mean "always ask the server" -- so on the subway the app sat on a
+    // spinner for 15s while the page sat on disk.  Now a book we have read
+    // before resumes from the remembered page, and the server gets to
+    // correct that in the background.
+    var effectivePageNum = pageNum;
+    var resumeFromLocal = false;
+    if (!refreshStatuses) {
+      final localPage = await ref
+          .read(bookProgressServiceProvider)
+          .getPage(bookId);
+      final strategy = resolvePageLoadStrategy(
+        requestedPage: pageNum,
+        localPage: localPage,
+        localPageCached:
+            localPage != null && await _isPageCached(bookId, localPage),
+        serverReachable: ServerStatusManager.isReachable,
+      );
+
+      if (strategy == PageLoadStrategy.offlineNoCache) {
+        // Nothing usable on disk and no way to ask for it.  Fail now
+        // rather than letting the request queue hold the spinner for its
+        // full 15s safety timeout.
+        if (updateReaderState) {
+          state = state.copyWith(
+            isLoading: false,
+            errorMessage: _offlineNoPageMessage,
+          );
+        }
+        return;
+      }
+
+      resumeFromLocal = strategy == PageLoadStrategy.localCacheThenRefresh;
+      if (resumeFromLocal || strategy == PageLoadStrategy.recordNetwork) {
+        // A remembered page that is *not* cached still beats letting the
+        // server choose: the network branch below fetches this exact page.
+        effectivePageNum = localPage;
+      }
+    }
+
     // Set the current request key to track this page load
-    final requestKey = _getRequestKey(bookId, pageNum);
+    final requestKey = _getRequestKey(bookId, effectivePageNum);
     _currentRequestKey = requestKey;
 
     ApiLogger.logRequest(
@@ -211,12 +320,17 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
 
     try {
-      final pageData = await _repository.getPage(
+      final rawPageData = await _repository.getPage(
         bookId: bookId,
-        pageNum: pageNum,
+        pageNum: effectivePageNum,
         useCache: useCache && !refreshStatuses,
         forceRefresh: false,
       );
+      // Covers every branch below -- the cache hit, the refresh merge, and
+      // the cache-miss path that hands off to _backgroundRefreshStatuses.
+      final pageData = rawPageData == null
+          ? null
+          : _overlayPendingStatuses(rawPageData);
 
       if (updateReaderState) {
         if (refreshStatuses) {
@@ -250,9 +364,17 @@ class ReaderNotifier extends Notifier<ReaderState> {
           // Only background-refresh statuses when this load can actually come
           // from cache (explicit page requests). For pageNum == null, the
           // initial load already fetched fresh network data.
-          if (useCache && pageNum != null) {
+          if (useCache && effectivePageNum != null) {
             _enqueuePrefetch(
-              () => _backgroundRefreshStatuses(bookId, pageNum, requestKey),
+              () => _backgroundRefreshStatuses(
+                bookId,
+                // A local resume deliberately hands the server the choice
+                // of page -- that is what lets it correct us when the book
+                // moved on somewhere else.  Anything else keeps asking for
+                // the page we are already showing.
+                resumeFromLocal ? null : effectivePageNum,
+                requestKey,
+              ),
             );
           }
           _enqueuePrefetch(() => preloadTooltipsForCurrentPage());
@@ -348,19 +470,23 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
 
     final currentData = state.pageData;
+    // Overlay once, up front: this response predates any unsynced edit, and
+    // the two branches below assign it to state *verbatim* -- including the
+    // manga/pdf fields that _mergePageStatuses does not touch at all.
+    final overlaid = _overlayPendingStatuses(freshPage);
     if (currentData == null) {
       // No cached data, use fresh data directly and stop loading
       state = state.copyWith(
         isBackgroundRefreshing: false,
         isLoading: false,
-        pageData: freshPage,
+        pageData: overlaid,
       );
       // This load came off the network, so the next page is certainly not
       // cached either -- start its preload now.
-      _triggerNextPagePreload(freshPage);
+      _triggerNextPagePreload(overlaid);
     } else if (currentData.currentPage == freshPage.currentPage) {
       // Same page - merge statuses with existing data
-      final mergedData = _mergePageStatuses(currentData, freshPage);
+      final mergedData = _mergePageStatuses(currentData, overlaid);
       state = state.copyWith(
         isBackgroundRefreshing: false,
         isLoading: false,
@@ -375,12 +501,19 @@ class ReaderNotifier extends Notifier<ReaderState> {
       state = state.copyWith(
         isBackgroundRefreshing: false,
         isLoading: false,
-        pageData: freshPage,
+        pageData: overlaid,
       );
     }
   }
 
   PageData _mergePageStatuses(PageData currentPage, PageData freshPage) {
+    // This is the single line that would silently undo an offline edit: it
+    // takes the server's statusClass for every word on the page, and the
+    // server has not been told about the edit yet.  Anything still in the
+    // outbox wins over the fresh value here.  `freshPage` is the server's
+    // view, which is what the pending "All Known" set has to be read from.
+    final pending = _pendingStatusesFor(freshPage);
+
     final updatedParagraphs = currentPage.paragraphs.asMap().entries.map((
       entry,
     ) {
@@ -403,7 +536,12 @@ class ReaderNotifier extends Notifier<ReaderState> {
         }
 
         final freshItem = freshPara.textItems[itemIdx];
-        return currentItem.copyWith(statusClass: freshItem.statusClass);
+        final pendingStatus = pending[currentItem.wordId];
+        return currentItem.copyWith(
+          statusClass: pendingStatus != null
+              ? 'status$pendingStatus'
+              : freshItem.statusClass,
+        );
       }).toList();
 
       return currentPara.copyWith(textItems: updatedItems);
@@ -708,6 +846,70 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
   }
 
+  /// Hand authority back to the server for everything that just synced.
+  ///
+  /// Until now the local view was optimistic: it showed the edit while the
+  /// server still had the old value, and [_overlayPendingStatuses] was the
+  /// only thing keeping the two from fighting.  The moment the server
+  /// confirms the edit, that overlay disappears -- so any cache still holding
+  /// the *pre-sync* copy is now actively wrong, and would resurrect the old
+  /// status on the next read.  Those copies are dropped here.
+  Future<void> handleOutboxSynced(List<PendingIntent> sent) async {
+    if (sent.isEmpty) return;
+
+    final termIds = <int>{};
+    final pageCache = ref.read(pageCacheServiceProvider);
+    final current = state.pageData;
+    var touchedCurrentPage = false;
+
+    for (final intent in sent) {
+      switch (intent) {
+        case TermEditIntent i:
+          termIds.add(i.termId);
+        case TermCreateIntent _:
+          // The server assigns the id, so no cached page can hold this term
+          // yet -- there is nothing to invalidate for it.
+          break;
+        case PageDoneIntent i:
+          await pageCache.removeFromCache(i.bookId, i.pageNum);
+          if (current != null &&
+              current.bookId == i.bookId &&
+              current.currentPage == i.pageNum) {
+            touchedCurrentPage = true;
+          }
+      }
+    }
+
+    if (termIds.isNotEmpty) {
+      // A term edit is part of the cached page JSON, so the page that shows
+      // it is stale too.  We do not track which page a term lives on; the
+      // user edits what they are looking at, so the current page is the one
+      // that matters.  A miss here costs one refresh, never a wrong colour.
+      if (current != null) {
+        await pageCache.removeFromCache(current.bookId, current.currentPage);
+        touchedCurrentPage = true;
+      }
+
+      for (final termId in termIds) {
+        _forgetTooltip(termId);
+        if (ref.read(settingsProvider).enableTooltipCaching) {
+          try {
+            await ref.read(tooltipCacheServiceProvider).removeFromCache(termId);
+          } catch (e) {
+            ApiLogger.logError('outboxSyncedTooltip', e);
+          }
+        }
+      }
+
+      // The sentence view keeps its own copy of the same statuses.
+      await ref.read(sentenceReaderProvider.notifier).clearCacheForTermChange();
+    }
+
+    if (touchedCurrentPage) {
+      await refreshCurrentPageStatuses();
+    }
+  }
+
   void setPageDirectly(PageData pageData) {
     state = state.copyWith(isLoading: false, pageData: pageData);
   }
@@ -870,66 +1072,94 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
   }
 
+  /// Queue a term edit -- or a brand-new term -- and reflect it locally now.
+  ///
+  /// The `true` here means *accepted*, not *the server has it*.  The outbox
+  /// owns the retry, so a form the user finished filling in must never be
+  /// answered with a failure dialog just because the train is in a tunnel.
+  /// Every caller already treats `false` as "show an error", and that is
+  /// exactly the outcome this change removes.
   Future<bool> saveTerm(TermForm termForm) async {
-    try {
-      if (termForm.termId != null) {
-        await _repository.editTerm(termForm.termId!, termForm.toFormData());
-        _forgetTooltip(termForm.termId!);
-        await updateTermStatus(termForm.termId!, termForm.status);
+    final termId = termForm.termId;
+    final outbox = ref.read(outboxServiceProvider);
 
-        // No longer needed - getPageContent handles caching when fresh data is loaded
-
-        if (termForm.status == '99') {
-          final currentPageData = state.pageData;
-          if (currentPageData != null) {
-            int? langId;
-            for (final paragraph in currentPageData.paragraphs) {
-              for (final item in paragraph.textItems) {
-                if (item.wordId == termForm.termId && item.langId != null) {
-                  langId = item.langId;
-                  break;
-                }
-              }
-              if (langId != null) break;
-            }
-
-            if (langId != null) {
-              if (ref.read(settingsProvider).showStatsBar) {
-                ref.read(termsProvider.notifier).loadStatus99Only(langId);
-              }
-            }
-          }
-        }
-
-        // Invalidate tooltip cache for this term if caching is enabled
-        final settings = ref.read(settingsProvider);
-        if (settings.enableTooltipCaching) {
-          try {
-            final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-            await tooltipCacheService.removeFromCache(termForm.termId!);
-
-            // Also invalidate cache for parent terms
-            for (final parent in termForm.parents) {
-              if (parent.id != null) {
-                await tooltipCacheService.removeFromCache(parent.id!);
-                _forgetTooltip(parent.id!);
-              }
-            }
-          } catch (e) {
-            ApiLogger.logError('invalidateTooltipCache', e);
-          }
-        }
-      } else {
-        await _repository.saveTermForm(
-          termForm.languageId,
-          termForm.term,
-          termForm.toFormData(),
-        );
-      }
+    if (termId == null) {
+      // A new term has no id until the server assigns one, so it cannot be
+      // coalesced with anything and it cannot be shown on the page yet --
+      // the page's HTML does not contain it.  It appears once it syncs.
+      await outbox.enqueueTermCreate(
+        termForm.languageId,
+        termForm.term,
+        termForm.toFormData(),
+      );
       return true;
-    } catch (e) {
-      return false;
     }
+
+    // The snapshot carries the fields the user did not touch.  `/read/edit_term`
+    // submits a whole term, so without it the flush would have to re-fetch the
+    // form first -- and would post whatever the server has now, not what the
+    // user was looking at.  `status` rides along separately because a later
+    // double-tap coalesces onto this same intent and moves only the status.
+    await outbox.enqueueTermStatus(
+      termId,
+      termForm.status,
+      langId: termForm.languageId,
+      formData: termForm.toFormData(),
+    );
+
+    try {
+      _forgetTooltip(termId);
+      await updateTermStatus(termId, termForm.status);
+
+      // The stats bar counts status-99 terms; nudge it so the number follows
+      // the edit instead of waiting for the sync.
+      if (termForm.status == '99') {
+        final currentPageData = state.pageData;
+        if (currentPageData != null) {
+          int? langId;
+          for (final paragraph in currentPageData.paragraphs) {
+            for (final item in paragraph.textItems) {
+              if (item.wordId == termId && item.langId != null) {
+                langId = item.langId;
+                break;
+              }
+            }
+            if (langId != null) break;
+          }
+
+          if (langId != null) {
+            if (ref.read(settingsProvider).showStatsBar) {
+              ref.read(termsProvider.notifier).loadStatus99Only(langId);
+            }
+          }
+        }
+      }
+
+      // Invalidate tooltip cache for this term if caching is enabled
+      final settings = ref.read(settingsProvider);
+      if (settings.enableTooltipCaching) {
+        try {
+          final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
+          await tooltipCacheService.removeFromCache(termId);
+
+          // Also invalidate cache for parent terms
+          for (final parent in termForm.parents) {
+            if (parent.id != null) {
+              await tooltipCacheService.removeFromCache(parent.id!);
+              _forgetTooltip(parent.id!);
+            }
+          }
+        } catch (e) {
+          ApiLogger.logError('invalidateTooltipCache', e);
+        }
+      }
+    } catch (e) {
+      // The edit is already queued; a local repaint failure must not turn
+      // into "Failed to save term" in front of the user.
+      ApiLogger.logError('saveTermLocal', e);
+    }
+
+    return true;
   }
 
   Future<void> updateTermStatus(int termId, String status) async {
@@ -989,12 +1219,39 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
   }
 
+  /// Record that the page was read.
+  ///
+  /// Goes through the outbox rather than straight to the network.  This fires
+  /// on every page turn when `swipeMarksRead` is on, and the call sites are
+  /// fire-and-forget -- so offline it was the single most common source of
+  /// unhandled async errors, and every one of those page-read stats was lost.
   Future<void> markPageRead(int bookId, int pageNum) async {
-    await _repository.markPageRead(bookId, pageNum);
+    await ref
+        .read(outboxServiceProvider)
+        .enqueuePageDone(bookId: bookId, pageNum: pageNum, markRead: true);
   }
 
+  /// Flip this page's still-unknown words to known.
+  ///
+  /// The server's `restknown=1` also stamps the read date, so this subsumes
+  /// [markPageRead]; the outbox ORs the two flags when it coalesces.
   Future<void> markPageKnown(int bookId, int pageNum) async {
-    await _repository.markPageKnown(bookId, pageNum);
+    // Repaint first: the server cannot confirm anything offline, but the user
+    // pressed the button and the page in front of them has to agree.
+    _applyLocalPageKnown(bookId, pageNum);
+    await ref
+        .read(outboxServiceProvider)
+        .enqueuePageDone(bookId: bookId, pageNum: pageNum, markKnown: true);
+  }
+
+  void _applyLocalPageKnown(int bookId, int pageNum) {
+    final current = state.pageData;
+    if (current == null ||
+        current.bookId != bookId ||
+        current.currentPage != pageNum) {
+      return;
+    }
+    state = state.copyWith(pageData: applyPageKnown(current));
   }
 
   Future<void> clearPageCacheForBook(int bookId) async {

@@ -259,7 +259,7 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
       return ErrorDisplay(
         message: state.errorMessage!,
         onRetry: () {
-          ref.read(booksProvider.notifier).loadBooks();
+          ref.read(booksProvider.notifier).loadBooks(forceRefresh: true);
         },
       );
     }
@@ -281,6 +281,22 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
     }
 
     if (books.isEmpty) {
+      // 断网 + 本地一本书都没有：给 Offline，不要给「No books found.」——
+      // 后者会让用户以为服务器上真的没书。网络恢复后本页会自己重载。
+      if (state.isOffline) {
+        return ErrorDisplay(
+          title: 'Offline',
+          icon: Icons.cloud_off_outlined,
+          message:
+              'No books cached on this device yet, and the server is '
+              'unreachable. The shelf will refresh on its own once you are '
+              'back online.',
+          onRetry: () {
+            ref.read(booksProvider.notifier).loadBooks(forceRefresh: true);
+          },
+        );
+      }
+
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),

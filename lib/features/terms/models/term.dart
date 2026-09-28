@@ -71,4 +71,18 @@ class Term {
       ),
     );
   }
+
+  /// 与 [Term.fromJson] 对称的服务端字段风格序列化，词条列表的离线快照
+  /// （terms_list_cache）靠它 round-trip。
+  Map<String, dynamic> toJson() => {
+    'WoID': id,
+    'WoText': text,
+    'WoTranslation': translation,
+    'StID': int.tryParse(status) ?? 0,
+    'LgID': langId,
+    'LgName': language,
+    'Tags': tags?.join(','),
+    'ParentCount': parentCount,
+    'CreatedDate': createdDate?.toIso8601String(),
+  };
 }

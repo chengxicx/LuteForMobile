@@ -9,7 +9,9 @@ import '../repositories/books_repository.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../../../shared/providers/app_startup_providers.dart';
+import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/cache/providers/books_cache_provider.dart';
+import '../../../shared/providers/server_status_provider.dart';
 
 @immutable
 class BooksState {
@@ -19,6 +21,15 @@ class BooksState {
   final List<Book> archivedBooks;
   final bool showArchived;
   final String? errorMessage;
+
+  /// 上一次加载是「连不上服务端」而不是「服务端回了错」。
+  ///
+  /// 和 [errorMessage] 分开是有意的：断网不是错误，界面上该显示一个能自愈的
+  /// Offline 态，而不是把 `DioException [connection error]: ...` 原文拍给用户。
+  /// 它同时是 `BooksNotifier._onReachabilityChanged` 判断「要不要自愈重载」
+  /// 的依据。
+  final bool isOffline;
+
   final String searchQuery;
   final int? currentBookId;
   final bool hasMoreActive;
@@ -44,6 +55,7 @@ class BooksState {
     this.archivedBooks = const [],
     this.showArchived = false,
     this.errorMessage,
+    this.isOffline = false,
     this.searchQuery = '',
     this.currentBookId,
     this.hasMoreActive = true,
@@ -59,7 +71,8 @@ class BooksState {
     List<Book>? activeBooks,
     List<Book>? archivedBooks,
     bool? showArchived,
-    String? errorMessage,
+    Object? errorMessage = _unset,
+    bool? isOffline,
     String? searchQuery,
     int? currentBookId,
     bool? hasMoreActive,
@@ -74,7 +87,13 @@ class BooksState {
       activeBooks: activeBooks ?? this.activeBooks,
       archivedBooks: archivedBooks ?? this.archivedBooks,
       showArchived: showArchived ?? this.showArchived,
-      errorMessage: errorMessage ?? this.errorMessage,
+      // 必须用哨兵：`errorMessage ?? this.errorMessage` 会让「传 null 表示清空」
+      // 和「没传」变成同一件事，于是 errorMessage 一旦被写上就再也清不掉 ——
+      // 表现是书架断网一次之后永远停在错误页，即使重试请求已经 200 拿回了书目。
+      errorMessage: errorMessage == _unset
+          ? this.errorMessage
+          : errorMessage as String?,
+      isOffline: isOffline ?? this.isOffline,
       searchQuery: searchQuery ?? this.searchQuery,
       currentBookId: currentBookId ?? this.currentBookId,
       hasMoreActive: hasMoreActive ?? this.hasMoreActive,
@@ -105,6 +124,10 @@ class BooksNotifier extends Notifier<BooksState> {
   bool _isResolvingArchivedAudioMetadata = false;
   ProviderSubscription<bool>? _readerReadinessSubscription;
 
+  /// [ServerStatusManager.addListener] 靠 `contains` 去重、靠同一个引用来
+  /// remove，所以存成字段，而不是每次 build 现造一个闭包。
+  late final void Function() _reachabilityListener = _onReachabilityChanged;
+
   /// tag 聚合行的统计补算状态。
   /// 聚合行背后被隐藏的成员书永远拿不到「按书统计刷新」的机会，
   /// 所以需要单独补算一次（见 _warmSeriesStatsIfNeeded）。
@@ -128,6 +151,14 @@ class BooksNotifier extends Notifier<BooksState> {
     _isLoadingFromNetwork = false;
     _isBackgroundRefreshing = false;
 
+    // 服务端恢复可达时自愈：上一次加载要是被「断网短路」跳过过，现在补一次。
+    // 没有这个监听，用户出了地铁只能看着一个 Offline 页，而且他不会想到
+    // 需要下拉刷新一下。（build 可能重跑，onDispose 会先摘掉旧监听。）
+    ServerStatusManager.addListener(_reachabilityListener);
+    ref.onDispose(
+      () => ServerStatusManager.removeListener(_reachabilityListener),
+    );
+
     final serverUrl = settings.serverUrl;
 
     // Always initialize on first build of this notifier instance
@@ -147,6 +178,76 @@ class BooksNotifier extends Notifier<BooksState> {
     }
 
     return const BooksState();
+  }
+
+  /// 服务端从不可达恢复可达时的自愈入口。
+  ///
+  /// 只在「上一次加载确实是因为断网被短路掉」的时候重来 —— 否则每次网络抖动
+  /// 都会触发一次全量同步。这里不碰 widget，只是把 [loadBooks] 排到当前调用栈
+  /// 之后：本回调由 Dio 拦截器/请求队列触发（不在 build 期间），但同步改 state
+  /// 仍有重入风险，microtask 更稳妥。
+  void _onReachabilityChanged() {
+    if (!ServerStatusManager.isReachable) return;
+    if (!state.isOffline) return;
+    if (_isLoadingBooks) return;
+
+    Future.microtask(() {
+      if (!state.isOffline) return;
+      // 自愈重载跟随当前标签：loadBooks 只走 active 的网络同步，屏幕停在
+      // Archived 标签时归档列表会停在「No books found.」（归档缓存非空时
+      // 不受影响，loadBooks 会从缓存恢复；这里修的是「从没在线看过归档 →
+      // 断网切过去 → 再联网」的窄边界）。
+      if (state.showArchived) {
+        unawaited(_loadArchivedBooksFromNetwork());
+      } else {
+        unawaited(loadBooks(forceRefresh: true));
+      }
+    });
+  }
+
+  /// [BooksState.isOffline] 与 `errorMessage` 该填什么，取决于失败属于哪一类。
+  ///
+  /// 纯函数，好让这条「断网不该报 DioException」的约定能被单测锁住。
+  @visibleForTesting
+  static (String?, bool) classifyLoadFailure({
+    required Object error,
+    required bool serverReachable,
+  }) {
+    if (serverReachable) return (error.toString(), false);
+    // 连不上服务端：不显示错误原文，改成一个可自愈的离线态。
+    return (null, true);
+  }
+
+  /// 把一次「加载失败」写进 state。
+  ///
+  /// 借 `ServerStatusManager.isReachable` 区分两类失败：拦截器判定服务端不可达
+  /// 时会 `markError()`，所以标志为假 =「根本没连上」→ 记成 [BooksState.isOffline]
+  /// （一个可自愈的离线态）；标志为真 =「服务器真的回了错」→ 才把 `e.toString()`
+  /// 显示出来。把 `DioException [connection error]: null` 原文拍在屏幕上对用户
+  /// 没有意义，他只会以为自己弄坏了什么。
+  ///
+  /// 注意这个标志只对连接类失败为假：健康探测通过时 `onError` 走 `handler.next`，
+  /// 标志不动。
+  ///
+  /// 需要顺手复位某个标志的调用点（isLoading / isRefreshing / tagFilterLoading）
+  /// 通过具名参数传进来，避免各处各写一份 copyWith 而漏掉分类。
+  void _recordLoadFailure(
+    Object e, {
+    bool? isLoading,
+    bool? isRefreshing,
+    bool? tagFilterLoading,
+  }) {
+    final (message, offline) = classifyLoadFailure(
+      error: e,
+      serverReachable: ServerStatusManager.isReachable,
+    );
+    state = state.copyWith(
+      isLoading: isLoading,
+      isRefreshing: isRefreshing,
+      tagFilterLoading: tagFilterLoading,
+      errorMessage: message,
+      isOffline: offline,
+    );
   }
 
   /// 判断「设置里的 serverUrl 变化」该怎么处理。
@@ -266,7 +367,11 @@ class BooksNotifier extends Notifier<BooksState> {
     // 那种场景该由 RefreshIndicator 自己转）。真的没书可显示时才转圈。
     final hasBooksToShow =
         state.activeBooks.isNotEmpty || state.archivedBooks.isNotEmpty;
-    state = state.copyWith(isLoading: !hasBooksToShow, errorMessage: null);
+    state = state.copyWith(
+      isLoading: !hasBooksToShow,
+      errorMessage: null,
+      isOffline: false,
+    );
 
     try {
       final activeFromCache = await _repository.getActiveBooksFromCache();
@@ -289,6 +394,19 @@ class BooksNotifier extends Notifier<BooksState> {
       } else {
         state = state.copyWith(isLoading: false);
       }
+
+      // 不可达时这一次请求只会在 ApiRequestQueue 里挂到 requestDeadline
+      // （30 秒）超时，然后把一坨 DioException 拍到屏幕上 —— 而且 _buildBody
+      // 先判 errorMessage，那坨东西还会盖住刚刚显示出来的缓存书。所以直接
+      // 跳过网络，给出可自愈的 Offline 态。
+      //
+      // 位置必须在读缓存之后：本地已有的书目在任何情况下都要先显示出来，
+      // 断网不是把它藏起来的理由。
+      if (!ServerStatusManager.isReachable) {
+        state = state.copyWith(isOffline: true);
+        return;
+      }
+
       await _loadBooksFromNetwork();
       // Only refresh expired books in background if not explicitly skipped.
       // Skip when followed by a full refresh (e.g., pull-to-refresh).
@@ -377,6 +495,7 @@ class BooksNotifier extends Notifier<BooksState> {
         await _repository.contentService.setUserSetting(
           'stats_calc_sample_size',
           settings.stats500SampleSize.toString(),
+          noQueue: true,
         );
 
         final updatedActiveBooks = List<Book>.from(state.activeBooks);
@@ -404,10 +523,7 @@ class BooksNotifier extends Notifier<BooksState> {
         );
       } catch (e) {
         if (forceRefreshAll) {
-          state = state.copyWith(
-            isRefreshing: false,
-            errorMessage: e.toString(),
-          );
+          _recordLoadFailure(e, isRefreshing: false);
         }
         rethrow;
       } finally {
@@ -416,6 +532,7 @@ class BooksNotifier extends Notifier<BooksState> {
           await _repository.contentService.setUserSetting(
             'stats_calc_sample_size',
             settings.statsCalcSampleSize.toString(),
+            noQueue: true,
           );
         } catch (e) {
           ApiLogger.logError('restoreSampleSize', e);
@@ -482,6 +599,7 @@ class BooksNotifier extends Notifier<BooksState> {
       await _repository.contentService.setUserSetting(
         'stats_calc_sample_size',
         settings.stats500SampleSize.toString(),
+        noQueue: true,
       );
 
       final booksList = updatedBooksList ?? state.activeBooks;
@@ -560,6 +678,7 @@ class BooksNotifier extends Notifier<BooksState> {
         await _repository.contentService.setUserSetting(
           'stats_calc_sample_size',
           settings.statsCalcSampleSize.toString(),
+          noQueue: true,
         );
       } catch (e) {
         ApiLogger.logError('restoreSampleSize', e);
@@ -584,6 +703,7 @@ class BooksNotifier extends Notifier<BooksState> {
       await _repository.contentService.setUserSetting(
         'stats_calc_sample_size',
         settings.statsCalcSampleSize.toString(),
+        noQueue: true,
       );
 
       _activePage = 0;
@@ -657,7 +777,7 @@ class BooksNotifier extends Notifier<BooksState> {
       // 书架里若出现 tag 聚合行且其成员书统计缺失，这里补算一次。
       unawaited(_warmSeriesStatsIfNeeded());
     } catch (e) {
-      state = state.copyWith(isLoading: false, errorMessage: e.toString());
+      _recordLoadFailure(e, isLoading: false);
     } finally {
       _isLoadingFromNetwork = false;
       if (_pendingSearchReload) {
@@ -681,6 +801,7 @@ class BooksNotifier extends Notifier<BooksState> {
       await _repository.contentService.setUserSetting(
         'stats_calc_sample_size',
         settings.statsCalcSampleSize.toString(),
+        noQueue: true,
       );
 
       _archivedPage = 0;
@@ -750,7 +871,7 @@ class BooksNotifier extends Notifier<BooksState> {
 
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: false));
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      _recordLoadFailure(e);
     } finally {
       _isLoadingFromNetwork = false;
       if (_pendingSearchReload) {
@@ -786,6 +907,7 @@ class BooksNotifier extends Notifier<BooksState> {
       await _repository.contentService.setUserSetting(
         'stats_calc_sample_size',
         settings.statsCalcSampleSize.toString(),
+        noQueue: true,
       );
 
       // Full sync: replace the local active list with the server's active
@@ -811,7 +933,7 @@ class BooksNotifier extends Notifier<BooksState> {
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: true));
       unawaited(_warmSeriesStatsIfNeeded());
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      _recordLoadFailure(e);
     } finally {
       _isLoadingFromNetwork = false;
     }
@@ -889,6 +1011,7 @@ class BooksNotifier extends Notifier<BooksState> {
       await _repository.contentService.setUserSetting(
         'stats_calc_sample_size',
         settings.statsCalcSampleSize.toString(),
+        noQueue: true,
       );
 
       final networkBooks = await _repository.getArchivedBooks();
@@ -916,7 +1039,7 @@ class BooksNotifier extends Notifier<BooksState> {
       );
       unawaited(_resolveMissingAudioMetadataInBackground(activeBooks: false));
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      _recordLoadFailure(e);
     } finally {
       _isLoadingFromNetwork = false;
     }
@@ -982,7 +1105,7 @@ class BooksNotifier extends Notifier<BooksState> {
         errorMessage: null,
       );
     } catch (e) {
-      state = state.copyWith(tagFilterLoading: false, errorMessage: e.toString());
+      _recordLoadFailure(e, tagFilterLoading: false);
     }
   }
 
@@ -1128,7 +1251,7 @@ class BooksNotifier extends Notifier<BooksState> {
         archivedBooks: updatedArchivedBooks,
       );
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      _recordLoadFailure(e);
     }
   }
 
@@ -1148,7 +1271,7 @@ class BooksNotifier extends Notifier<BooksState> {
         archivedBooks: updatedArchivedBooks,
       );
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      _recordLoadFailure(e);
     }
   }
 
@@ -1172,12 +1295,17 @@ class BooksNotifier extends Notifier<BooksState> {
         archivedBooks: updatedArchivedBooks,
       );
 
+      // The book is gone server-side, so its remembered page is dead
+      // weight -- drop it here rather than leaving a record that can
+      // never resolve to a cached page.
+      await ref.read(bookProgressServiceProvider).removeBook(bookId);
+
       final settings = ref.read(settingsProvider);
       if (settings.currentBookId == bookId) {
         ref.read(settingsProvider.notifier).clearCurrentBook();
       }
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      _recordLoadFailure(e);
     }
   }
 

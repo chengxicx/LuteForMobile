@@ -107,6 +107,21 @@ class _TermsScreenState extends ConsumerState<TermsScreen> {
       return const Center(child: LoadingIndicator());
     }
 
+    // 断网 + 本地一份快照都没有：给 Offline，不要把 DioException 原文或
+    // 「No terms found」拍给用户 —— 后者会让用户以为服务器上真的没有词。
+    // 有快照时直接显示快照（和书架一致），不挡内容。
+    if (state.isOffline && state.terms.isEmpty) {
+      return ErrorDisplay(
+        title: 'Offline',
+        icon: Icons.cloud_off_outlined,
+        message:
+            'No terms cached on this device yet, and the server is '
+            'unreachable. The list will refresh on its own once you are '
+            'back online.',
+        onRetry: () => ref.read(termsProvider.notifier).refreshTerms(),
+      );
+    }
+
     if (state.errorMessage != null) {
       return ErrorDisplay(
         message: state.errorMessage!,

@@ -110,6 +110,22 @@ class BooksRepository {
     );
   }
 
+  /// 某个 Book Set 的成员书缓存，供离线打开书集用。
+  Future<List<Book>?> getSeriesBooksFromCache(
+    String tag, {
+    bool archived = false,
+  }) {
+    return _cacheService.getSeriesBooks(tag, archived: archived);
+  }
+
+  Future<void> saveSeriesBooksToCache(
+    String tag,
+    List<Book> books, {
+    bool archived = false,
+  }) {
+    return _cacheService.saveSeriesBooks(tag, books, archived: archived);
+  }
+
   Future<void> invalidateLanguageCache(String langName) async {
     await _cacheService.invalidateLanguage(langName);
   }
