@@ -5,7 +5,18 @@ class ErrorDisplay extends StatelessWidget {
   final String message;
   final VoidCallback? onRetry;
 
-  const ErrorDisplay({super.key, required this.message, this.onRetry});
+  /// 默认是错误态。离线这类「不是故障、但也没有内容可显示」的情况可以换掉
+  /// 标题和图标，免得把「用户自己关了网」报成一个错误。
+  final String title;
+  final IconData icon;
+
+  const ErrorDisplay({
+    super.key,
+    required this.message,
+    this.onRetry,
+    this.title = 'Error',
+    this.icon = Icons.error_outline,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -15,9 +26,9 @@ class ErrorDisplay extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline, size: 48, color: context.error),
+            Icon(icon, size: 48, color: context.error),
             const SizedBox(height: 16),
-            Text('Error', style: Theme.of(context).textTheme.headlineSmall),
+            Text(title, style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
             Text(
               message,

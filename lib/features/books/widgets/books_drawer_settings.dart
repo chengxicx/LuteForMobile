@@ -419,7 +419,15 @@ class _SampleSizeTextFieldState extends ConsumerState<_SampleSizeTextField> {
               .updateStatsCalcSampleSize(intValue);
           ref
               .read(contentServiceProvider)
-              .setUserSetting(widget.settingKey, intValue.toString());
+              .setUserSetting(
+                widget.settingKey,
+                intValue.toString(),
+                noQueue: true,
+              )
+              // 设置字段的写入是「尽力而为」：离线时立刻失败即可 —— 既不该排进
+              // 队列（改设置自然会重发），也不该让异常逃进 zone（这条链路没有
+              // 任何地方 await 它）。
+              .catchError((Object _) {});
         }
       },
     );

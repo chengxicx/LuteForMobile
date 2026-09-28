@@ -9,6 +9,7 @@ import '../models/settings.dart';
 import '../../../shared/theme/theme_definitions.dart';
 import '../../../shared/theme/theme_presets.dart';
 import '../../../shared/theme/theme_serialization.dart';
+import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/cache/providers/cache_manager_provider.dart';
 import '../../../features/reader/providers/reader_provider.dart';
 import '../../../core/services/termux_service.dart';
@@ -123,8 +124,11 @@ class SettingsNotifier extends Notifier<Settings> {
         prefs.getBool(_keyShowKnownTermsInSentenceReader) ?? true;
     final doubleTapTimeout = prefs.getInt(_keyDoubleTapTimeout) ?? 300;
     final pageTurnAnimations = prefs.getBool(_keyPageTurnAnimations) ?? true;
+    // On by default (was false until 2026-09-28): the switch gates the
+    // per-page tooltip prefetch, and off meant every word tap waited on a
+    // bare network round trip -- and nothing was cached for offline reuse.
     final enableTooltipCaching =
-        prefs.getBool(_keyEnableTooltipCaching) ?? false;
+        prefs.getBool(_keyEnableTooltipCaching) ?? true;
     final showStatsBar = prefs.getBool(_keyShowStatsBar) ?? true;
     final showKnownTermsCount = prefs.getBool(_keyShowKnownTermsCount) ?? false;
     final showTermStatsCard = prefs.getBool(_keyShowTermStatsCard) ?? false;
@@ -633,6 +637,11 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.remove(_keyAutoRefreshFullStats);
     await prefs.remove(_keyExperimentalBookDetailsFullStatsEndpoint);
     await prefs.remove(_keyOrientationLock);
+
+    // The per-book page memory goes with the current-book pointer that
+    // was just removed -- otherwise a "reset" would still leave 200
+    // books remembering where you were.
+    await ref.read(bookProgressServiceProvider).clearAll();
 
     state = Settings.defaultSettings();
     _applyOrientationLock(state.orientationLock);

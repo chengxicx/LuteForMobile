@@ -23,6 +23,10 @@ class AudioPlayerState {
   final bool loopMode;
   final bool autoPauseMode;
 
+  /// copyWith 的「未传参」哨兵：`errorMessage ?? this.errorMessage` 会让
+  /// 「传 null 表示清空」和「没传」变成同一件事，错误提示一旦写上就清不掉。
+  static const Object _unset = Object();
+
   AudioPlayerState({
     required this.audioPlayer,
     required this.playerState,
@@ -48,7 +52,7 @@ class AudioPlayerState {
     Duration? position,
     Duration? duration,
     List<Duration>? bookmarkDurations,
-    String? errorMessage,
+    Object? errorMessage = _unset,
     bool? isLoading,
     double? playbackSpeed,
     bool? loopMode,
@@ -60,7 +64,9 @@ class AudioPlayerState {
       position: position ?? this.position,
       duration: duration ?? this.duration,
       bookmarkDurations: bookmarkDurations ?? this.bookmarkDurations,
-      errorMessage: errorMessage ?? this.errorMessage,
+      errorMessage: errorMessage == _unset
+          ? this.errorMessage
+          : errorMessage as String?,
       isLoading: isLoading ?? this.isLoading,
       playbackSpeed: playbackSpeed ?? this.playbackSpeed,
       loopMode: loopMode ?? this.loopMode,

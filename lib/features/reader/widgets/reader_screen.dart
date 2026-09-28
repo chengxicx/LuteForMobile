@@ -7,6 +7,7 @@ import '../../../core/logger/api_logger.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
+import '../../../shared/widgets/outbox_status_indicator.dart';
 import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/hardware_key_navigator.dart';
@@ -20,6 +21,8 @@ import '../../../features/stats/providers/stats_provider.dart';
 import '../../../features/stats/models/stats_data.dart';
 import '../../../core/services/termux_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
+import '../../../core/cache/providers/book_progress_provider.dart';
+import '../../../core/outbox/providers/outbox_provider.dart';
 import '../models/text_item.dart';
 import '../models/term_form.dart';
 import '../models/page_data.dart';
@@ -191,13 +194,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// (text_display.dart:285), so this is the normal case, not a rare race.
   int _tooltipSeq = 0;
 
-  /// Per-word chain of status writes.  Cycling is a read-modify-write -- fetch
-  /// the term form, change its status, post it back -- so two overlapping cycles
-  /// on the same word can both read the same starting status and write the same
-  /// result: the reader taps 1 -> 3 -> 99 and lands on 3.  One write in flight
-  /// per word; different words still run in parallel.
-  final Map<int, Future<void>> _statusWrites = {};
-
   /// Statuses a double tap cycles through, matching the web reader's
   /// _quick_cycle_status (lute-touch.js).  2/4/5 are skipped so the gesture
   /// stays a predictable three-way toggle.
@@ -278,9 +274,14 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       if (pageData.currentPage < pageData.pageCount) {
         HapticFeedback.lightImpact();
         if (textSettings.swipeMarksRead) {
-          ref
-              .read(readerProvider.notifier)
-              .markPageRead(pageData.bookId, pageData.currentPage);
+          // Now a local outbox record rather than a POST, so leaving it
+          // un-awaited is finally safe -- this used to be an unhandled async
+          // error with no signal, and the read stat was simply lost.
+          unawaited(
+            ref
+                .read(readerProvider.notifier)
+                .markPageRead(pageData.bookId, pageData.currentPage),
+          );
         }
         _loadPageWithoutMarkingRead(pageData.currentPage + 1);
       }
@@ -673,6 +674,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         _isLastPageMarkedDone = false;
       });
       if (forceFresh) {
+        // Forcing a fresh load with no server to load from would throw away a
+        // perfectly good page and replace it with a full-page error.  This is
+        // reached after creating a term, which is now queued rather than
+        // posted, so the page simply catches up when the term syncs.
+        if (!ServerStatusManager.isReachable) return;
         await ref
             .read(readerProvider.notifier)
             .clearPageCacheForBook(pageData.bookId);
@@ -775,13 +781,28 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     // 于是直接命中本地页缓存；不带页码就得先向服务端问「读到哪了」、再拉正文
     // （两次往返 = 一个整屏转圈）。页码与 currentBookId 同源，换书时由
     // SettingsNotifier.updateCurrentBook 作废，所以这里只认当前这本书的页。
+    //
+    // 同时逐本记一份（BookProgressService）：SharedPreferences 里那份一换书
+    // 就被作废，地铁里从书架切到昨天读过的另一本就又得联网问页码了。逐本那份
+    // 按 pageData 自己的 bookId 记，不依赖 settings 是否已经跟上，所以放在
+    // 上面那条「只认当前书」的守卫之前。
     ref.listen<PageData?>(readerProvider.select((s) => s.pageData), (
       previous,
       next,
     ) {
-      final page = next?.currentPage;
-      if (page == null || page <= 0) return;
-      if (next!.bookId != settings.currentBookId) return;
+      // 取成局部非空变量：`next!.bookId` 写在 `||` 右边，短路时根本不会求值，
+      // 所以它不会把 next 提升为非空 —— 后面几行照样报 nullable 错。
+      if (next == null) return;
+      final page = next.currentPage;
+      if (page <= 0) return;
+
+      if (previous?.currentPage != page || previous?.bookId != next.bookId) {
+        unawaited(
+          ref.read(bookProgressServiceProvider).savePage(next.bookId, page),
+        );
+      }
+
+      if (next.bookId != settings.currentBookId) return;
       if (page == settings.currentBookPage) return;
       unawaited(
         ref.read(settingsProvider.notifier).updateCurrentBookPage(page),
@@ -940,12 +961,25 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// 汉堡 → 抽屉 → Books 三次操作 —— 这就是"没有跳回 book 页面的便捷方式"。
   ///
   /// 给阅读屏恢复一条常驻导航要吃掉正文行宽，代价太大；一个一次点击的按钮就够。
-  /// 它顶掉的是原来的 Grammar 按钮：拼写检查不是阅读动作，抽屉里本来就有。
+  /// （原先想让它顶掉 Grammar 按钮，真机上不成立 —— 见 `_buildGrammarButton`。）
   Widget _buildBooksButton() {
     return IconButton(
       icon: const Icon(Icons.collections_bookmark),
       tooltip: 'Books',
       onPressed: () => ref.read(navigationProvider).navigateToScreen('books'),
+    );
+  }
+
+  /// 阅读屏顶栏的「语法」入口，打开 Grammar 分析页（当前页的语法点）。
+  ///
+  /// 2026-09-26 做书架入口时把它撤了（"拼写检查不是阅读动作"），真机上很快
+  /// 被找回来：宽屏阅读页没有 rail，抽屉是 Grammar 唯一的路，而抽屉是整屏
+  /// 覆盖。位置紧挨 `Aa` —— 两者都是"对正文做的事"，一起放在同一侧。
+  Widget _buildGrammarButton() {
+    return IconButton(
+      icon: const Icon(Icons.spellcheck),
+      tooltip: 'Grammar',
+      onPressed: () => ref.read(navigationProvider).navigateToScreen('grammar'),
     );
   }
 
@@ -974,6 +1008,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
             title: Text(pageData?.title ?? 'Reader'),
             actions: [
+              OutboxStatusIndicator(serverReachable: serverReachable),
               _buildBooksButton(),
               if (_playerAvailable(pageData, settings))
                 _buildPlayerToggleButton(pageData, settings),
@@ -993,6 +1028,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 tooltip: 'Text formatting',
                 onPressed: _openReaderDrawer,
               ),
+              _buildGrammarButton(),
               if (pageData != null && pageData.pageCount > 1)
                 Padding(
                   padding: const EdgeInsets.only(right: 16),
@@ -1040,6 +1076,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
       title: Text(pageData?.title ?? 'Reader'),
       actions: [
+        OutboxStatusIndicator(serverReachable: serverReachable),
         _buildBooksButton(),
         if (_playerAvailable(pageData, settings))
           _buildPlayerToggleButton(pageData, settings),
@@ -1070,6 +1107,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           tooltip: 'Text formatting',
           onPressed: _openReaderDrawer,
         ),
+        _buildGrammarButton(),
         if (pageData != null && pageData.pageCount > 1)
           Padding(
             padding: const EdgeInsets.only(right: 16),
@@ -1826,60 +1864,20 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     _originalTextItem = item;
     _triggerWordGlow();
 
-    // Serialise writes per word: cycling is a read-modify-write, so two
-    // overlapping cycles can read the same starting status and collapse into one
-    // step (tap 1 -> 3 -> 99 and land on 3).
-    final previousWrite = _statusWrites[wordId] ?? Future<void>.value();
-    _statusWrites[wordId] = previousWrite.then(
-      (_) => _persistStatus(wordId, next, current),
+    // Hand the intent to the outbox instead of posting it from here.  The
+    // write is now a local Hive record, so a tap with no signal is
+    // acknowledged instantly and replayed when the link returns -- the old
+    // path fetched the term form and POSTed it inline, which is why a tap in
+    // the subway ended in "Could not update status" and a reverted colour.
+    //
+    // No per-word serialisation is needed any more: the outbox keeps at most
+    // one intent per term and the newest status wins, so two rapid cycles
+    // collapse onto whatever status the user actually landed on.
+    unawaited(
+      ref
+          .read(outboxProvider.notifier)
+          .enqueueTermStatus(wordId, next, langId: item.langId),
     );
-  }
-
-  /// Post [status] for one word, undoing the optimistic update if the write does
-  /// not stick.
-  ///
-  /// Goes through the term form instead of sending the status alone: the only
-  /// write endpoint, `/read/edit_term/<id>`, submits a whole term, so a bare
-  /// status would blank that term's other fields.
-  Future<void> _persistStatus(
-    int wordId,
-    String status,
-    String previous,
-  ) async {
-    try {
-      final termForm = await ref
-          .read(readerProvider.notifier)
-          .fetchTermFormById(wordId);
-      if (termForm == null) {
-        await _revertStatus(wordId, previous);
-        return;
-      }
-      final success = await ref
-          .read(readerProvider.notifier)
-          .saveTerm(termForm.copyWith(status: status));
-      if (!success) await _revertStatus(wordId, previous);
-    } catch (e) {
-      ApiLogger.logError('_persistStatus', e, details: 'wordId=$wordId');
-      await _revertStatus(wordId, previous);
-    }
-  }
-
-  Future<void> _revertStatus(int wordId, String previous) async {
-    try {
-      // updateTermStatus also pushes the change into the sentence view.
-      await ref
-          .read(readerProvider.notifier)
-          .updateTermStatus(wordId, previous);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not update status'),
-          duration: Duration(milliseconds: 1500),
-        ),
-      );
-    } catch (e) {
-      ApiLogger.logError('_revertStatus', e, details: 'wordId=$wordId');
-    }
   }
 
   void _triggerWordGlow() {
@@ -1993,54 +1991,29 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final settings = ref.read(settingsProvider);
     if (!settings.enableTripleTapToMarkKnown) return;
 
-    try {
-      // Fetch the current term form to update its status
-      final termForm = await ref
-          .read(readerProvider.notifier)
-          .fetchTermFormById(item.wordId!);
+    final wordId = item.wordId!;
 
-      if (termForm != null) {
-        // Update the term status to '99' (known) and save
-        final updatedForm = termForm.copyWith(status: '99');
-        final success = await ref
-            .read(readerProvider.notifier)
-            .saveTerm(updatedForm);
+    // '99' is the whole edit, so there is nothing to fetch first -- the outbox
+    // replays it later, fetching the form itself if it still needs one.  That
+    // removes two round trips from a gesture the reader expects to be instant,
+    // and makes it work with no signal at all.
+    await ref.read(readerProvider.notifier).updateTermStatus(wordId, '99');
+    await ref
+        .read(outboxProvider.notifier)
+        .enqueueTermStatus(wordId, '99', langId: item.langId);
 
-        if (success) {
-          // Update the local status display
-          await ref
-              .read(readerProvider.notifier)
-              .updateTermStatus(item.wordId!, '99');
+    // Trigger the glow effect to provide visual feedback
+    _originalTextItem = item;
+    _triggerWordGlow();
 
-          // Trigger the glow effect to provide visual feedback
-          _originalTextItem = item;
-          _triggerWordGlow();
-
-          // Show a snackbar to confirm the action
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('"${item.text}" marked as known'),
-                duration: const Duration(milliseconds: 1000),
-              ),
-            );
-          }
-        } else {
-          throw Exception('Failed to save term status');
-        }
-      } else {
-        throw Exception('Could not fetch term form');
-      }
-    } catch (e) {
-      ApiLogger.logError('markTermAsKnown', e);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to mark "${item.text}" as known'),
-            duration: const Duration(milliseconds: 1500),
-          ),
-        );
-      }
+    // Show a snackbar to confirm the action
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('"${item.text}" marked as known'),
+          duration: const Duration(milliseconds: 1000),
+        ),
+      );
     }
   }
 

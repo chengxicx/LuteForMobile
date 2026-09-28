@@ -126,6 +126,23 @@ class PageCacheService {
     }
   }
 
+  /// Drop a single page so the next read of it comes off the server.
+  ///
+  /// Used when an offline edit finally reaches the server: the cached copy
+  /// still carries the pre-sync view, so keeping it would mean the corrected
+  /// page only shows up after the entry expires -- and until then the reader
+  /// would be looking at the very status the sync just replaced.
+  Future<void> removeFromCache(int bookId, int pageNum) async {
+    try {
+      final box = await _getBox();
+      final cacheKey = _getCacheKey(bookId, pageNum);
+      await box.delete(cacheKey);
+      CacheLogger.logMiss(_boxName, cacheKey.hashCode);
+    } catch (e) {
+      CacheLogger.logError('removeFromCache', e);
+    }
+  }
+
   Future<void> clearAllCache() async {
     try {
       final box = await _getBox();

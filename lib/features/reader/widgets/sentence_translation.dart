@@ -63,14 +63,34 @@ class _SentenceTranslationWidgetState
   int _popupHeight = DictionaryService.defaultPopupHeight;
   Future<void>? _loadFuture;
 
+  /// build() 里弹窗容器的左右内边距，用来反推 webview 的实际宽度。
+  static const double _sheetHorizontalPadding = 20;
+
+  /// webview 宽度（CSS px）。词典页会随视口宽度整体放大，弹窗高度必须按它
+  /// 换算，否则宽视口设备只能看到一部分内容（见 resolvePopupHeight）。
+  double _webviewWidth = 0;
+  bool _heightLoaded = false;
+
   @override
   void initState() {
     super.initState();
     _pageController = PageController(initialPage: 0);
-    _loadPopupHeight();
     _loadStartCollapsed();
     _loadFuture = _loadDictionaries();
     _refreshDictionariesInBackground();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 宽度只有这里拿得到（initState 里读 MediaQuery 会踩依赖注册的坑），
+    // 同步算好，免得首帧先按默认高度画一次再跳一下 —— e-ink 上就是一次闪屏。
+    _webviewWidth =
+        MediaQuery.sizeOf(context).width - _sheetHorizontalPadding * 2;
+    if (!_heightLoaded) {
+      _heightLoaded = true;
+      _loadPopupHeight();
+    }
   }
 
   /// 后台静默刷新词典列表（方案 A）。
@@ -136,6 +156,11 @@ class _SentenceTranslationWidgetState
       });
     }
   }
+
+  /// 真正用来渲染的高度：把存下来的「手机等效高度」换算到本机 webview 宽度。
+  double get _resolvedPopupHeight =>
+      DictionaryService.resolvePopupHeight(_popupHeight, _webviewWidth)
+          .toDouble();
 
   Future<void> _loadStartCollapsed() async {
     final collapsed = await widget.dictionaryService
@@ -426,7 +451,7 @@ class _SentenceTranslationWidgetState
           _buildOriginalSentence(context),
           const SizedBox(height: 8),
           SizedBox(
-            height: _popupHeight.toDouble(),
+            height: _resolvedPopupHeight,
             child: _buildDictionaryContent(context),
           ),
           const SizedBox(height: 8),
@@ -939,6 +964,7 @@ class _SentenceTranslationWidgetState
       builder: (context) => _HeightAdjustmentDialog(
         currentHeight: _popupHeight,
         startCollapsed: _isOriginalCollapsed,
+        webviewWidth: _webviewWidth,
         onHeightChanged: (newHeight) async {
           await widget.dictionaryService.setSentenceTranslationPopupHeight(
             newHeight,
@@ -967,12 +993,14 @@ class _SentenceTranslationWidgetState
 class _HeightAdjustmentDialog extends StatefulWidget {
   final int currentHeight;
   final bool startCollapsed;
+  final double webviewWidth;
   final Future<void> Function(int) onHeightChanged;
   final Future<void> Function(bool) onStartCollapsedChanged;
 
   const _HeightAdjustmentDialog({
     required this.currentHeight,
     required this.startCollapsed,
+    required this.webviewWidth,
     required this.onHeightChanged,
     required this.onStartCollapsedChanged,
   });
@@ -995,12 +1023,26 @@ class _HeightAdjustmentDialogState extends State<_HeightAdjustmentDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // 这台机器视口更宽时高度会被按比例放大，把实际值也报出来，
+    // 否则用户拖到 300 却看到 454 会以为滑块坏了。
+    final resolved = DictionaryService.resolvePopupHeight(
+      _height.round(),
+      widget.webviewWidth,
+    );
+
     return AlertDialog(
       title: const Text('Settings'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text('${_height.round()} px'),
+          if (resolved != _height.round())
+            Text(
+              'On this screen: $resolved px',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: context.m3Secondary,
+              ),
+            ),
           Slider(
             value: _height,
             min: DictionaryService.minPopupHeight.toDouble(),

@@ -5,13 +5,17 @@
 >
 > **状态：已按 A+ 实现**（2026-09-26）。拍板结果 R1=A+ · R2=`actions` 首位 · R3=撤掉
 > Grammar。实现见 §3，验收项见 §4（真机部分待复验）。
+>
+> **更正（2026-09-28）：R3 已回滚。** 真机上"撤掉 Grammar"不成立 —— 见 §3.3 末尾。
+> 顶栏现在是 `书架 · 收起播放条 · Aa · Grammar · 页码`，Grammar 用 `_buildGrammarButton()`
+> 还原（`reader_screen.dart`，紧挨 `Aa`）。要再动顶栏元素，先读这一节。
 
 ## 0. 已实现的改动
 
 | 位置 | 改动 |
 |---|---|
 | `reader_screen.dart` `_buildAppBar`（fullscreen / 普通两个分支） | `actions` 首位加 `_buildBooksButton()`：`Icons.collections_bookmark` → `navigateToScreen('books')` |
-| `reader_screen.dart` `_buildAppBar` 同上 | 撤掉 `Icons.spellcheck`（Grammar）按钮 —— 不是阅读动作，抽屉里本来就有 |
+| `reader_screen.dart` `_buildAppBar` 同上 | ~~撤掉 `Icons.spellcheck`（Grammar）按钮~~ —— **2026-09-28 回滚**，见 §3.3 末尾 |
 | `reader_screen.dart` `_startHideTimer` | `context.eInk` 时直接 `return` 并令 `_isUiVisible = true`：墨水屏下顶栏常驻 |
 | `docs/reader_back_to_books_plan.md` | 本文件 |
 
@@ -122,6 +126,15 @@ Leaf 5C 的 reader 顶栏现在有：`☰` · 标题 · 收起播放条 · `Aa` 
 建议同时把 **`拼写检查`（Grammar）从阅读页顶栏拿掉** —— 它不是阅读动作，
 抽屉里本来就有 Grammar。腾出来的位置正好给「书架」，元素数量不变。
 
+> **这条建议 2026-09-28 被真机否掉了。** 撤掉 Grammar 后用户直接在阅读页找不到
+> 语法入口（"阅读页面看不到上方的语法按钮了"）。原因：上面那句"抽屉里本来就有"
+> 只在**宽屏**成立（`app.dart` `_drawerRoutes`：阅读屏 `onPrimary` 为空才列全部
+> 目的地）；而 Leaf 5C 正是宽屏，抽屉又是整屏覆盖 —— 等于把 Grammar 藏进两跳之后。
+> Grammar 已还原，位置紧挨 `Aa`。**顶栏真要再挤，动 `Aa` 或页码，别动 Grammar。**
+>
+> 另外「Grammar 不是阅读动作」这个前提本身也不牢：Grammar 页分析的正是**当前页**
+> （`grammar_provider` 读 `readerProvider.pageData`），它是阅读动作的延伸。
+
 > 另一个方向：`showPageNumbers` 在墨水屏预设里是建议关的（P1-2），关掉后
 > `1/3` 不占位，又省一格。
 
@@ -146,6 +159,7 @@ Leaf 5C 的 reader 顶栏现在有：`☰` · 标题 · 收起播放条 · `Aa` 
 | R1 | 入口形态 | **A+** —— 顶栏按钮（一次点击）+ eInk 下顶栏常驻 |
 | R2 | 按钮位置 | `actions` 首位（`leading` 保持汉堡不变） |
 | R3 | 是否顺手把 Grammar 从阅读页顶栏撤掉 | 撤 —— 腾出位置，阅读页不需要它 |
+| R3′ | 2026-09-28 真机复看 R3 | **回滚** —— 还原 Grammar 按钮，见 §3.3 末尾 |
 
 实现后仍未做的一件事：**顶栏常驻会占掉 56dp 竖屏空间**，在 896dp 高的屏上约 6%。
 真机上如果觉得正文区变矮得不划算，退路是只保留 A（按钮照加、自动隐藏照旧），

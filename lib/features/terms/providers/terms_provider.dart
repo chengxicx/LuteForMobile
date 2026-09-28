@@ -3,10 +3,12 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:meta/meta.dart';
 import '../../../core/logger/api_logger.dart';
+import '../../../core/cache/providers/terms_list_cache_provider.dart';
 import '../models/term.dart';
 import '../models/term_stats.dart';
 import '../repositories/terms_repository.dart';
 import '../../settings/providers/settings_provider.dart';
+import '../../../shared/providers/server_status_provider.dart';
 
 @immutable
 class TermsState {
@@ -18,6 +20,13 @@ class TermsState {
   final int? selectedLangId;
   final Set<String?> selectedStatuses;
   final String? errorMessage;
+
+  /// 上一次加载是「连不上服务端」而不是「服务端回了错」。
+  ///
+  /// 与书架的 BooksState.isOffline 同一约定：断网不是错误，界面上该显示一个
+  /// 能自愈的 Offline 态，而不是把 `DioException [connection error]: ...`
+  /// 原文拍给用户。它同时是自愈监听判断「要不要重载」的依据。
+  final bool isOffline;
   final bool isInitialized;
   final TermStats stats;
   final bool isStatsLoading;
@@ -33,6 +42,7 @@ class TermsState {
     this.selectedLangId,
     this.selectedStatuses = const {'1', '2', '3', '4', '5', '99'},
     this.errorMessage,
+    this.isOffline = false,
     this.isInitialized = false,
     this.stats = TermStats.empty,
     this.isStatsLoading = false,
@@ -49,6 +59,7 @@ class TermsState {
     int? selectedLangId,
     Set<String?>? selectedStatuses,
     String? errorMessage,
+    bool? isOffline,
     bool? isInitialized,
     TermStats? stats,
     bool? isStatsLoading,
@@ -64,6 +75,7 @@ class TermsState {
       selectedLangId: selectedLangId ?? this.selectedLangId,
       selectedStatuses: selectedStatuses ?? this.selectedStatuses,
       errorMessage: errorMessage,
+      isOffline: isOffline ?? this.isOffline,
       isInitialized: isInitialized ?? this.isInitialized,
       stats: stats ?? this.stats,
       isStatsLoading: isStatsLoading ?? this.isStatsLoading,
@@ -82,6 +94,10 @@ class TermsNotifier extends Notifier<TermsState> {
   DateTime? _lastStatus99LoadTime;
   Timer? _status99DebounceTimer;
 
+  /// [ServerStatusManager.addListener] 靠 `contains` 去重、靠同一个引用来
+  /// remove，所以存成字段，而不是每次 build 现造一个闭包。
+  late final void Function() _reachabilityListener = _onReachabilityChanged;
+
   @override
   TermsState build() {
     ref.listen(settingsProvider, (previous, next) {
@@ -93,12 +109,45 @@ class TermsNotifier extends Notifier<TermsState> {
       }
     });
 
+    // 服务端恢复可达时自愈：上一次加载要是被「断网短路」跳过过，现在补一次。
+    // 没有这个监听，用户出了地铁只能看着一个 Offline 页。
+    ServerStatusManager.addListener(_reachabilityListener);
+    ref.onDispose(
+      () => ServerStatusManager.removeListener(_reachabilityListener),
+    );
+
     return const TermsState();
   }
 
-  void _onServerChanged() {
+  /// 服务端从不可达恢复可达时的自愈入口（同 BooksNotifier 的约定）。
+  void _onReachabilityChanged() {
+    if (!ServerStatusManager.isReachable) return;
+    if (!state.isOffline) return;
+
+    Future.microtask(() {
+      if (!state.isOffline) return;
+      unawaited(refreshTerms());
+    });
+  }
+
+  /// 判断「加载失败」属于哪一类，和 BooksNotifier.classifyLoadFailure 同一
+  /// 约定：拦截器判定服务端不可达时会 `markError()`，标志为假 = 根本没连上
+  /// → 记成可自愈的 Offline 态；标志为真 = 服务器真的回了错 → 才把
+  /// `e.toString()` 显示出来。纯函数，好让这条约定能被单测锁住。
+  @visibleForTesting
+  static (String?, bool) classifyLoadFailure({
+    required Object error,
+    required bool serverReachable,
+  }) {
+    if (serverReachable) return (error.toString(), false);
+    return (null, true);
+  }
+
+  Future<void> _onServerChanged() async {
     state = state.copyWith(isInitialized: false);
-    loadTerms(reset: true);
+    // 换服务器后旧快照全部作废，否则会把 A 服务器的词展示成 B 服务器的现状。
+    await ref.read(termsListCacheServiceProvider).clearAll();
+    await loadTerms(reset: true);
   }
 
   Future<void> _onLangIdChanged() async {
@@ -114,10 +163,12 @@ class TermsNotifier extends Notifier<TermsState> {
         currentPage: 0,
         hasMore: true,
         errorMessage: null,
+        isOffline: false,
       );
     }
 
     final repository = ref.read(termsRepositoryProvider);
+    final cacheService = ref.read(termsListCacheServiceProvider);
 
     if (!repository.contentService.isConfigured) {
       state = state.copyWith(
@@ -147,6 +198,29 @@ class TermsNotifier extends Notifier<TermsState> {
         'DEBUG loadTerms: langId=$langId, search="${state.searchQuery}", statuses=$filteredStatuses',
       );
 
+      // 缓存先行：本地已有的词条先显示出来，断网不是把它藏起来的理由。
+      // 追加加载（reset=false）不读缓存 —— 要往现有列表后面拼新一页。
+      if (reset) {
+        final cached = await cacheService.getTerms(
+          langId: langId,
+          search: state.searchQuery,
+          statuses: filteredStatuses,
+        );
+        if (cached != null && cached.isNotEmpty) {
+          state = state.copyWith(isLoading: false, terms: cached);
+        } else {
+          state = state.copyWith(isLoading: false);
+        }
+      }
+
+      // 不可达时跳过网络（书架同款短路）：这一次请求只会在 ApiRequestQueue
+      // 里挂到 requestDeadline（30 秒）超时，然后把一坨 DioException 拍到
+      // 屏幕上。给出可自愈的 Offline 态，网络恢复后自愈监听会重载。
+      if (!ServerStatusManager.isReachable) {
+        state = state.copyWith(isLoading: false, isOffline: true);
+        return;
+      }
+
       final newTerms = await repository.getTermsPaginated(
         langId: langId,
         search: state.searchQuery.isNotEmpty ? state.searchQuery : null,
@@ -161,6 +235,17 @@ class TermsNotifier extends Notifier<TermsState> {
         currentPage: state.currentPage + 1,
         hasMore: newTerms.length == _pageSize,
         errorMessage: null,
+        isOffline: false,
+      );
+
+      // 成功后写快照（追加加载存合并后的整份列表），断网时原样恢复这一屏。
+      unawaited(
+        cacheService.saveTerms(
+          state.terms,
+          langId: langId,
+          search: state.searchQuery,
+          statuses: filteredStatuses,
+        ),
       );
 
       if (langId != null && reset) {
@@ -170,7 +255,15 @@ class TermsNotifier extends Notifier<TermsState> {
       }
     } catch (e) {
       ApiLogger.logError('loadTerms', e);
-      state = state.copyWith(isLoading: false, errorMessage: e.toString());
+      final (message, offline) = classifyLoadFailure(
+        error: e,
+        serverReachable: ServerStatusManager.isReachable,
+      );
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: message,
+        isOffline: offline,
+      );
     }
   }
 

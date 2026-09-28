@@ -5,7 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:song_mobile/core/network/tts_service.dart';
 import 'package:song_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/shared/providers/server_status_provider.dart';
+import 'package:song_mobile/shared/utils/tts_language_mapper.dart';
 import '../providers/audio_player_provider.dart';
+import '../providers/current_book_provider.dart';
 
 enum SentenceTTSStatus { idle, loading, playing, error }
 
@@ -18,6 +21,10 @@ class SentenceTTSState {
   final int retryCount;
   final bool isFallenBackToNone;
   final BytesSource? ttsAudioSource;
+
+  /// copyWith 的「未传参」哨兵：`errorMessage ?? this.errorMessage` 会让
+  /// 「传 null 表示清空」和「没传」变成同一件事，错误提示一旦写上就清不掉。
+  static const Object _unset = Object();
 
   const SentenceTTSState({
     this.status = SentenceTTSStatus.idle,
@@ -35,7 +42,7 @@ class SentenceTTSState {
 
   SentenceTTSState copyWith({
     SentenceTTSStatus? status,
-    String? errorMessage,
+    Object? errorMessage = _unset,
     String? currentText,
     int? currentSentenceId,
     int? retryCount,
@@ -44,7 +51,9 @@ class SentenceTTSState {
   }) {
     return SentenceTTSState(
       status: status ?? this.status,
-      errorMessage: errorMessage ?? this.errorMessage,
+      errorMessage: errorMessage == _unset
+          ? this.errorMessage
+          : errorMessage as String?,
       currentText: currentText ?? this.currentText,
       currentSentenceId: currentSentenceId ?? this.currentSentenceId,
       retryCount: retryCount ?? this.retryCount,
@@ -65,6 +74,8 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       _ttsServiceStateSubscription?.cancel();
       _ttsPlayerInstance?.dispose();
       _ttsPlayerInstance = null;
+      _onDeviceFallback?.dispose();
+      _onDeviceFallback = null;
     });
     return const SentenceTTSState();
   }
@@ -83,6 +94,89 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
     final player = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _ttsPlayerInstance = player;
     return player;
+  }
+
+  /// 离线本地兜底引擎，懒建。当前 TTS provider 是服务器型的（Edge TTS）
+  /// 而服务器不可达时，发音落到它身上，而不是等一个注定超时的请求再重试
+  /// 三轮 —— 那是「地铁里点词没声音」的直接原因。
+  OnDeviceTTSService? _onDeviceFallback;
+
+  /// 本轮发音实际使用的服务。stop() 要按它停：兜底引擎不在
+  /// [ttsServiceProvider] 里，光停主服务停不掉它。
+  TTSService? _activeService;
+
+  /// 发音真正使用的服务：主服务；主服务是服务器型的 Edge TTS 且服务端
+  /// 不可达时，改用本地兜底引擎。其他 provider（Kokoro/OpenAI/…）不是
+  /// Song 服务器的依赖，离线与否由各自的端点决定，不在这里插手。
+  TTSService _resolveTTSService() {
+    final primary = ref.read(ttsServiceProvider);
+    if (primary is EdgeTTSService && !ServerStatusManager.isReachable) {
+      debugPrint('TTS: server unreachable, falling back to on-device engine');
+      return _fallbackOnDeviceService();
+    }
+    return primary;
+  }
+
+  OnDeviceTTSService _fallbackOnDeviceService() {
+    final existing = _onDeviceFallback;
+    if (existing != null) return existing;
+    final service = OnDeviceTTSService();
+    _onDeviceFallback = service;
+    return service;
+  }
+
+  /// 本地兜底引擎的读音语言跟随当前书（与 Edge TTS 的语言同源），设置
+  /// 失败不阻塞发音 —— 引擎会退到该 locale 的系统默认声音。
+  Future<void> _applyFallbackLanguage() async {
+    final fallback = _onDeviceFallback;
+    if (fallback == null) return;
+    final bookLanguage = ref.read(currentBookProvider).languageName;
+    if (bookLanguage == null || bookLanguage.trim().isEmpty) return;
+    try {
+      await fallback.setLanguage(ttsLanguageCodeFor(bookLanguage));
+    } catch (e) {
+      debugPrint(
+        'TTS fallback: failed to set language "$bookLanguage": $e',
+      );
+    }
+  }
+
+  /// 解析服务并完成一次「合成 + 开口」。初始尝试与每一轮重试都走这里：
+  /// 每次都重新解析，服务器中途断线时，下一轮重试自然落到本地兜底；
+  /// 网络恢复时也会自然回到服务器。
+  Future<void> _synthesizeAndPlay(String text) async {
+    final service = _resolveTTSService();
+    _activeService = service;
+    final isPrimary = identical(service, ref.read(ttsServiceProvider));
+
+    if (service.supportsBytesOutput) {
+      debugPrint('Fetching TTS audio bytes...');
+      final audioBytes = await service.getAudioBytes(text);
+      debugPrint('Got ${audioBytes.length} bytes of audio');
+
+      final bytesSource = BytesSource(audioBytes);
+
+      state = state.copyWith(
+        status: SentenceTTSStatus.playing,
+        ttsAudioSource: bytesSource,
+      );
+
+      _setupPlayerStateListener();
+
+      debugPrint('Starting TTS playback...');
+      await _playTtsBytes(bytesSource);
+      debugPrint('TTS playback started');
+    } else {
+      debugPrint('Using direct speak for on-device TTS...');
+      _listenServiceCompletion(service);
+      if (isPrimary) {
+        await ref.read(ttsServiceProvider.notifier).ensureServiceReady();
+      } else {
+        await _applyFallbackLanguage();
+      }
+      await service.speak(text);
+      state = state.copyWith(status: SentenceTTSStatus.playing);
+    }
   }
 
   /// 书籍音频在播时先暂停(位置已随 pause 保存),发音才开口,
@@ -117,11 +211,12 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
     });
   }
 
-  void _setupTTSServiceListener() {
-    final ttsService = ref.read(ttsServiceProvider);
+  /// 监听指定服务实例的完成事件 —— 兜底引擎不在 [ttsServiceProvider] 里，
+  /// 完成事件要从它自己的流上收。
+  void _listenServiceCompletion(TTSService service) {
     _ttsServiceStateSubscription?.cancel();
 
-    _ttsServiceStateSubscription = ttsService.playerStateStream.listen((
+    _ttsServiceStateSubscription = service.playerStateStream.listen((
       playerState,
     ) {
       debugPrint('TTS Service state changed: $playerState');
@@ -159,8 +254,6 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
   }
 
   Future<void> speakSentence(String text, int sentenceId) async {
-    final ttsService = ref.read(ttsServiceProvider);
-
     // 多词词元的文本带着零宽空格(on-device 引擎会读出停顿),入口剥掉,
     // 之后的状态、合成与重试用的都是同一份干净文本。
     text = normalizeTtsText(text);
@@ -187,30 +280,7 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
         ttsAudioSource: null,
       );
 
-      if (ttsService.supportsBytesOutput) {
-        debugPrint('Fetching TTS audio bytes...');
-        final audioBytes = await ttsService.getAudioBytes(text);
-        debugPrint('Got ${audioBytes.length} bytes of audio');
-
-        final bytesSource = BytesSource(audioBytes);
-
-        state = state.copyWith(
-          status: SentenceTTSStatus.playing,
-          ttsAudioSource: bytesSource,
-        );
-
-        _setupPlayerStateListener();
-
-        debugPrint('Starting TTS playback...');
-        await _playTtsBytes(bytesSource);
-        debugPrint('TTS playback started');
-      } else {
-        debugPrint('Using direct speak for on-device TTS...');
-        _setupTTSServiceListener();
-        await ref.read(ttsServiceProvider.notifier).ensureServiceReady();
-        await ttsService.speak(text);
-        state = state.copyWith(status: SentenceTTSStatus.playing);
-      }
+      await _synthesizeAndPlay(text);
     } catch (e) {
       // Fragment that the server cannot synthesize (e.g. a single closing
       // bracket) -- not an error to surface or retry. Reset to idle so the
@@ -235,25 +305,9 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       await Future.delayed(const Duration(seconds: 1));
 
       try {
-        final ttsService = ref.read(ttsServiceProvider);
-
-        if (ttsService.supportsBytesOutput) {
-          final audioBytes = await ttsService.getAudioBytes(text);
-          final bytesSource = BytesSource(audioBytes);
-
-          state = state.copyWith(
-            status: SentenceTTSStatus.playing,
-            ttsAudioSource: bytesSource,
-          );
-
-          _setupPlayerStateListener();
-          await _playTtsBytes(bytesSource);
-        } else {
-          debugPrint('Using direct speak for on-device TTS...');
-          _setupTTSServiceListener();
-          await ttsService.speak(text);
-          state = state.copyWith(status: SentenceTTSStatus.playing);
-        }
+        // 重新解析服务：断网瞬间主服务的请求失败后，可达性标志已被拦截器
+        // 置假，这里自然落到本地兜底；网络恢复时同样自然回到服务器。
+        await _synthesizeAndPlay(text);
       } catch (retryError) {
         // Same handling as the outer catch: an unpronounceable fragment is
         // not retryable -- surface nothing, reset, done.
@@ -274,14 +328,18 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
   }
 
   Future<void> stop() async {
-    final ttsService = ref.read(ttsServiceProvider);
-
     try {
       debugPrint('Stopping TTS...');
-      if (ttsService.supportsBytesOutput) {
+      final primary = ref.read(ttsServiceProvider);
+      // 本轮发音若走的是本地兜底实例，得停它本身 —— 它不在
+      // [ttsServiceProvider] 里，停主服务停不掉它。
+      final active = _activeService;
+      if (active != null && !identical(active, primary)) {
+        await active.stop();
+      } else if (primary.supportsBytesOutput) {
         await _ttsPlayer.stop();
       } else {
-        await ttsService.stop();
+        await primary.stop();
       }
       _ttsServiceStateSubscription?.cancel();
       state = const SentenceTTSState();

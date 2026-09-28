@@ -15,6 +15,38 @@ class ApiService {
   static const String _defaultTermImageSearchParams =
       'q=[LUTE]&form=HDRSC2&first=1&tsc=ImageHoverTitle';
 
+  /// Marks a request that must fail fast when the server is unreachable,
+  /// instead of being buffered by [QueuedDioInterceptor].
+  ///
+  /// The rule is not "reads are fast, writes are deferred" -- it is **"the
+  /// user is staring at the result, and the caller has something to fall back
+  /// on"**.  Buffering such a request means holding a spinner for the queue's
+  /// full safety timeout when the honest answer (no signal) was available
+  /// immediately.  Three things qualify today:
+  ///
+  ///  * page content -- the text being read, backed by the page cache;
+  ///  * the shelf's list reads ([getActiveBooks] / [getArchivedBooks]) -- the
+  ///    visible book list, backed by the books cache, with the Offline state
+  ///    as the fallback when there is no cache either;
+  ///  * [setUserSetting] on those load paths -- a per-load *hint* that the
+  ///    next load resends anyway, so replaying it is pointless, and leaving it
+  ///    queued would drag the list read that follows it to the same timeout.
+  ///
+  /// Everything else keeps queueing, which is the queue's whole point: writes
+  /// must not be lost.
+  static const Map<String, dynamic> _noQueue = {'noQueue': true};
+
+  /// "Never queue me, and never tell me the server is down -- just try."
+  ///
+  /// Used by the offline outbox.  `_noQueue` alone is not enough for it: that
+  /// flag still lets the interceptor answer with a *synthetic* rejection when
+  /// the reachability hint says offline, which would burn the outbox's retry
+  /// budget without ever touching the network -- backing the sync off to
+  /// minutes exactly when the link had just come back.  Attempting for real
+  /// also means a successful replay clears a stale unreachable flag for the
+  /// whole app, since the success interceptor fires on the response.
+  static const Map<String, dynamic> _bypassQueue = {'bypassQueue': true};
+
   ApiService({
     required String baseUrl,
     Dio? dio,
@@ -32,7 +64,11 @@ class ApiService {
       basicAuthUser: basicAuthUser,
       basicAuthPassword: basicAuthPassword,
     );
-    _dio.interceptors.add(QueuedDioInterceptor(_requestQueue));
+    // 队列重放必须走 `_dio` 本身：它带着下面的 session 拦截器。传裸 `Dio()`
+    // 会让重放丢掉 session cookie，服务端把每条重放都 302 到 /login，而裸
+    // Dio 默认跟随跳转，最终把登录页当成 200 的正文交回调用方 —— 屏幕显示成
+    // 空列表而不是报错（冷启动那一串 302 就是这个）。
+    _dio.interceptors.add(QueuedDioInterceptor(_requestQueue, _dio));
     _addSessionInterceptor();
     _addRetryInterceptor();
     _addLoggingInterceptor();
@@ -298,22 +334,32 @@ class ApiService {
     int bookId,
     int pageNum,
   ) async {
-    return await _dio.get<String>('/read/start_reading/$bookId/$pageNum');
+    return await _dio.get<String>(
+      '/read/start_reading/$bookId/$pageNum',
+      options: Options(extra: _noQueue),
+    );
   }
 
   Future<Response<String>> peekBookPage(int bookId, int pageNum) async {
-    return await _dio.get<String>('/read/$bookId/peek/$pageNum');
+    return await _dio.get<String>(
+      '/read/$bookId/peek/$pageNum',
+      options: Options(extra: _noQueue),
+    );
   }
 
   Future<Response<String>> refreshBookPage(int bookId, int pageNum) async {
-    return await _dio.get<String>('/read/refresh_page/$bookId/$pageNum');
+    return await _dio.get<String>(
+      '/read/refresh_page/$bookId/$pageNum',
+      options: Options(extra: _noQueue),
+    );
   }
 
   Future<Response<String>> postPageDone(
     int bookId,
     int pageNum,
-    bool restKnown,
-  ) async {
+    bool restKnown, {
+    bool bypassQueue = false,
+  }) async {
     return await _dio.post<String>(
       '/read/page_done',
       data: {
@@ -321,7 +367,10 @@ class ApiService {
         'pagenum': pageNum,
         'restknown': restKnown ? 1 : 0,
       },
-      options: Options(contentType: 'application/json'),
+      options: Options(
+        contentType: 'application/json',
+        extra: bypassQueue ? _bypassQueue : null,
+      ),
     );
   }
 
@@ -349,28 +398,45 @@ class ApiService {
     return await _dio.get<String>('/read/termform/$langId/$encodedText');
   }
 
-  Future<Response<String>> getTermFormById(int termId) async {
-    return await _dio.get<String>('/read/edit_term/$termId');
+  Future<Response<String>> getTermFormById(
+    int termId, {
+    bool bypassQueue = false,
+  }) async {
+    return await _dio.get<String>(
+      '/read/edit_term/$termId',
+      options: bypassQueue ? Options(extra: _bypassQueue) : null,
+    );
   }
 
   Future<Response<String>> postTermForm(
     int langId,
     String text,
-    dynamic data,
-  ) async {
+    dynamic data, {
+    bool bypassQueue = false,
+  }) async {
     final encodedText = Uri.encodeComponent(text);
     return await _dio.post<String>(
       '/read/termform/$langId/$encodedText',
       data: data,
-      options: Options(contentType: Headers.formUrlEncodedContentType),
+      options: Options(
+        contentType: Headers.formUrlEncodedContentType,
+        extra: bypassQueue ? _bypassQueue : null,
+      ),
     );
   }
 
-  Future<Response<String>> editTerm(int termId, dynamic data) async {
+  Future<Response<String>> editTerm(
+    int termId,
+    dynamic data, {
+    bool bypassQueue = false,
+  }) async {
     return await _dio.post<String>(
       '/read/edit_term/$termId',
       data: data,
-      options: Options(contentType: Headers.formUrlEncodedContentType),
+      options: Options(
+        contentType: Headers.formUrlEncodedContentType,
+        extra: bypassQueue ? _bypassQueue : null,
+      ),
     );
   }
 
@@ -523,7 +589,16 @@ class ApiService {
     final response = await _dio.post<String>(
       '/book/datatables/active',
       data: data,
-      options: Options(contentType: Headers.formUrlEncodedContentType),
+      // `_noQueue` for the same reason page content uses it: this is a read the
+      // user is staring at, and every caller has a cache to fall back on.  Left
+      // queueable, the *first* offline attempt parks here for the full 30 s
+      // request deadline (the reachability flag is still stale-true until some
+      // request has actually failed), so the shelf shows "No books found."
+      // for half a minute before it admits it is offline.
+      options: Options(
+        contentType: Headers.formUrlEncodedContentType,
+        extra: _noQueue,
+      ),
     );
     return response;
   }
@@ -599,7 +674,12 @@ class ApiService {
       // the lowercase route 404s and makes the archived toggle fail.
       '/book/datatables/Archived',
       data: data,
-      options: Options(contentType: Headers.formUrlEncodedContentType),
+      // Same reasoning as getActiveBooks: a read the user is waiting on, with a
+      // cache behind it, so it must fail now rather than park in the queue.
+      options: Options(
+        contentType: Headers.formUrlEncodedContentType,
+        extra: _noQueue,
+      ),
     );
     return response;
   }
@@ -654,7 +734,7 @@ class ApiService {
     final path = pageNum != null
         ? '/read/$bookId/page/$pageNum'
         : '/read/$bookId';
-    return await _dio.get<String>(path);
+    return await _dio.get<String>(path, options: Options(extra: _noQueue));
   }
 
   Future<Response<String>> searchTerms(String text, int langId) async {
@@ -756,8 +836,21 @@ class ApiService {
     return await _dio.get<String>('/settings/index');
   }
 
-  Future<Response<String>> setUserSetting(String key, String value) async {
-    return await _dio.post<String>('/settings/set/$key/$value');
+  /// 设置服务端的一个用户偏好。
+  ///
+  /// [noQueue] 用于「后面紧跟着一个列表读请求」的场景（书架的各条加载路径）：
+  /// 这个偏好是每次加载都会重发的**提示**，排队重放毫无意义（下次加载自然会
+  /// 再发一次），而它一旦排进队列就会把后面那个读请求一起卡到 30s 上限 ——
+  /// 断网时表现为书架先干等半分钟才承认离线。
+  Future<Response<String>> setUserSetting(
+    String key,
+    String value, {
+    bool noQueue = false,
+  }) async {
+    return await _dio.post<String>(
+      '/settings/set/$key/$value',
+      options: noQueue ? Options(extra: _noQueue) : null,
+    );
   }
 
   Future<Response<String>> archiveBook(int bookId) async {
