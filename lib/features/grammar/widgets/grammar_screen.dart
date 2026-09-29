@@ -218,6 +218,11 @@ class GrammarPointCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final desc = point.desc;
+    // Same label rule as the web panel: a CJK explanation means the entry
+    // speaks Chinese, so the summary line does too.
+    final cjkDesc =
+        RegExp(r'[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]').hasMatch(desc ?? '');
+    final moreLabel = cjkDesc ? '参考例句 · 注意点' : 'Reference · notes';
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -243,6 +248,17 @@ class GrammarPointCard extends StatelessWidget {
                 ],
               ],
             ),
+            if (point.formation != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                point.formation!,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: context.appColorScheme.text.secondary,
+                  fontWeight: FontWeight.w600,
+                  height: 1.4,
+                ),
+              ),
+            ],
             if (desc != null) ...[
               const SizedBox(height: 6),
               Text(
@@ -259,9 +275,109 @@ class GrammarPointCard extends StatelessWidget {
                 child: _ExampleSentence(example: example),
               ),
             ),
+            if (point.reference != null || point.notes != null) ...[
+              const SizedBox(height: 4),
+              _ReferenceNotesSection(
+                label: moreLabel,
+                reference: point.reference,
+                notes: point.notes,
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The folded "reference example + notes" block, mirroring the web panel's
+/// `<details class="grammar-item__more">`: collapsed by default, tap to open.
+/// No animation -- the reader runs on e-ink devices.
+class _ReferenceNotesSection extends StatefulWidget {
+  final String label;
+  final GrammarReference? reference;
+  final String? notes;
+
+  const _ReferenceNotesSection({
+    required this.label,
+    this.reference,
+    this.notes,
+  });
+
+  @override
+  State<_ReferenceNotesSection> createState() => _ReferenceNotesSectionState();
+}
+
+class _ReferenceNotesSectionState extends State<_ReferenceNotesSection> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final reference = widget.reference;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: context.appColorScheme.text.secondary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  widget.label,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: context.appColorScheme.text.secondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded) ...[
+          if (reference != null && reference.sentence.isNotEmpty) ...[
+            _ExampleSentence(
+              example: GrammarExample(
+                sentence: reference.sentence,
+                matches: reference.matches,
+              ),
+            ),
+            if (reference.text != null) ...[
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.only(left: 12, right: 12),
+                child: Text(
+                  reference.text!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: context.appColorScheme.text.secondary,
+                    fontStyle: FontStyle.italic,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+          ],
+          if (widget.notes != null)
+            Padding(
+              padding: const EdgeInsets.only(left: 12, right: 12, bottom: 4),
+              child: Text(
+                widget.notes!,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: context.appColorScheme.text.secondary,
+                  height: 1.4,
+                ),
+              ),
+            ),
+        ],
+      ],
     );
   }
 }
