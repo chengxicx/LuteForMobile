@@ -46,6 +46,18 @@ class ShadowingState {
   /// playing.  TTS references are tracked by [sentenceTTSProvider] instead.
   final bool playingReference;
 
+  /// Which slow phase the server's scoring task is in while
+  /// [ShadowingPhase.processing] -- model load vs actual transcription.
+  final ShadowingWaitPhase? waitPhase;
+
+  /// Seconds elapsed since the scoring task started -- the wait label.
+  final int waitSeconds;
+
+  /// Model sizes that are already on the server (downloaded and cached).
+  /// Null until the first lookup lands, or when the server could not be
+  /// asked (fall back to offering every size).
+  final List<String>? cachedModels;
+
   /// copyWith 的「未传参」哨兵:与项目其他 Notifier 一致,让「传 null 表示
   /// 清空」和「没传」是两件事,否则错误提示一旦写上就清不掉。
   static const Object _unset = Object();
@@ -59,6 +71,9 @@ class ShadowingState {
     this.hasTake = false,
     this.playingRecording = false,
     this.playingReference = false,
+    this.waitPhase,
+    this.waitSeconds = 0,
+    this.cachedModels,
   });
 
   bool get isRecording => phase == ShadowingPhase.recording;
@@ -74,6 +89,9 @@ class ShadowingState {
     bool? hasTake,
     bool? playingRecording,
     bool? playingReference,
+    Object? waitPhase = _unset,
+    int? waitSeconds,
+    List<String>? cachedModels,
   }) {
     return ShadowingState(
       phase: phase ?? this.phase,
@@ -84,6 +102,10 @@ class ShadowingState {
       hasTake: hasTake ?? this.hasTake,
       playingRecording: playingRecording ?? this.playingRecording,
       playingReference: playingReference ?? this.playingReference,
+      waitPhase:
+          waitPhase == _unset ? this.waitPhase : waitPhase as ShadowingWaitPhase?,
+      waitSeconds: waitSeconds ?? this.waitSeconds,
+      cachedModels: cachedModels ?? this.cachedModels,
     );
   }
 }
@@ -100,6 +122,7 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   ShadowingState build() {
     ref.onDispose(_disposeResources);
     _loadModelSize();
+    _loadCachedModels();
     return const ShadowingState();
   }
 
@@ -142,6 +165,31 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     await prefs.setString(_modelSizePrefKey, size);
   }
 
+  /// Asks the server which whisper sizes are already downloaded.  Once at
+  /// least one size is cached, the picker narrows to those: picking a
+  /// never-downloaded size would silently trigger a multi-hundred-MB
+  /// download on the server, which is not a decision a dropdown tap
+  /// should make.  When nothing is cached yet that first download is
+  /// unavoidable, so every size stays offered.  A saved modelSize that
+  /// is not cached is re-pointed to the first cached size.
+  Future<void> _loadCachedModels() async {
+    final info = await ref.read(contentServiceProvider).fetchWhisperModels();
+    final models = info?['models'];
+    if (models is! List) return;
+    final cached = kShadowingModelSizes
+        .where(
+          (size) => models.any(
+            (m) => m is Map && m['size'] == size && m['cached'] == true,
+          ),
+        )
+        .toList();
+    if (cached.isEmpty) return;
+    state = state.copyWith(cachedModels: cached);
+    if (!cached.contains(state.modelSize)) {
+      await setModelSize(cached.first);
+    }
+  }
+
   AudioRecorder get _recorderInstance {
     final existing = _recorder;
     if (existing != null) return existing;
@@ -182,7 +230,10 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   Future<void> _startRecording(ShadowingSentence sentence) async {
     // 有结果/错误挂着时重录:先把面板回到干净的录音态(模型选择保留)。
     _referencePositionSubscription?.cancel();
-    state = ShadowingState(modelSize: state.modelSize);
+    state = ShadowingState(
+      modelSize: state.modelSize,
+      cachedModels: state.cachedModels,
+    );
 
     try {
       // 每次开口前都真问一遍(而不是缓存 provider 的结论):拒绝过、去系统
@@ -292,6 +343,9 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
         languageId: languageId,
         tokens: sentence.tokens,
         model: state.modelSize,
+        onWait: (phase, seconds) {
+          state = state.copyWith(waitPhase: phase, waitSeconds: seconds);
+        },
       );
       state = state.copyWith(
         phase: ShadowingPhase.result,
@@ -299,6 +353,8 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
         error: null,
         recordingSeconds: 0,
         hasTake: true,
+        waitPhase: null,
+        waitSeconds: 0,
       );
     } on ShadowingException catch (e) {
       // 打分失败,但 take 本身录上了,回放按钮保留。
@@ -307,6 +363,8 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
         error: e,
         recordingSeconds: 0,
         hasTake: true,
+        waitPhase: null,
+        waitSeconds: 0,
       );
     } catch (e) {
       state = state.copyWith(
@@ -314,6 +372,8 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
         error: ShadowingException(ShadowingErrorKind.serverError, '$e'),
         recordingSeconds: 0,
         hasTake: true,
+        waitPhase: null,
+        waitSeconds: 0,
       );
     }
   }
@@ -421,7 +481,10 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     try {
       await ref.read(sentenceTTSProvider.notifier).stop();
     } catch (_) {}
-    state = ShadowingState(modelSize: state.modelSize);
+    state = ShadowingState(
+      modelSize: state.modelSize,
+      cachedModels: state.cachedModels,
+    );
   }
 
   Future<void> _disposeResources() async {
