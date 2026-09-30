@@ -6,6 +6,7 @@ import '../../../core/logger/api_logger.dart';
 import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
 import '../models/page_data.dart';
+import '../models/text_item.dart';
 import '../models/term_tooltip.dart';
 import '../models/term_form.dart';
 import '../models/language_sentence_settings.dart';
@@ -16,6 +17,7 @@ import '../../../features/settings/providers/settings_provider.dart';
 
 import 'sentence_reader_provider.dart';
 import '../../../core/cache/providers/book_progress_provider.dart';
+import '../../../core/cache/providers/term_cache_provider.dart';
 import '../../../core/cache/providers/tooltip_cache_provider.dart';
 import '../../../core/cache/providers/page_cache_provider.dart';
 import '../../../features/terms/providers/terms_provider.dart';
@@ -956,6 +958,14 @@ class ReaderNotifier extends Notifier<ReaderState> {
       }
     }
 
+    // Offline: the popup GET would only sit in the request queue until its
+    // deadline expires and fail anyway. Fail fast instead -- the tap handler
+    // falls back to a locally-built card (see [buildLocalTooltipFallback]),
+    // and the network is not coming back in the middle of a tap.
+    if (!ServerStatusManager.isReachable) {
+      return null;
+    }
+
     try {
       // Fetch from network using single API call
       final resultWithHtml = await _repository.getTermTooltipWithHtml(termId);
@@ -986,6 +996,42 @@ class ReaderNotifier extends Notifier<ReaderState> {
     } catch (e) {
       return null;
     }
+  }
+
+  /// Local fallback card for a tap whose fetch came back empty -- offline
+  /// (the popup GET fails fast above), or the request simply failed. Built
+  /// from what the page already has (term text, status class) plus whatever
+  /// the term cache still remembers (translation, reading), so a tap always
+  /// answers with a card and a pronunciation instead of dead silence.
+  Future<TermTooltip?> buildLocalTooltipFallback(TextItem item) async {
+    final termId = item.wordId;
+    final text = item.displayText;
+    if (termId == null || text.trim().isEmpty) return null;
+
+    String? translation;
+    String? romanization;
+    try {
+      final cached = await ref.read(termCacheServiceProvider).getTerm(termId);
+      translation = cached?.translation;
+      romanization = cached?.romanization;
+    } catch (e) {
+      ApiLogger.logError(
+        'buildLocalTooltipFallback',
+        e,
+        details: 'termId=$termId',
+      );
+    }
+
+    final hasTranslation = translation?.trim().isNotEmpty ?? false;
+    final hasReading = romanization?.trim().isNotEmpty ?? false;
+    final statusMatch = RegExp(r'(\d+)').firstMatch(item.statusClass);
+    return TermTooltip(
+      term: text,
+      romanization: hasReading ? romanization!.trim() : null,
+      translation: hasTranslation ? translation!.trim() : null,
+      termId: termId,
+      status: statusMatch?.group(1) ?? '0',
+    );
   }
 
   Future<TermForm?> fetchTermForm(int langId, String text) async {

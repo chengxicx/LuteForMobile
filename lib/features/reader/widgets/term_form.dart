@@ -12,6 +12,7 @@ import '../../settings/providers/settings_provider.dart'
 import '../../settings/models/ai_settings.dart';
 import '../../settings/providers/ai_settings_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
+import '../../../shared/utils/tts_speak_text.dart';
 import '../../../core/network/content_service.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../providers/sentence_tts_provider.dart';
@@ -547,8 +548,14 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
               Consumer(
                 builder: (context, ref, child) {
                   final ttsState = ref.watch(sentenceTTSProvider);
-                  final isCurrentTerm =
-                      ttsState.currentText == widget.termForm.term;
+                  // An annotated reading (romanization) outranks the surface
+                  // form for TTS; the state check uses the same text so the
+                  // stop icon tracks what was actually spoken.
+                  final speakText = ttsSpeakTextForTerm(
+                    term: widget.termForm.term,
+                    reading: widget.termForm.romanization,
+                  );
+                  final isCurrentTerm = ttsState.currentText == speakText;
 
                   IconData icon;
                   Color color;
@@ -568,7 +575,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                     color = context.m3Primary;
                     onPressed = () => ref
                         .read(sentenceTTSProvider.notifier)
-                        .speakSentence(widget.termForm.term, 0);
+                        .speakSentence(speakText, 0);
                   }
 
                   return IconButton(

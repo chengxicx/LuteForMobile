@@ -2,7 +2,6 @@ import 'package:audioplayers/audioplayers.dart' hide PlayerMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../shared/theme/player_palette.dart';
 import '../../settings/models/tts_settings.dart';
 import '../../settings/providers/tts_settings_provider.dart';
 import '../providers/audio_player_provider.dart';
@@ -13,14 +12,24 @@ import 'player/player_timeline.dart';
 
 /// 有声书(MP3)的卡片式播放条。
 ///
-/// 布局:时间行(两端对齐)+ 时间轴 / 主控行(±10s 与大播放键)/
-/// 辅助行(书签组、循环、自动暂停、倍速、TTS 切换)。
+/// 布局:时间行(两端对齐)+ 时间轴 / 主控行(上一句、播放、下一句)/
+/// 辅助行(循环、自动暂停、AB 复读、倍速、影子跟读、TTS 切换)。
 class AudioPlayerWidget extends ConsumerStatefulWidget {
   final String audioUrl;
   final int bookId;
   final int page;
+
+  /// 用户书签（服务端同步）。只用于书签写回与时间轴刻度。
   final List<double>? bookmarks;
+
+  /// 句子分段边界（SRT cue 起点；无 cues 的老书签书回退为书签）。
+  /// 驱动循环/自动暂停的逐句判定与左右键切句；不参与书签写回、不画刻度。
+  final List<double>? segmentBoundaries;
   final Duration? audioCurrentPos;
+
+  /// 影子跟读入口:对"当前播放句"录音打分。null 时不画该键(无句子的
+  /// 页面,如漫画/PDF)。
+  final VoidCallback? onShadowing;
 
   const AudioPlayerWidget({
     super.key,
@@ -28,7 +37,9 @@ class AudioPlayerWidget extends ConsumerStatefulWidget {
     required this.bookId,
     required this.page,
     this.bookmarks,
+    this.segmentBoundaries,
     this.audioCurrentPos,
+    this.onShadowing,
   });
 
   @override
@@ -59,10 +70,14 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
     final bookmarkSignature = (widget.bookmarks ?? const [])
         .map((bookmark) => bookmark.toStringAsFixed(3))
         .join(',');
+    final segmentSignature = (widget.segmentBoundaries ?? const [])
+        .map((boundary) => boundary.toStringAsFixed(3))
+        .join(',');
     final currentPosSeconds =
         widget.audioCurrentPos?.inMilliseconds.toString() ?? 'null';
     final loadSignature =
-        '${widget.audioUrl}|${widget.bookId}|${widget.page}|$currentPosSeconds|$bookmarkSignature';
+        '${widget.audioUrl}|${widget.bookId}|${widget.page}|$currentPosSeconds|'
+        '$bookmarkSignature|$segmentSignature';
 
     // Reload when the server-provided audio state changes, not only the URL.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -77,6 +92,7 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
             bookId: widget.bookId,
             page: widget.page,
             bookmarks: widget.bookmarks,
+            segmentBoundaries: widget.segmentBoundaries,
             audioCurrentPos: widget.audioCurrentPos,
           );
         }
@@ -94,6 +110,12 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
             position: audioPlayerState.position,
             total: audioPlayerState.duration,
             bookmarks: audioPlayerState.bookmarkDurations,
+            abStart: audioPlayerState.abPhase != AbLoopPhase.off
+                ? audioPlayerState.abStart
+                : null,
+            abEnd: audioPlayerState.abPhase == AbLoopPhase.looping
+                ? audioPlayerState.abEnd
+                : null,
             onSeekEnd: (position) =>
                 ref.read(audioPlayerProvider.notifier).seek(position),
           ),
@@ -112,10 +134,9 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         PlayerIconButton(
-          icon: Icons.replay_10,
-          large: true,
-          tooltip: 'Back 10 seconds',
-          onPressed: () => _seekBy(state, const Duration(seconds: -10)),
+          icon: Icons.navigate_before,
+          tooltip: 'Previous sentence',
+          onPressed: notifier.goToPreviousSegment,
         ),
         const SizedBox(width: 8),
         PlayerPlayButton(
@@ -124,10 +145,9 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
         ),
         const SizedBox(width: 8),
         PlayerIconButton(
-          icon: Icons.forward_10,
-          large: true,
-          tooltip: 'Forward 10 seconds',
-          onPressed: () => _seekBy(state, const Duration(seconds: 10)),
+          icon: Icons.navigate_next,
+          tooltip: 'Next sentence',
+          onPressed: notifier.goToNextSegment,
         ),
       ],
     );
@@ -138,9 +158,7 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
     AudioPlayerState state,
     TTSProvider ttsProvider,
   ) {
-    final palette = context.playerPalette;
     final notifier = ref.read(audioPlayerProvider.notifier);
-    final isAtBookmark = notifier.isAtBookmark();
 
     // FittedBox:窄屏(小屏/分屏)上整行等比缩小,不裁切也不换行。
     return FittedBox(
@@ -148,42 +166,9 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            decoration: BoxDecoration(
-              color: palette.groupFill,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                PlayerIconButton(
-                  icon: Icons.navigate_before,
-                  tooltip: 'Previous bookmark',
-                  onPressed: notifier.goToPreviousBookmark,
-                ),
-                PlayerIconButton(
-                  icon: isAtBookmark ? Icons.bookmark : Icons.bookmark_border,
-                  active: isAtBookmark,
-                  tooltip: isAtBookmark ? 'Remove bookmark' : 'Add bookmark',
-                  onPressed: () {
-                    if (isAtBookmark) {
-                      notifier.removeBookmark();
-                    } else {
-                      notifier.addBookmark();
-                    }
-                  },
-                ),
-                PlayerIconButton(
-                  icon: Icons.navigate_next,
-                  tooltip: 'Next bookmark',
-                  onPressed: notifier.goToNextBookmark,
-                ),
-              ],
-            ),
-          ),
+          // 循环用 loop 图标，与 AB 键的 repeat 系区分（两个 repeat 并排难分辨）。
           PlayerIconButton(
-            icon: state.loopMode ? Icons.repeat_on : Icons.repeat,
+            icon: Icons.loop,
             active: state.loopMode,
             tooltip: state.loopMode ? 'Loop sentence on' : 'Loop sentence off',
             onPressed: notifier.toggleLoopMode,
@@ -198,12 +183,30 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
                 : 'Auto-pause at each sentence: off',
             onPressed: notifier.toggleAutoPauseMode,
           ),
+          // AB 复读：文字三态，一眼可辨 ——
+          // 熄灭 "AB"(无底) → 标 A "A"(点亮实心圆) → 循环中 "AB"(点亮实心圆)。
+          PlayerIconButton(
+            label: state.abPhase == AbLoopPhase.aMarked ? 'A' : 'AB',
+            active: state.abPhase != AbLoopPhase.off,
+            tooltip: switch (state.abPhase) {
+              AbLoopPhase.off => 'AB repeat: tap to mark A',
+              AbLoopPhase.aMarked => 'AB repeat: A marked, tap to mark B',
+              AbLoopPhase.looping => 'AB repeat on: tap to cancel',
+            },
+            onPressed: notifier.toggleAbLoop,
+          ),
           PlayerRateStepper(
             label: '${state.playbackSpeed.toStringAsFixed(1)}x',
             onDecrease: () => _stepSpeed(-1),
             onIncrease: () => _stepSpeed(1),
             onReset: () => notifier.setPlaybackSpeed(1.0),
           ),
+          if (widget.onShadowing != null)
+            PlayerIconButton(
+              icon: Icons.mic,
+              tooltip: 'Shadowing: record yourself reading this sentence',
+              onPressed: widget.onShadowing,
+            ),
           if (ttsProvider != TTSProvider.none)
             PlayerIconButton(
               icon: Icons.record_voice_over,
@@ -215,16 +218,6 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
         ],
       ),
     );
-  }
-
-  void _seekBy(AudioPlayerState state, Duration offset) {
-    final target = state.position + offset;
-    final clamped = target < Duration.zero
-        ? Duration.zero
-        : (target > state.duration && state.duration > Duration.zero
-              ? state.duration
-              : target);
-    ref.read(audioPlayerProvider.notifier).seek(clamped);
   }
 
   void _stepSpeed(int direction) {

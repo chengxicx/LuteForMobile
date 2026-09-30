@@ -10,7 +10,7 @@ import '../../../../shared/theme/player_palette.dart';
 /// (6.44:1)更暗 —— 开着的那一项反而更不显眼;"有没有块"才是不依赖颜色的信号
 /// (2026-09-26 Leaf 5C 反馈)。
 class PlayerIconButton extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
   final VoidCallback? onPressed;
 
   /// 开/关型按钮的当前状态（循环、自动暂停、书签…）。
@@ -24,27 +24,51 @@ class PlayerIconButton extends StatelessWidget {
   /// 主控键（±10s）用放大档。
   final bool large;
 
+  /// 文字标签（如 AB 键的 "AB"/"A"）。给定时渲染加粗文字而不是 [icon]，
+  /// 字号约为图标的 0.62 倍 —— 两三个字母的宽度与相邻图标视觉平衡。
+  /// AB 复读这类"状态靠字母本身表达"的键，文字比 repeat 系图标可辨得多。
+  final String? label;
+
   const PlayerIconButton({
     super.key,
-    required this.icon,
+    this.icon,
     required this.onPressed,
     this.active = false,
     this.tooltip,
     this.iconSize,
     this.large = false,
-  });
+    this.label,
+  }) : assert(
+         icon != null || label != null,
+         'PlayerIconButton needs an icon or a label',
+       );
 
   @override
   Widget build(BuildContext context) {
     final palette = context.playerPalette;
     final fill = active ? palette.activeFill : null;
+    final effectiveIconSize =
+        iconSize ?? (large ? palette.largeIconSize : palette.iconSize);
 
+    final contentColor = active ? palette.active : palette.icon;
+    // Text 不读 IconTheme（Icon 才读），颜色必须显式给：active 态是黑圆底上的
+    // 反色字，漏了颜色就是黑底黑字、整个按钮看起来是空心圆。
     final button = IconButton(
-      icon: Icon(icon),
+      icon: label != null
+          ? Text(
+              label!,
+              style: TextStyle(
+                color: contentColor,
+                fontSize: effectiveIconSize * 0.62,
+                fontWeight: FontWeight.w700,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            )
+          : Icon(icon!),
       onPressed: onPressed,
       // 墨水屏下 active 色是"实心块上的反色"，与 fill 成对由 palette 给出。
       color: active ? palette.active : palette.icon,
-      iconSize: iconSize ?? (large ? palette.largeIconSize : palette.iconSize),
+      iconSize: effectiveIconSize,
       padding: const EdgeInsets.all(4),
       visualDensity: VisualDensity.compact,
       tooltip: tooltip,

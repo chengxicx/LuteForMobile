@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/providers/tts_provider.dart';
 import '../../../core/network/tts_service.dart';
+import '../../../shared/providers/server_status_provider.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
+import 'current_book_provider.dart';
 
 /// A raw sentence of the page, as gathered by the reader.  The provider
 /// builds [TTSPlayerSnippet]s (with duration estimates) from these.
@@ -209,13 +211,58 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// 紧随的 speak/play 处理完，新语句可能被在途的 stop 冲掉。
   Future<void>? _pendingStop;
 
+  /// 离线本地兜底引擎，懒建。主服务是 Edge TTS 而服务器不可达时，整页朗读
+  /// 落到它身上，而不是每句都撞一遍注定超时的请求再整页报错 —— 与点词
+  /// 发音链路（sentence_tts_provider）同一套思路。
+  OnDeviceTTSService? _onDeviceFallback;
+
+  /// 本句实际使用的服务。stop/订阅完成事件都要按它来：兜底引擎不在
+  /// [ttsServiceProvider] 里，光停主服务停不掉它。
+  TTSService? _activeService;
+
   @override
   TTSPlayerState build() {
     ref.onDispose(() {
       _positionTimer?.cancel();
       _serviceStateSubscription?.cancel();
+      _onDeviceFallback?.dispose();
+      _onDeviceFallback = null;
     });
     return const TTSPlayerState();
+  }
+
+  /// 发音实际使用的服务：主服务；主服务是服务器型的 Edge TTS 且服务端
+  /// 不可达时，改用本地兜底引擎。其他 provider（Kokoro/OpenAI/…）不是
+  /// Song 服务器的依赖，离线与否由各自的端点决定，不在这里插手。
+  /// 每句都重新解析：服务器中途断线时，下一句自然落到本地兜底；网络恢复
+  /// 时同样自然回到服务器。
+  TTSService _resolveTTSService() {
+    final primary = ref.read(ttsServiceProvider);
+    if (primary is EdgeTTSService && !ServerStatusManager.isReachable) {
+      debugPrint('TTS player: server unreachable, using on-device engine');
+      return _fallbackOnDeviceService();
+    }
+    return primary;
+  }
+
+  OnDeviceTTSService _fallbackOnDeviceService() {
+    final existing = _onDeviceFallback;
+    if (existing != null) return existing;
+    final service = OnDeviceTTSService();
+    _onDeviceFallback = service;
+    return service;
+  }
+
+  /// 兜底引擎开口前的装配（语速用设置页 on-device 的 Rate）。与点词发音
+  /// 链路共用 [prepareOnDeviceFallback]。
+  Future<void> _prepareFallbackService() async {
+    final fallback = _onDeviceFallback;
+    if (fallback == null) return;
+    await prepareOnDeviceFallback(
+      fallback,
+      config: onDeviceConfigForFallback(ref.read(ttsSettingsProvider)),
+      bookLanguageName: ref.read(currentBookProvider).languageName,
+    );
   }
 
   /// Loads a new set of sentences (one full page) and prepares playback.
@@ -473,7 +520,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     }
   }
 
-  Future<void> _speakCurrent() async {
+  Future<void> _speakCurrent({bool allowFallbackRetry = true}) async {
     final snippet = state.currentSnippet;
     if (snippet == null) {
       _positionTimer?.cancel();
@@ -500,13 +547,21 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     // 世代），等回来的这里已是过时请求，不得再武装完成处理或改状态。
     final epoch = _transitionEpoch;
 
-    _subscribeService();
-
     try {
-      final service = ref.read(ttsServiceProvider);
+      final service = _resolveTTSService();
+      _activeService = service;
+      // 完成事件始终从本句实际使用的服务的流上收：兜底引擎不在
+      // [ttsServiceProvider] 里，光订阅主服务收不到它的完成事件。
+      _subscribeToService(service);
       state = state.copyWith(status: TTSPlayerStatus.loading);
       await _applyPlaybackRate(service);
       if (epoch != _transitionEpoch) return;
+
+      final usingFallback = !identical(service, ref.read(ttsServiceProvider));
+      if (usingFallback) {
+        await _prepareFallbackService();
+        if (epoch != _transitionEpoch) return;
+      }
 
       // Cached bytes belong to one service instance; anything fetched before
       // a rebuild can carry a different voice or language than the one now
@@ -563,6 +618,19 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       _onServiceCompleted();
     } catch (e) {
       if (epoch != _transitionEpoch) return;
+      // 主服务（Edge TTS）这句中途失败、且服务器此刻已判不可达：换本地
+      // 兜底引擎把这句读出来，而不是弹横幅卡住整页。只递归重试一次
+      // （兜底引擎自己再失败就走正常报错）。
+      final primary = ref.read(ttsServiceProvider);
+      final usedFallback = _onDeviceFallback != null &&
+          identical(_activeService, _onDeviceFallback);
+      if (allowFallbackRetry &&
+          !usedFallback &&
+          primary is EdgeTTSService &&
+          !ServerStatusManager.isReachable) {
+        await _speakCurrent(allowFallbackRetry: false);
+        return;
+      }
       _positionTimer?.cancel();
       state = state.copyWith(
         status: TTSPlayerStatus.error,
@@ -577,7 +645,12 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// rebuilt from the settings comes back at the configured rate -- so a rate
   /// the user picked in the player bar still has to be re-applied whenever the
   /// service instance itself changes, not just when the number changed.
+  ///
+  /// 本地兜底引擎是例外：它的语速由设置页 on-device 的 Rate 决定（见
+  /// [_prepareFallbackService]）。播放器倍率是网络音频的播放速度，推给
+  /// flutter_tts 会错标刻度（1.0 -> 平台 2 倍速），跳过。
   Future<void> _applyPlaybackRate(TTSService service) async {
+    if (!identical(service, ref.read(ttsServiceProvider))) return;
     if (_rateAppliedTo == service && _appliedRate == state.playbackRate) return;
     await service.setPlaybackRate(state.playbackRate);
     _rateAppliedTo = service;
@@ -597,7 +670,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
 
     final TTSService service;
     try {
-      service = ref.read(ttsServiceProvider);
+      service = _resolveTTSService();
     } catch (_) {
       return;
     }
@@ -631,9 +704,8 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _prefetchingIndex = null;
   }
 
-  void _subscribeService() {
+  void _subscribeToService(TTSService service) {
     _serviceStateSubscription?.cancel();
-    final service = ref.read(ttsServiceProvider);
     _serviceStateSubscription = service.playerStateStream.listen((playerState) {
       if (playerState != PlayerState.completed &&
           playerState != PlayerState.stopped) {
@@ -782,8 +854,15 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _advanceOnComplete = false;
     _transitionEpoch++;
     _stopRequestedAt = DateTime.now();
-    final service = ref.read(ttsServiceProvider);
-    _pendingStop = service.stop().catchError((Object _) {});
+    // 本句若走的是本地兜底实例，得停它本身 —— 它不在 [ttsServiceProvider]
+    // 里，停主服务停不掉它。主服务也顺手停一下：它的播放器可能还压着
+    // 上一句的网络音频。
+    final primary = ref.read(ttsServiceProvider);
+    final active = _activeService;
+    final stopFuture = active != null && !identical(active, primary)
+        ? active.stop()
+        : primary.stop();
+    _pendingStop = stopFuture.catchError((Object _) {});
     unawaited(_pendingStop);
   }
 }

@@ -926,6 +926,34 @@ class ApiService {
   }
 
   // -------------------------------------------------------------------------
+  // Shadowing (read-aloud scoring, mirrors lute.read.routes /shadowing)
+  // -------------------------------------------------------------------------
+
+  /// POST /read/shadowing/transcribe -- scores one shadowing take.
+  ///
+  /// [data] is a multipart [FormData] (audio file + language_id + the
+  /// sentence's token list).  `_noQueue` because a take is worthless once
+  /// stale -- the user is standing right there and wants the score now, so
+  /// a queued replay minutes later would only confuse.
+  ///
+  /// The route transcribes synchronously on the server's CPU, so the wait
+  /// is routinely tens of seconds (model load on a cold server on top) --
+  /// the 10s receive timeout the rest of the API lives with would abort
+  /// mid-transcription every time.
+  Future<Response<String>> postShadowingTranscribe(dynamic data) async {
+    return await _dio.post<String>(
+      '/read/shadowing/transcribe',
+      data: data,
+      options: Options(
+        extra: _noQueue,
+        sendTimeout: const Duration(seconds: 60),
+        receiveTimeout: const Duration(seconds: 120),
+      ),
+    );
+  }
+
+
+  // -------------------------------------------------------------------------
   // Review queue (mirrors lute.review.routes; the web UI posts the same JSON)
   // -------------------------------------------------------------------------
 
