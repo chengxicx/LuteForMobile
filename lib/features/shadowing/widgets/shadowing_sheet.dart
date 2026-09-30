@@ -250,6 +250,13 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     PlayerPalette palette,
     ShadowingNotifier notifier,
   ) {
+    // Only sizes already downloaded on the server, once at least one is
+    // cached -- a dropdown tap must not silently start a multi-hundred-MB
+    // download server-side.  Nothing cached yet (or the server could not
+    // be asked): every size stays offered, the first download is
+    // unavoidable anyway.
+    final state = ref.watch(shadowingProvider);
+    final offered = state.cachedModels ?? kShadowingModelSizes;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -259,15 +266,15 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         ),
         const SizedBox(width: 6),
         DropdownButton<String>(
-          value: ref.watch(
-            shadowingProvider.select((s) => s.modelSize),
-          ),
+          value: offered.contains(state.modelSize)
+              ? state.modelSize
+              : offered.first,
           underline: const SizedBox.shrink(),
           isDense: true,
           style: TextStyle(color: palette.icon, fontSize: 13),
           dropdownColor: palette.card,
           icon: Icon(Icons.arrow_drop_down, color: palette.muted, size: 20),
-          items: kShadowingModelSizes
+          items: offered
               .map(
                 (size) => DropdownMenuItem(value: size, child: Text(size)),
               )
@@ -281,9 +288,21 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   }
 
   Widget _buildStatusLine(ShadowingState state, PlayerPalette palette) {
-    final text = state.isRecording
-        ? 'Recording… ${state.recordingSeconds}s/${ShadowingNotifier.maxRecordingSeconds}s -- read the sentence aloud'
-        : 'Scoring… (whisper is transcribing on the server)';
+    final String text;
+    if (state.isRecording) {
+      text =
+          'Recording… ${state.recordingSeconds}s/${ShadowingNotifier.maxRecordingSeconds}s -- read the sentence aloud';
+    } else if (state.waitPhase == ShadowingWaitPhase.loadingModel) {
+      // Only the first take of a session waits here (the model is cached
+      // afterwards, per size) -- say so rather than blaming every slow
+      // transcription on the model load.
+      final hint = state.waitSeconds > 20
+          ? ' (first run downloads it, this can take minutes)'
+          : '';
+      text = 'Loading the whisper model… ${state.waitSeconds}s$hint';
+    } else {
+      text = 'Transcribing… ${state.waitSeconds}s';
+    }
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Row(

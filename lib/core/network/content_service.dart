@@ -1452,19 +1452,23 @@ class ContentService {
     ApiLogger.logState('savePageToCache', details: 'deprecated method called');
   }
 
-  /// Scores one shadowing take: uploads the recording, the server
-  /// transcribes it with whisper and diffs it against [tokens].
+  /// Scores one shadowing take: uploads the recording, then polls the
+  /// server's background scoring task until it settles.
   ///
-  /// Mirrors the web reader's `lute-shadowing.js` payload (audio blob +
-  /// language_id + the sentence's token texts).  The response is the one
-  /// JSON endpoint the shadowing flow needs, so it is parsed directly --
-  /// no HTML scraping here.  Network/HTTP failures surface as
-  /// [ShadowingException] so the panel can tell the user what to do next.
+  /// The POST itself returns quickly with {"task_id"}: scoring runs on a
+  /// worker thread because the first take may have to download the
+  /// whisper model -- far beyond any request timeout.  Mirrors the web
+  /// reader's `lute-shadowing.js` poll loop: transient network errors
+  /// while polling are tolerated (the worker keeps running), and [onWait]
+  /// reports the phase plus elapsed seconds so the panel can show a live
+  /// wait.  Network/HTTP failures surface as [ShadowingException] so the
+  /// panel can tell the user what to do next.
   Future<ShadowingResult> transcribeShadowing({
     required String audioPath,
     required int languageId,
     required List<String> tokens,
     String? model,
+    void Function(ShadowingWaitPhase phase, int elapsedSeconds)? onWait,
   }) async {
     final filename = audioPath.split(Platform.pathSeparator).last;
     final payload = FormData.fromMap({
@@ -1487,7 +1491,7 @@ class ContentService {
     } on FormatException {
       throw const ShadowingException(
         ShadowingErrorKind.serverError,
-        'Unexpected server response while scoring the recording.',
+        'Unexpected server response while starting the scoring task.',
       );
     }
     if (body.containsKey('error')) {
@@ -1498,7 +1502,99 @@ class ContentService {
         body['error'] as String? ?? 'Shadowing scoring failed.',
       );
     }
-    return ShadowingResult.fromJson(body);
+    final taskId = body['task_id'] as String?;
+    if (taskId == null || taskId.isEmpty) {
+      throw const ShadowingException(
+        ShadowingErrorKind.serverError,
+        'The server did not start a scoring task -- try again.',
+      );
+    }
+
+    return _pollShadowingTask(taskId, onWait);
+  }
+
+  /// Polls a scoring task every 1.5s for up to 10 minutes (same budget as
+  /// the web reader).  A failed poll is skipped, not fatal: the
+  /// server-side worker keeps running regardless of the client's
+  /// connectivity.
+  Future<ShadowingResult> _pollShadowingTask(
+    String taskId,
+    void Function(ShadowingWaitPhase, int)? onWait,
+  ) async {
+    final started = DateTime.now();
+    const pollInterval = Duration(milliseconds: 1500);
+    const maxWait = Duration(minutes: 10);
+
+    while (DateTime.now().difference(started) < maxWait) {
+      await Future<void>.delayed(pollInterval);
+      final Map<String, dynamic> data;
+      try {
+        final response = await _apiService.getShadowingStatus(taskId);
+        data = jsonDecode(response.data ?? '') as Map<String, dynamic>;
+      } on FormatException {
+        continue;
+      } on DioException {
+        continue;
+      }
+
+      final taskState = data['state'] as String?;
+      if (taskState == 'finished') {
+        final result = data['result'];
+        if (result is Map<String, dynamic>) {
+          return ShadowingResult.fromJson(result);
+        }
+        throw const ShadowingException(
+          ShadowingErrorKind.serverError,
+          'The scoring task finished without a result -- try again.',
+        );
+      }
+      if (taskState == 'error') {
+        throw _shadowingTaskError(data['error'] as String?);
+      }
+      if (taskState == 'unknown') {
+        throw const ShadowingException(
+          ShadowingErrorKind.serverError,
+          'The scoring task was lost (server restart?) -- try again.',
+        );
+      }
+      onWait?.call(
+        taskState == 'loading_model'
+            ? ShadowingWaitPhase.loadingModel
+            : ShadowingWaitPhase.transcribing,
+        DateTime.now().difference(started).inSeconds,
+      );
+    }
+    throw const ShadowingException(
+      ShadowingErrorKind.serverError,
+      'Transcription timed out.',
+    );
+  }
+
+  /// Task failures come back as plain text in the poller's `error` field
+  /// (before scoring went asynchronous, the no-speech case was an HTTP
+  /// 422 -- re-recognise it here so the panel keeps its category).
+  ShadowingException _shadowingTaskError(String? message) {
+    final text = (message ?? '').trim();
+    if (text.toLowerCase().contains('no speech')) {
+      return ShadowingException(ShadowingErrorKind.noSpeech, text);
+    }
+    return ShadowingException(
+      ShadowingErrorKind.serverError,
+      text.isEmpty ? 'Transcription failed.' : text,
+    );
+  }
+
+  /// Per-size whisper model cache status from the server, e.g.
+  /// {installed: true, models: [{size: small, cached: true, size_mb: 461},
+  /// ...]}.  Returns null when the server cannot be reached -- callers
+  /// fall back to showing every model size.
+  Future<Map<String, dynamic>?> fetchWhisperModels() async {
+    try {
+      final response = await _apiService.getWhisperModels();
+      return jsonDecode(response.data ?? '') as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
   }
 
   ShadowingException _shadowingErrorFromDio(DioException e) {

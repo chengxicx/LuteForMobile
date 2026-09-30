@@ -929,17 +929,16 @@ class ApiService {
   // Shadowing (read-aloud scoring, mirrors lute.read.routes /shadowing)
   // -------------------------------------------------------------------------
 
-  /// POST /read/shadowing/transcribe -- scores one shadowing take.
+  /// POST /read/shadowing/transcribe -- uploads one shadowing take and
+  /// starts a background scoring task; the response body is {"task_id"}.
   ///
-  /// [data] is a multipart [FormData] (audio file + language_id + the
-  /// sentence's token list).  `_noQueue` because a take is worthless once
-  /// stale -- the user is standing right there and wants the score now, so
-  /// a queued replay minutes later would only confuse.
-  ///
-  /// The route transcribes synchronously on the server's CPU, so the wait
-  /// is routinely tens of seconds (model load on a cold server on top) --
-  /// the 10s receive timeout the rest of the API lives with would abort
-  /// mid-transcription every time.
+  /// Scoring runs on a server-side worker thread (the first take may
+  /// download the whisper model, hundreds of MB, before the CPU inference
+  /// even starts) -- far beyond any request timeout, so the route returns
+  /// immediately and [getShadowingStatus] polls the task.  `_noQueue`
+  /// because a take is worthless once stale -- the user is standing right
+  /// there and wants the score now, so a queued replay minutes later
+  /// would only confuse.
   Future<Response<String>> postShadowingTranscribe(dynamic data) async {
     return await _dio.post<String>(
       '/read/shadowing/transcribe',
@@ -947,8 +946,29 @@ class ApiService {
       options: Options(
         extra: _noQueue,
         sendTimeout: const Duration(seconds: 60),
-        receiveTimeout: const Duration(seconds: 120),
       ),
+    );
+  }
+
+  /// GET /read/shadowing/status/`taskId` -- poller payload for a scoring
+  /// task: {state, result, error}.  state is one of queued /
+  /// loading_model / transcribing / finished / error, or unknown once the
+  /// server no longer remembers the task (restart / TTL).
+  Future<Response<String>> getShadowingStatus(String taskId) async {
+    return await _dio.get<String>(
+      '/read/shadowing/status/$taskId',
+      options: Options(extra: _noQueue),
+    );
+  }
+
+  /// GET /book/whisper/models -- install state + per-size model cache
+  /// status: {installed: bool, models: [{size, cached, size_mb}]}.
+  /// Lets the shadowing panel hide model sizes that were never
+  /// downloaded, so picking one cannot trigger a server-side download.
+  Future<Response<String>> getWhisperModels() async {
+    return await _dio.get<String>(
+      '/book/whisper/models',
+      options: Options(extra: _noQueue),
     );
   }
 

@@ -6,6 +6,14 @@
 /// surface forms).
 enum ShadowingTokenStatus { miss, fuzzy, match }
 
+/// What the server's scoring task is doing while the panel waits.
+///
+/// Scoring is asynchronous server-side (the first take may download the
+/// whisper model, hundreds of MB), so the transcribe POST only returns a
+/// task_id and the client polls `/read/shadowing/status/<task_id>`.  The
+/// task reports which of the two slow phases it is in.
+enum ShadowingWaitPhase { loadingModel, transcribing }
+
 /// One shadowing take, as scored by `POST /read/shadowing/transcribe`.
 ///
 /// [statuses] is parallel to the token list that was uploaded -- index i
