@@ -16,6 +16,7 @@ enum HardwareKeyAction { previous, next }
 class HardwareKeyNavigator extends StatelessWidget {
   final Widget child;
   final bool enabled;
+  final FocusNode? focusNode;
   final void Function(HardwareKeyAction action) onAction;
 
   const HardwareKeyNavigator({
@@ -23,6 +24,7 @@ class HardwareKeyNavigator extends StatelessWidget {
     required this.child,
     required this.onAction,
     this.enabled = true,
+    this.focusNode,
   });
 
   static HardwareKeyAction? actionForKeyEvent(KeyEvent event) {
@@ -45,6 +47,7 @@ class HardwareKeyNavigator extends StatelessWidget {
     if (!enabled) return child;
     return Focus(
       // 阅读页里没有可聚焦控件，不自己抢焦点就收不到按键。
+      focusNode: focusNode,
       autofocus: true,
       onKeyEvent: (node, event) {
         final action = actionForKeyEvent(event);

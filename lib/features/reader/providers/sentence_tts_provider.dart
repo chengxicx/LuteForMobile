@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:song_mobile/core/network/tts_service.dart';
 import 'package:song_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/features/settings/providers/tts_settings_provider.dart';
 import 'package:song_mobile/shared/providers/server_status_provider.dart';
-import 'package:song_mobile/shared/utils/tts_language_mapper.dart';
 import '../providers/audio_player_provider.dart';
 import '../providers/current_book_provider.dart';
 
@@ -125,20 +125,18 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
     return service;
   }
 
-  /// 本地兜底引擎的读音语言跟随当前书（与 Edge TTS 的语言同源），设置
-  /// 失败不阻塞发音 —— 引擎会退到该 locale 的系统默认声音。
-  Future<void> _applyFallbackLanguage() async {
+  /// 兜底引擎开口前的装配：设置页 on-device 配置（语速/音调/音量，默认
+  /// 0.5 = Android 正常速度 —— 裸引擎的出厂默认在设备上体感太快，且设置
+  /// 滑块对它不生效）+ 当前书的语言。与整页朗读播放器共用同一套装配
+  /// （[prepareOnDeviceFallback]）。
+  Future<void> _prepareFallbackService() async {
     final fallback = _onDeviceFallback;
     if (fallback == null) return;
-    final bookLanguage = ref.read(currentBookProvider).languageName;
-    if (bookLanguage == null || bookLanguage.trim().isEmpty) return;
-    try {
-      await fallback.setLanguage(ttsLanguageCodeFor(bookLanguage));
-    } catch (e) {
-      debugPrint(
-        'TTS fallback: failed to set language "$bookLanguage": $e',
-      );
-    }
+    await prepareOnDeviceFallback(
+      fallback,
+      config: onDeviceConfigForFallback(ref.read(ttsSettingsProvider)),
+      bookLanguageName: ref.read(currentBookProvider).languageName,
+    );
   }
 
   /// 解析服务并完成一次「合成 + 开口」。初始尝试与每一轮重试都走这里：
@@ -172,7 +170,7 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       if (isPrimary) {
         await ref.read(ttsServiceProvider.notifier).ensureServiceReady();
       } else {
-        await _applyFallbackLanguage();
+        await _prepareFallbackService();
       }
       await service.speak(text);
       state = state.copyWith(status: SentenceTTSStatus.playing);

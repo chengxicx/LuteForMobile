@@ -157,3 +157,35 @@ class TTSNotifier extends Notifier<TTSService> {
 final ttsServiceProvider = NotifierProvider<TTSNotifier, TTSService>(() {
   return TTSNotifier();
 });
+
+/// 离线本地兜底引擎的 on-device 配置（点词发音与整页朗读播放器共用）。
+///
+/// 语速来自设置页 on-device 的 Rate（默认 0.5 = Android 正常速度）：裸引擎
+/// 的语速是设备引擎的出厂默认，用户体感太快、设置滑块也对它不生效；显式
+/// 应用配置后，滑块就是离线兜底的语速旋钮。旧版本持久化数据可能缺
+/// on-device 配置项，缺了就用默认值补一份。
+TTSSettingsConfig onDeviceConfigForFallback(TTSSettings settings) {
+  return settings.providerConfigs[TTSProvider.onDevice] ??
+      const TTSSettingsConfig(rate: 0.5, pitch: 1.0, volume: 1.0);
+}
+
+/// 兜底引擎开口前的装配：应用配置（语速/音调/音量）与当前书的语言。
+/// 两步都尽力而为：失败不阻塞发音，引擎退到出厂默认的声音与语速。
+Future<void> prepareOnDeviceFallback(
+  OnDeviceTTSService service, {
+  required TTSSettingsConfig config,
+  String? bookLanguageName,
+}) async {
+  try {
+    await service.setSettings(config);
+  } catch (e) {
+    debugPrint('TTS fallback: failed to apply on-device settings: $e');
+  }
+  final language = bookLanguageName?.trim();
+  if (language == null || language.isEmpty) return;
+  try {
+    await service.setLanguage(ttsLanguageCodeFor(language));
+  } catch (e) {
+    debugPrint('TTS fallback: failed to set language "$language": $e');
+  }
+}

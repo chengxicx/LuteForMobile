@@ -37,10 +37,15 @@ ssh root@172.236.226.132 'cd /root/android-dev/src/LuteForMobile && export PATH=
 
 ```bash
 ssh root@172.236.226.132 'systemctl reset-failed fbuild.service 2>/dev/null;
-  systemd-run --collect --unit=fbuild -p MemoryMax=2400M -p MemorySwapMax=3G --setenv=HOME=/root \
+  systemd-run --collect --unit=fbuild -p MemoryMax=2800M -p MemorySwapMax=3500M --setenv=HOME=/root \
     bash -c "bash /opt/build_apk.sh > /tmp/build.log 2>&1; echo EXIT=\$? >> /tmp/build.log"'
 # 轮询：grep EXIT= /tmp/build.log；systemctl is-active fbuild.service
 ```
+
+⚠️ 2026-09-28 实测：大改动后 dart AOT 全量重编，`MemoryMax=2400M + SwapMax=3G` 会被
+OOM killer 杀掉（journal 显示 `Failed with result 'oom-kill'`，且 /tmp/build.log 没有
+EXIT= 行、APK mtime 不更新——用这三点识别被杀）。现用 2800M + 3.5G swap（机器 3.9G RAM
++ 4.6G swap，够用但不宽裕）；重跑前可 `sync; echo 3 > /proc/sys/vm/drop_caches`。
 
 产物：`/opt/lute_mobile_src/build/app/outputs/flutter-apk/app-release.apk`（约 28MB，arm64 only，sha1 在同目录 `.sha1`）。
 缓存命中约 2 分钟；`systemd-run --wait` 不能用（与 `--scope` 互斥，去掉 `--scope` 又变成"启动即返回"，会在没构建的情况下报 success）。

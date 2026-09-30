@@ -8,6 +8,7 @@ import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../reader/providers/sentence_tts_provider.dart';
 import '../../settings/providers/settings_provider.dart';
+import '../../../shared/utils/tts_speak_text.dart';
 import '../models/review_models.dart';
 import '../providers/review_provider.dart';
 
@@ -35,7 +36,13 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   void _speak(ReviewCard card) {
     if (card.termText.isEmpty) return;
-    ref.read(sentenceTTSProvider.notifier).speakSentence(card.termText, card.id);
+    // An annotated reading (romanization) outranks the surface form for TTS.
+    ref
+        .read(sentenceTTSProvider.notifier)
+        .speakSentence(
+          ttsSpeakTextForTerm(term: card.termText, reading: card.romanization),
+          card.id,
+        );
   }
 
   void _startSession() {

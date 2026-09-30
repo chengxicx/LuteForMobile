@@ -7,21 +7,37 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
+import '../../../shared/providers/server_status_provider.dart';
 import 'reader_provider.dart';
 import '../utils/player_save_policy.dart';
 import '../../../features/settings/providers/settings_provider.dart';
+
+/// AB 复读的三态：熄灭 → 已标 A → A↔B 循环中。会话级，不持久化。
+enum AbLoopPhase { off, aMarked, looping }
 
 class AudioPlayerState {
   final AudioPlayer audioPlayer;
   final PlayerState playerState;
   final Duration position;
   final Duration duration;
+
+  /// 用户书签（服务端同步的手动时间戳）。时间轴刻度只画这一份。
   final List<Duration> bookmarkDurations;
+
+  /// 句子分段边界（SRT cue 起点；无 cues 的老书签书回退为服务端书签）。
+  /// 驱动循环/自动暂停的逐句判定与实体键/左右键的切句 —— 刻意**不画**上
+  /// 时间轴：它是播放控制数据，不是书签。
+  final List<Duration> segmentBoundaries;
   final String? errorMessage;
   final bool isLoading;
   final double playbackSpeed;
   final bool loopMode;
   final bool autoPauseMode;
+
+  /// AB 复读的当前状态与 A/B 两点（off 态下两者为 null）。
+  final AbLoopPhase abPhase;
+  final Duration? abStart;
+  final Duration? abEnd;
 
   /// copyWith 的「未传参」哨兵：`errorMessage ?? this.errorMessage` 会让
   /// 「传 null 表示清空」和「没传」变成同一件事，错误提示一旦写上就清不掉。
@@ -33,11 +49,15 @@ class AudioPlayerState {
     required this.position,
     required this.duration,
     required this.bookmarkDurations,
+    this.segmentBoundaries = const [],
     this.errorMessage,
     required this.isLoading,
     this.playbackSpeed = 1.0,
     this.loopMode = false,
     this.autoPauseMode = false,
+    this.abPhase = AbLoopPhase.off,
+    this.abStart,
+    this.abEnd,
   });
 
   List<double> get bookmarkPositions {
@@ -52,11 +72,15 @@ class AudioPlayerState {
     Duration? position,
     Duration? duration,
     List<Duration>? bookmarkDurations,
+    List<Duration>? segmentBoundaries,
     Object? errorMessage = _unset,
     bool? isLoading,
     double? playbackSpeed,
     bool? loopMode,
     bool? autoPauseMode,
+    AbLoopPhase? abPhase,
+    Object? abStart = _unset,
+    Object? abEnd = _unset,
   }) {
     return AudioPlayerState(
       audioPlayer: audioPlayer ?? this.audioPlayer,
@@ -64,6 +88,7 @@ class AudioPlayerState {
       position: position ?? this.position,
       duration: duration ?? this.duration,
       bookmarkDurations: bookmarkDurations ?? this.bookmarkDurations,
+      segmentBoundaries: segmentBoundaries ?? this.segmentBoundaries,
       errorMessage: errorMessage == _unset
           ? this.errorMessage
           : errorMessage as String?,
@@ -71,6 +96,10 @@ class AudioPlayerState {
       playbackSpeed: playbackSpeed ?? this.playbackSpeed,
       loopMode: loopMode ?? this.loopMode,
       autoPauseMode: autoPauseMode ?? this.autoPauseMode,
+      abPhase: abPhase ?? this.abPhase,
+      // A/B 两点要支持「传 null 表示清除」，与 errorMessage 同一套哨兵。
+      abStart: abStart == _unset ? this.abStart : abStart as Duration?,
+      abEnd: abEnd == _unset ? this.abEnd : abEnd as Duration?,
     );
   }
 }
@@ -89,6 +118,11 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
   /// 最近一次 loadAudio 的音源地址,供 play() 的重新装载兜底复用。
   String? _lastAudioUrl;
+
+  /// 最近一次 loadAudio 落到本地的缓存音频文件;音源直接走 URL(无鉴权头
+  /// 的老服务器)时为 null。影子跟读的原句裁剪播放从它取片段,免去另一套
+  /// 下载逻辑 —— 有声书的缓存本来就是离线播放的根基,复用同一份文件。
+  File? lastLocalAudioFile;
 
   /// 切后台前播放到的位置，等回到前台时用来复位播放条。
   ///
@@ -115,6 +149,10 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   /// 后者上报，就是全库书签被清空的原因（Leaf5C 实测：重开一次书，
   /// `BkAudioBookmarks` 从 `86.989` 变成 NULL）。
   bool _bookmarksAuthoritative = false;
+
+  /// 最近一次句尾（循环/自动暂停）处理时刻。seek 回段首时在途的旧位置
+  /// 事件还会到达，600ms 内不做第二次跨越判定，避免同一边界连环触发。
+  DateTime? _boundaryHandledAt;
 
   late ContentService _contentService;
   String? _previousServerUrl;
@@ -209,45 +247,90 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   }
 
   void _handlePositionChanged(Duration position) {
-    final bookmarks = state.bookmarkDurations;
+    // 暂停/停止态不收位置事件：播放器没在走，此刻到达的事件全是 seek 之前
+    // 发出的迟到回声 —— 自动暂停 seek 回句首后它们会把显示和高亮推回句尾/
+    // 下一句，切到下一句的 seek 也会被盖回去。显示由 seek() 的显式写入负责。
+    if (state.playerState != PlayerState.playing) {
+      return;
+    }
+
+    // A-B 复读优先于句段循环/自动暂停：用户圈了 A↔B 就听这一段，
+    // 播放头到 B 回 A，句段边界在 AB 范围内不参与。
+    if (state.abPhase == AbLoopPhase.looping &&
+        state.abEnd != null &&
+        position >= state.abEnd!) {
+      final target = state.abStart ?? Duration.zero;
+      debugPrint('AudioPlayer: AB loop reached B($position), back to A($target)');
+      unawaited(_audioPlayer?.seek(target));
+      state = state.copyWith(position: target);
+      return;
+    }
+
+    final boundaries = state.segmentBoundaries;
 
     // Sentence loop / auto-pause.
     //
     // Bookmarks are the sentence/segment start timestamps (the audio
-    // bookmark data synced from the server).  The current segment spans
-    // from the last bookmark at/before the playhead to the next bookmark
-    // (or the audio end for the final segment).  When the playhead
-    // crosses the segment end:
+    // bookmark data synced from the server, or the SRT cue starts derived
+    // in reader_screen._loadAudioIfNeeded).  The segment being played ends
+    // at the NEXT bookmark -- a sentence is finished when the playhead
+    // CROSSES that bookmark, i.e. the previous position event was still
+    // before it and this one is at/past it:
     //   - loop mode: seek back to the segment start and keep playing.
     //   - auto-pause mode: seek back to the segment start and pause, so
     //     pressing play replays the same sentence.
     // Loop takes precedence over auto-pause, matching the web player.
+    //
+    // 必须用「上一个位置事件」判定跨越，而不是拿当前位置反查所属段：位置
+    // 事件一越过书签，"last bookmark <= position" 的归属就滑进新段了，
+    // `position >= segEnd` 永远不成立 —— 旧写法就是这样让 MP3 的循环/
+    // 自动暂停在全曲除最后一段外永远不触发的（2026-09-28 Leaf5C 实测，
+    // JIGSAW 全程播完不停）。
+    //
+    // state.position 就是上一个事件的位置（seek() 会显式写入，所以用户
+    // 拖进度条的大跳不会被判成"跨越"）；触发后 600ms 内不再判，吞掉
+    // seek 回段首时在途的旧位置事件。
     var finalPosition = position;
-    if (bookmarks.isNotEmpty &&
-        state.playerState == PlayerState.playing) {
-      int segStartIndex = -1;
-      for (var i = bookmarks.length - 1; i >= 0; i--) {
-        if (bookmarks[i] <= position) {
-          segStartIndex = i;
+    final handledRecently = _boundaryHandledAt != null &&
+        DateTime.now().difference(_boundaryHandledAt!) <
+            const Duration(milliseconds: 600);
+
+    if (state.playerState == PlayerState.playing &&
+        boundaries.isNotEmpty &&
+        !handledRecently &&
+        position > state.position) {
+      Duration? crossed;
+      for (final b in boundaries) {
+        if (b > state.position && b <= position) {
+          crossed = b;
           break;
         }
       }
 
-      if (segStartIndex >= 0) {
-        final segStart = bookmarks[segStartIndex];
-        final segEnd = segStartIndex + 1 < bookmarks.length
-            ? bookmarks[segStartIndex + 1]
-            : state.duration;
-
-        if (segEnd > segStart && position >= segEnd) {
-          if (state.loopMode) {
-            unawaited(_audioPlayer?.seek(segStart));
-            finalPosition = segStart;
-          } else if (state.autoPauseMode) {
-            unawaited(_audioPlayer?.seek(segStart));
-            unawaited(_audioPlayer?.pause());
-            finalPosition = segStart;
+      if (crossed != null) {
+        // 刚播完这句的起点：crossed 之前最近的边界；第一个边界之前没有
+        // 更早的划分，句首就是音频开头。
+        var segStart = Duration.zero;
+        for (final b in boundaries) {
+          if (b < crossed) {
+            segStart = b;
+          } else {
+            break;
           }
+        }
+        debugPrint(
+          'AudioPlayer: segment boundary crossed at $position, '
+          'boundary=$crossed, segStart=$segStart, '
+          'loop=${state.loopMode}, autoPause=${state.autoPauseMode}',
+        );
+        _boundaryHandledAt = DateTime.now();
+        if (state.loopMode) {
+          unawaited(_audioPlayer?.seek(segStart));
+          finalPosition = segStart;
+        } else if (state.autoPauseMode) {
+          unawaited(_audioPlayer?.seek(segStart));
+          unawaited(_audioPlayer?.pause());
+          finalPosition = segStart;
         }
       }
     }
@@ -282,6 +365,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     required int bookId,
     required int page,
     List<double>? bookmarks,
+    List<double>? segmentBoundaries,
     Duration? audioCurrentPos,
   }) async {
     _reset();
@@ -297,18 +381,34 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
             return Duration(milliseconds: (pos * 1000).round());
           }).toList() ??
           [];
+      final segmentDurations =
+          segmentBoundaries?.map((pos) {
+            return Duration(milliseconds: (pos * 1000).round());
+          }).toList() ??
+          [];
 
-      state = state.copyWith(bookmarkDurations: bookmarkDurations);
+      state = state.copyWith(
+        bookmarkDurations: bookmarkDurations,
+        segmentBoundaries: segmentDurations,
+        // 换书/换页把上一次的 AB 复读一并清掉。
+        abPhase: AbLoopPhase.off,
+        abStart: null,
+        abEnd: null,
+      );
       // `bookmarks == null` 是"页面没告诉我们"，不是"没有书签"；只有前者
-      // 之外的情况才允许写回，见 `_bookmarksAuthoritative`。
+      // 之外的情况才允许写回，见 `_bookmarksAuthoritative`。分段边界
+      // （SRT 派生）不参与书签写回 —— 它们在 `segmentBoundaries` 里，
+      // 与书签彻底分家。
       _bookmarksAuthoritative = bookmarks != null;
 
       await _audioPlayer!.stop();
       final authHeaders = SessionManager.authHeaders();
       if (authHeaders.isEmpty) {
+        lastLocalAudioFile = null;
         await _audioPlayer!.setSourceUrl(audioUrl);
       } else {
         final audioFile = await _ensureLocalAudioFile(audioUrl, authHeaders);
+        lastLocalAudioFile = audioFile;
         await _audioPlayer!.setSourceDeviceFile(audioFile.path);
       }
 
@@ -338,10 +438,13 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       final bookmarkSignature = (bookmarks ?? const <double>[])
           .map((pos) => pos.toStringAsFixed(3))
           .join(',');
+      final segmentSignature = (segmentBoundaries ?? const <double>[])
+          .map((pos) => pos.toStringAsFixed(3))
+          .join(',');
       lastLoadSignature =
           '$audioUrl|$bookId|$page|'
           '${audioCurrentPos?.inMilliseconds.toString() ?? 'null'}|'
-          '$bookmarkSignature';
+          '$bookmarkSignature|$segmentSignature';
     } catch (e) {
       state = state.copyWith(isLoading: false, errorMessage: e.toString());
     }
@@ -433,6 +536,11 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   }
 
   Future<void> seek(Duration position) async {
+    // 显式 seek（切句/拖进度条）后 600ms 内不做句段跨越判定：seek 的回声
+    // 事件会先落回旧位置，循环模式下会被跨越检测误判成"越过句尾"，
+    // 把播放头拽回旧句重播 —— 用户看到的就是"按一下下一句没切过去"。
+    // 见 _handlePositionChanged 的跨越检测与 _boundaryHandledAt。
+    _boundaryHandledAt = DateTime.now();
     await _audioPlayer!.seek(position);
     // 同上：暂停态的 seek 不保证推位置事件，而下面立刻就要 `_savePosition()`。
     // 不显式写 state 的话，拖到开头会保存旧位置、拖到别处会保存 0。
@@ -476,33 +584,68 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _savePosition(includeBookmarks: true);
   }
 
-  void goToPreviousBookmark() {
-    final currentPosition = state.position;
-    final bookmarks = state.bookmarkDurations;
-
-    if (bookmarks.isEmpty) return;
-
-    final previousBookmarks = bookmarks
-        .where((b) => currentPosition - b > Duration(milliseconds: 800))
-        .toList();
-
-    if (previousBookmarks.isNotEmpty) {
-      final nearestBookmark = previousBookmarks.reduce((a, b) => a > b ? a : b);
-      seek(nearestBookmark);
+  /// AB 复读三态：熄灭 → 标 A → 标 B 并立即回 A 开始循环 → 熄灭。
+  /// B 没标到 A 之后（误触/seek 到 A 之前）视为无效，退回熄灭。
+  Future<void> toggleAbLoop() async {
+    switch (state.abPhase) {
+      case AbLoopPhase.off:
+        state = state.copyWith(
+          abPhase: AbLoopPhase.aMarked,
+          abStart: state.position,
+        );
+      case AbLoopPhase.aMarked:
+        final start = state.abStart ?? Duration.zero;
+        final end = state.position;
+        if (end <= start) {
+          state = state.copyWith(
+            abPhase: AbLoopPhase.off,
+            abStart: null,
+            abEnd: null,
+          );
+          return;
+        }
+        state = state.copyWith(abPhase: AbLoopPhase.looping, abEnd: end);
+        // 立即回 A 开始复读这一段。
+        unawaited(_audioPlayer?.seek(start));
+        state = state.copyWith(position: start);
+      case AbLoopPhase.looping:
+        state = state.copyWith(
+          abPhase: AbLoopPhase.off,
+          abStart: null,
+          abEnd: null,
+        );
     }
   }
 
-  void goToNextBookmark() {
+  /// 上一句/下一句：沿 [AudioPlayerState.segmentBoundaries] 跳到相邻的
+  /// 分段起点。自动暂停停在句首时，上一句要求 800ms 之外还有更早的边界。
+  void goToPreviousSegment() {
     final currentPosition = state.position;
-    final bookmarks = state.bookmarkDurations;
+    final boundaries = state.segmentBoundaries;
 
-    if (bookmarks.isEmpty) return;
+    if (boundaries.isEmpty) return;
 
-    final nextBookmarks = bookmarks.where((b) => b > currentPosition).toList();
+    final previousBoundaries = boundaries
+        .where((b) => currentPosition - b > Duration(milliseconds: 800))
+        .toList();
 
-    if (nextBookmarks.isNotEmpty) {
-      final nearestBookmark = nextBookmarks.reduce((a, b) => a < b ? a : b);
-      seek(nearestBookmark);
+    if (previousBoundaries.isNotEmpty) {
+      final nearest = previousBoundaries.reduce((a, b) => a > b ? a : b);
+      seek(nearest);
+    }
+  }
+
+  void goToNextSegment() {
+    final currentPosition = state.position;
+    final boundaries = state.segmentBoundaries;
+
+    if (boundaries.isEmpty) return;
+
+    final nextBoundaries = boundaries.where((b) => b > currentPosition).toList();
+
+    if (nextBoundaries.isNotEmpty) {
+      final nearest = nextBoundaries.reduce((a, b) => a < b ? a : b);
+      seek(nearest);
     }
   }
 
@@ -531,8 +674,10 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _positionBeforeSuspend = null;
     _needsSeekBeforePlay = false;
     _bookmarksAuthoritative = false;
+    _boundaryHandledAt = null;
     lastLoadSignature = null;
     _lastAudioUrl = null;
+    lastLocalAudioFile = null;
     _stopSafely();
   }
 
@@ -580,8 +725,12 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   }
 
   /// Returns a local copy of [audioUrl], downloading it (streaming to disk)
-  /// with the session auth headers when the cached copy does not match the
-  /// remote size.
+  /// when the cached copy is missing or stale.
+  ///
+  /// 缓存就是离线播放的根基：在线读过一遍的书，音频文件留在缓存目录里，
+  /// 之后离线也能整本听。探测大小这一步在离线时必然失败 —— 失败不能当成
+  /// 「缓存无效」，得当成「网络不可用」，信手上的文件；只有真没有缓存时
+  /// 才去下载（离线时那一下注定失败，报错与从前一致）。
   Future<File> _ensureLocalAudioFile(
     String audioUrl,
     Map<String, String> authHeaders,
@@ -593,7 +742,11 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       '${audioDir.path}/audiobook_${_bookId}_${audioUrl.hashCode.abs()}.audio',
     );
 
-    final remoteSize = await _probeAudioSize(audioUrl, authHeaders);
+    // 离线（服务器已判不可达）就别再发 Range 探测了：它只会白等一个
+    // connectTimeout 再失败，让离线开书平白多挂十几秒。
+    final remoteSize = ServerStatusManager.isReachable
+        ? await _probeAudioSize(audioUrl, authHeaders)
+        : null;
     if (remoteSize != null) {
       final localSize = await cacheFile.exists()
           ? await cacheFile.length()
@@ -601,8 +754,14 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       if (localSize == remoteSize) {
         return cacheFile;
       }
+      await _downloadAudioToFile(audioUrl, authHeaders, cacheFile);
+      return cacheFile;
     }
 
+    if (await cacheFile.exists()) {
+      debugPrint('AudioPlayer: probe failed/unreachable, using cached copy');
+      return cacheFile;
+    }
     await _downloadAudioToFile(audioUrl, authHeaders, cacheFile);
     return cacheFile;
   }
@@ -711,7 +870,8 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       final durationSeconds = state.duration.inMilliseconds / 1000.0;
 
       // 没加载到书签、或这次不是用户改书签触发的，就**不带** bookmarks
-      // 字段，而不是带一个空列表。规则见 bookmarksToPost。
+      // 字段，而不是带一个空列表。规则见 bookmarksToPost。句子分段边界
+      // 在 segmentBoundaries 里，从来不进书签写回。
       final bookmarkPositions = bookmarksToPost(
         userEdited: includeBookmarks,
         authoritative: _bookmarksAuthoritative,

@@ -21,7 +21,14 @@ class TTSPlayerWidget extends ConsumerStatefulWidget {
   /// 带音频的书才显示"切回 MP3"的按钮(纯文本书没有 MP3 可切)。
   final bool showMp3Toggle;
 
-  const TTSPlayerWidget({super.key, this.showMp3Toggle = false});
+  /// 影子跟读入口:对当前朗读句录音打分。null 时不画该键(无句子的页面)。
+  final VoidCallback? onShadowing;
+
+  const TTSPlayerWidget({
+    super.key,
+    this.showMp3Toggle = false,
+    this.onShadowing,
+  });
 
   @override
   ConsumerState<TTSPlayerWidget> createState() => _TTSPlayerWidgetState();
@@ -133,6 +140,12 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
               onPressed: () => ref
                   .read(playerModeProvider.notifier)
                   .setMode(PlayerMode.mp3),
+            ),
+          if (widget.onShadowing != null)
+            PlayerIconButton(
+              icon: Icons.mic,
+              tooltip: 'Shadowing: record yourself reading this sentence',
+              onPressed: widget.onShadowing,
             ),
         ],
       ),

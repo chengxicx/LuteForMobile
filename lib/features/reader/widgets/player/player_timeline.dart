@@ -17,6 +17,10 @@ class PlayerTimeline extends StatefulWidget {
   /// MP3 书签刻度的时间点;空列表则不画刻度。
   final List<Duration> bookmarks;
 
+  /// AB 复读的 A 点(标了 A 就画);B 点只在循环进行中画。
+  final Duration? abStart;
+  final Duration? abEnd;
+
   /// 拖动结束时回调(松手才 seek,拖动中只更新本地预览值)。
   final ValueChanged<Duration> onSeekEnd;
 
@@ -27,6 +31,8 @@ class PlayerTimeline extends StatefulWidget {
     required this.onSeekEnd,
     this.centerLabel,
     this.bookmarks = const [],
+    this.abStart,
+    this.abEnd,
   });
 
   @override
@@ -131,6 +137,20 @@ class _PlayerTimelineState extends State<PlayerTimeline> {
                       ),
                     ),
                   ),
+                if (widget.abStart != null || widget.abEnd != null)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: _AbMarkPainter(
+                          start: widget.abStart,
+                          end: widget.abEnd,
+                          total: totalSeconds,
+                          trackInset: palette.overlayRadius,
+                          color: palette.bookmarkOnActive,
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -210,5 +230,75 @@ class _BookmarkTickPainter extends CustomPainter {
         oldDelegate.color != color ||
         oldDelegate.activeColor != activeColor ||
         oldDelegate.playedFraction != playedFraction;
+  }
+}
+
+/// AB 复读的 A/B 标记：A 画三角(朝上)，B 画倒三角(朝下)，
+/// 循环进行中再把 A↔B 之间的轨道段描一道高亮。
+class _AbMarkPainter extends CustomPainter {
+  final Duration? start;
+  final Duration? end;
+  final double total;
+  final double trackInset;
+  final Color color;
+
+  _AbMarkPainter({
+    required this.start,
+    required this.end,
+    required this.total,
+    required this.trackInset,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (total <= 0) return;
+    final paint = Paint();
+    final lane = size.width - 2 * trackInset;
+
+    double? xFor(Duration? d) {
+      if (d == null) return null;
+      final clamped = (d.inMilliseconds / 1000.0 / total).clamp(0.0, 1.0);
+      return trackInset + clamped * lane;
+    }
+
+    final xA = xFor(start);
+    final xB = xFor(end);
+
+    void triangle(double? x, {required bool up}) {
+      if (x == null) return;
+      final path = Path();
+      if (up) {
+        path.moveTo(x, 4);
+        path.lineTo(x - 4.5, 12);
+        path.lineTo(x + 4.5, 12);
+      } else {
+        path.moveTo(x, size.height - 4);
+        path.lineTo(x - 4.5, size.height - 12);
+        path.lineTo(x + 4.5, size.height - 12);
+      }
+      path.close();
+      canvas.drawPath(path, paint);
+    }
+
+    // A↔B 之间的轨道段描亮（两端都在才画）。
+    if (xA != null && xB != null && xB > xA) {
+      final rect = Rect.fromLTWH(xA, size.height / 2 - 2, xB - xA, 4);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+        paint..color = color.withValues(alpha: 0.35),
+      );
+    }
+
+    triangle(xA, up: true);
+    triangle(xB, up: false);
+  }
+
+  @override
+  bool shouldRepaint(_AbMarkPainter oldDelegate) {
+    return oldDelegate.start != start ||
+        oldDelegate.end != end ||
+        oldDelegate.total != total ||
+        oldDelegate.color != color;
   }
 }

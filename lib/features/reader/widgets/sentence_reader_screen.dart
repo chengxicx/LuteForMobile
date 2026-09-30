@@ -29,6 +29,7 @@ import '../../../features/settings/providers/settings_provider.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
+import '../../../shared/utils/tts_speak_text.dart';
 import '../../../features/stats/providers/stats_provider.dart';
 import '../../../features/stats/models/stats_data.dart';
 import '../../../features/terms/providers/terms_provider.dart';
@@ -177,6 +178,10 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   /// The card is shown only if no newer tap has happened while it was fetching.
   int _tooltipSeq = 0;
 
+  /// 实体键的焦点节点。回屏时收回焦点，理由同 reader_screen 的
+  /// _hardwareKeyFocus —— IndexedStack 里其它屏的控件会拿走焦点不还。
+  final FocusNode _hardwareKeyFocus = FocusNode();
+
   /// Double tap cycles through these, skipping 2/4/5 to stay a predictable
   /// three-way toggle (matches the web reader's _quick_cycle_status).
   static const List<String> _statusCycle = ['1', '3', '99'];
@@ -212,6 +217,7 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     WidgetsBinding.instance.removeObserver(this);
     _ttsNotifier?.stop();
     _glowTimer?.cancel();
+    _hardwareKeyFocus.dispose();
     super.dispose();
   }
 
@@ -321,6 +327,15 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   Widget build(BuildContext context) {
     final currentScreenRoute = ref.watch(currentScreenRouteProvider);
     final isVisible = currentScreenRoute == 'sentence-reader';
+
+    // 回屏时把实体键焦点收回来（见 _hardwareKeyFocus 的注释）。
+    ref.listen<String>(currentScreenRouteProvider, (previous, next) {
+      if (next == 'sentence-reader') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _hardwareKeyFocus.requestFocus();
+        });
+      }
+    });
 
     if (!isVisible) {
       return const SizedBox.shrink();
@@ -538,6 +553,7 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     return HardwareKeyNavigator(
       // 墨水屏模式：翻页键 = 上一句/下一句。手机上音量键仍归音量。
       enabled: context.eInk,
+      focusNode: _hardwareKeyFocus,
       onAction: (action) {
         if (action == HardwareKeyAction.previous) {
           _goPrevious();
@@ -1340,25 +1356,37 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           .fetchTermTooltip(item.wordId!);
       // Superseded by a newer tap while this one was fetching.
       if (seq != _tooltipSeq) return;
-      if (termTooltip != null && termTooltip.hasData && mounted) {
+      // A null fetch (offline, or the request failed) falls back to a minimal
+      // card built from local data -- see reader_screen.dart.
+      final tooltip = termTooltip != null && termTooltip.hasData
+          ? termTooltip
+          : termTooltip == null
+          ? await ref
+                .read(readerProvider.notifier)
+                .buildLocalTooltipFallback(item)
+          : null;
+      if (seq != _tooltipSeq) return;
+      if (tooltip != null && mounted) {
         final langId = item.langId;
+        // An annotated reading (romanization) outranks the surface form for
+        // TTS -- the engine pronounces the reading the user wrote down.
+        final speakText = ttsSpeakTextForTerm(
+          term: tooltip.term,
+          reading: tooltip.romanization,
+        );
         // Auto pronounce (Settings -> Reading): read the term as the card opens,
         // so the reader does not have to reach for the speaker button.
         if (ref.read(settingsProvider).autoPronounceOnTap) {
           unawaited(
-            ref
-                .read(sentenceTTSProvider.notifier)
-                .speakSentence(termTooltip.term, 0),
+            ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
           );
         }
         TermTooltipClass.show(
           context,
-          termTooltip,
+          tooltip,
           termRect,
           onSpeak: () => unawaited(
-            ref
-                .read(sentenceTTSProvider.notifier)
-                .speakSentence(termTooltip.term, 0),
+            ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
           ),
           onSentenceTranslation: langId == null
               ? null

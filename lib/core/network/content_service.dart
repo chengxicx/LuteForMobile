@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/dom.dart' as html;
@@ -8,6 +10,7 @@ import '../../features/reader/models/term_tooltip.dart';
 import '../../features/reader/models/term_form.dart';
 import '../../features/reader/models/language_sentence_settings.dart';
 import '../../features/reader/services/page_cache_service.dart';
+import '../../features/shadowing/models/shadowing_result.dart';
 import '../../features/books/models/book.dart';
 import '../../features/books/models/book_create.dart';
 import '../../features/books/models/datatables_response.dart';
@@ -1447,5 +1450,97 @@ class ContentService {
     PageData pageData,
   ) async {
     ApiLogger.logState('savePageToCache', details: 'deprecated method called');
+  }
+
+  /// Scores one shadowing take: uploads the recording, the server
+  /// transcribes it with whisper and diffs it against [tokens].
+  ///
+  /// Mirrors the web reader's `lute-shadowing.js` payload (audio blob +
+  /// language_id + the sentence's token texts).  The response is the one
+  /// JSON endpoint the shadowing flow needs, so it is parsed directly --
+  /// no HTML scraping here.  Network/HTTP failures surface as
+  /// [ShadowingException] so the panel can tell the user what to do next.
+  Future<ShadowingResult> transcribeShadowing({
+    required String audioPath,
+    required int languageId,
+    required List<String> tokens,
+    String? model,
+  }) async {
+    final filename = audioPath.split(Platform.pathSeparator).last;
+    final payload = FormData.fromMap({
+      'audio': await MultipartFile.fromFile(audioPath, filename: filename),
+      'language_id': languageId.toString(),
+      'tokens': jsonEncode(tokens),
+      if (model != null && model.isNotEmpty) 'model': model,
+    });
+
+    final Response<String> response;
+    try {
+      response = await _apiService.postShadowingTranscribe(payload);
+    } on DioException catch (e) {
+      throw _shadowingErrorFromDio(e);
+    }
+
+    final Map<String, dynamic> body;
+    try {
+      body = jsonDecode(response.data ?? '') as Map<String, dynamic>;
+    } on FormatException {
+      throw const ShadowingException(
+        ShadowingErrorKind.serverError,
+        'Unexpected server response while scoring the recording.',
+      );
+    }
+    if (body.containsKey('error')) {
+      // A 200 with an error body should not happen (the route always
+      // errors with a status), but surface it rather than parse nothing.
+      throw ShadowingException(
+        ShadowingErrorKind.serverError,
+        body['error'] as String? ?? 'Shadowing scoring failed.',
+      );
+    }
+    return ShadowingResult.fromJson(body);
+  }
+
+  ShadowingException _shadowingErrorFromDio(DioException e) {
+    final body = e.response?.data;
+    String? serverMessage;
+    if (body is String && body.isNotEmpty) {
+      try {
+        serverMessage =
+            (jsonDecode(body) as Map<String, dynamic>)['error'] as String?;
+      } on FormatException {
+        serverMessage = null;
+      }
+    } else if (body is Map<String, dynamic>) {
+      serverMessage = body['error'] as String?;
+    }
+
+    final status = e.response?.statusCode;
+    // 400 is what the route answers with when whisper is not installed
+    // ("see Settings > Whisper") -- the one failure the user can fix
+    // right now, so it gets its own category and copy.
+    if (status == 400 &&
+        (serverMessage?.toLowerCase().contains('whisper') ?? false)) {
+      return const ShadowingException(
+        ShadowingErrorKind.whisperMissing,
+        'Whisper is not installed on the server. Install it in the server\'s Settings > Whisper, then try again.',
+      );
+    }
+    if (status == 422) {
+      return ShadowingException(
+        ShadowingErrorKind.noSpeech,
+        serverMessage ?? 'No speech detected in the recording -- try again, a bit louder and closer to the mic.',
+      );
+    }
+    if (serverMessage != null && serverMessage.isNotEmpty) {
+      return ShadowingException(ShadowingErrorKind.serverError, serverMessage);
+    }
+    return ShadowingException(
+      ShadowingErrorKind.serverError,
+      e.type == DioExceptionType.connectionError ||
+              e.type == DioExceptionType.connectionTimeout
+          ? 'Could not reach the server. Check your connection and try again.'
+          : 'Scoring failed: ${e.message ?? e.error ?? e}',
+    );
   }
 }
