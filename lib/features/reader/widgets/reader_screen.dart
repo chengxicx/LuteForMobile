@@ -12,6 +12,7 @@ import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/hardware_key_navigator.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
+import '../../../shared/utils/tts_speak_text.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
 import '../../../features/settings/models/tts_settings.dart';
@@ -24,6 +25,7 @@ import '../../../shared/providers/server_status_provider.dart';
 import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/outbox/providers/outbox_provider.dart';
 import '../models/text_item.dart';
+import '../models/paragraph.dart';
 import '../models/term_form.dart';
 import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
@@ -48,6 +50,9 @@ import 'manga_page_view.dart';
 import 'pdf_page_view.dart';
 import 'youtube_player_view.dart';
 import 'tts_player_widget.dart';
+import '../../shadowing/models/shadowing_sentence.dart';
+import '../../shadowing/providers/shadowing_provider.dart';
+import '../../shadowing/widgets/shadowing_sheet.dart';
 
 class ReaderScreen extends ConsumerStatefulWidget {
   final GlobalKey<ScaffoldState>? scaffoldKey;
@@ -194,6 +199,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// (text_display.dart:285), so this is the normal case, not a rare race.
   int _tooltipSeq = 0;
 
+  /// 实体键的焦点节点。从别的屏（设置等）回到阅读屏时要把焦点收回来 ——
+  /// IndexedStack 常驻其它屏，那里的输入框（如设置页的 Server Host）会
+  /// 拿走焦点且不还，实体键从此失灵直到重启 app。
+  final FocusNode _hardwareKeyFocus = FocusNode();
+
   /// Statuses a double tap cycles through, matching the web reader's
   /// _quick_cycle_status (lute-touch.js).  2/4/5 are skipped so the gesture
   /// stays a predictable three-way toggle.
@@ -226,6 +236,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// nothing.
   int _activeCueIndex = -1;
 
+  /// 最近一次 build 算出的"正在播放"的句子集合(TTS 朗读句或媒体播放句),
+  /// 影子跟读面板打开时据此定位当前句。
+  Set<int> _shadowingSentenceIds = const {};
+
+  /// 有字母/数字才算"词":假名、汉字、拉丁字母都算,标点、空白不算。
+  static final RegExp _wordCharPattern = RegExp(
+    r'[\p{L}\p{N}]',
+    unicode: true,
+  );
+
   // --- 拖动跟手翻页 ---
   /// 最近一次按下的横坐标（屏幕坐标）。墨水屏模式下靠它判断点的是左半屏还是
   /// 右半屏 —— 那里没有拖动，翻页只认左右区域。
@@ -255,6 +275,58 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       return false;
     }
     return true;
+  }
+
+  /// 实体键（BOOX 翻页键/音量键）分发：
+  ///  * TTS 播放条在显示且循环/自动暂停激活 → 上下键切句；
+  ///  * MP3 播放条在显示且循环/自动暂停激活 → 上下键切 SRT 句子
+  ///    （segmentBoundaries，与主排左右键同一数据源）；
+  ///  * 首/末顶住或未开循环/自动暂停 → 翻页，阅读流不中断。
+  ///
+  /// TTS 的门控用 [_showTtsPlayer]（「TTS 条是不是当前显示的播放条」）而不是
+  /// playerMode：纯文本书没有音频，TTS 条常显，但 playerMode 仍停在进书
+  /// 默认的 mp3 —— 按 playerMode 判断会在这种书上永远走翻页分支。
+  void _handleHardwareKey(HardwareKeyAction action, PageData? pageData) {
+    if (pageData != null) {
+      final settings = ref.read(settingsProvider);
+      if (_showTtsPlayer(pageData, settings)) {
+        final tts = ref.read(ttsPlayerProvider);
+        if (tts.loopMode || tts.autoPauseMode) {
+          final canMove = action == HardwareKeyAction.previous
+              ? tts.canGoPrevious
+              : tts.canGoNext;
+          if (canMove) {
+            HapticFeedback.selectionClick();
+            action == HardwareKeyAction.previous
+                ? ref.read(ttsPlayerProvider.notifier).previous()
+                : ref.read(ttsPlayerProvider.notifier).next();
+            return;
+          }
+        }
+      } else if (settings.showAudioPlayer &&
+          pageData.hasAudio &&
+          ref.read(playerModeProvider) == PlayerMode.mp3) {
+        final audio = ref.read(audioPlayerProvider);
+        if (audio.loopMode || audio.autoPauseMode) {
+          // 与 goToPrevious/NextSegment 的"相邻句"判定同源：自动暂停停在
+          // 句首时，上一句要求 800ms 之外还有更早的边界。顶住了就回落为翻页。
+          final canMove = action == HardwareKeyAction.previous
+              ? audio.segmentBoundaries.any(
+                  (b) =>
+                      audio.position - b > const Duration(milliseconds: 800),
+                )
+              : audio.segmentBoundaries.any((b) => b > audio.position);
+          if (canMove) {
+            HapticFeedback.selectionClick();
+            action == HardwareKeyAction.previous
+                ? ref.read(audioPlayerProvider.notifier).goToPreviousSegment()
+                : ref.read(audioPlayerProvider.notifier).goToNextSegment();
+            return;
+          }
+        }
+      }
+    }
+    _turnPage(action == HardwareKeyAction.previous ? 1 : -1, pageData);
   }
 
   /// 按方向翻页：direction > 0 上一页，< 0 下一页。
@@ -399,6 +471,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     _glowTimer?.cancel();
     _scrollController.removeListener(_handleScrollPosition);
     _scrollController.dispose();
+    _hardwareKeyFocus.dispose();
     ref.read(audioPlayerProvider.notifier).reset();
     super.dispose();
   }
@@ -554,16 +627,38 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     if (pageData.hasAudio) {
       final audioUrl = _audioUrlFor(settings, pageData!);
+      final (bookmarks, segmentBoundaries) = _resolveAudioBookmarks(pageData!);
+      debugPrint(
+        'AudioPlayer load: serverBookmarks=${bookmarks?.length}, '
+        'cues=${pageData!.cues.length}, segments=${segmentBoundaries.length}',
+      );
       await ref
           .read(audioPlayerProvider.notifier)
           .loadAudio(
             audioUrl: audioUrl,
             bookId: pageData!.bookId,
             page: pageData!.currentPage,
-            bookmarks: pageData!.audioBookmarks,
+            bookmarks: bookmarks,
+            segmentBoundaries: segmentBoundaries,
             audioCurrentPos: pageData.audioCurrentPos,
           );
     }
+  }
+
+  /// 音频装载的两个数据源：
+  /// 真书签 = 服务端同步的手动时间戳（时间轴刻度 + 书签写回的唯一内容）；
+  /// 分段边界 = 循环/自动暂停/切句用的"句子"划分 —— SRT cue 起点，
+  /// 无 cues 的老书签书回退为服务端书签（原有分段语义不变）。
+  ///
+  /// _loadAudioIfNeeded 与 AudioPlayerWidget 的构造**必须**共用这一份：
+  /// widget 的 postFrame 重载按它拿到的 props 装载，两处不一致时后到的
+  /// 会把先到的清掉。
+  (List<double>?, List<double>) _resolveAudioBookmarks(PageData pageData) {
+    final segments = pageData.cues.map((c) => c.start).toList(growable: false);
+    if (segments.isNotEmpty) {
+      return (pageData.audioBookmarks, segments);
+    }
+    return (pageData.audioBookmarks, pageData.audioBookmarks ?? const []);
   }
 
   /// Resolves the playable audio URL for a page.  MP3 books expose a
@@ -664,6 +759,130 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       for (final id in order)
         TTSPlayerSentence(sentenceId: id, text: buffers[id]!.toString()),
     ];
+  }
+
+  /// Builds the shadowing panel's sentence list: the page's sentences in
+  /// reading order, media books carrying a reference clip for the line
+  /// (cue) each sentence sits on.
+  ///
+  /// Lines are runs of consecutive paragraphs sharing a paragraph number --
+  /// the same split [PlayingLine] draws.  The cue map is only trusted when
+  /// the line it names actually holds the cue's text (a hand-edited page
+  /// must not get someone else's audio); when it does not check out the
+  /// sentence simply falls back to a TTS reference.
+  List<ShadowingSentence> _buildShadowingSentences(PageData pageData) {
+    final paragraphs = pageData.paragraphs;
+    if (paragraphs.isEmpty) return const [];
+
+    final lines = <List<Paragraph>>[];
+    for (final paragraph in paragraphs) {
+      if (paragraph.textItems.isEmpty) continue;
+      final paragraphId = paragraph.textItems.first.paragraphId;
+      if (lines.isNotEmpty &&
+          lines.last.first.textItems.first.paragraphId == paragraphId) {
+        lines.last.add(paragraph);
+      } else {
+        lines.add([paragraph]);
+      }
+    }
+
+    String norm(String text) => text.replaceAll(RegExp(r'[\s\u200b]+'), '');
+
+    final clipPaths = List<String?>.filled(lines.length, null);
+    final clipStarts = List<double?>.filled(lines.length, null);
+    final clipEnds = List<double?>.filled(lines.length, null);
+    final clipPath =
+        ref.read(audioPlayerProvider.notifier).lastLocalAudioFile?.path;
+    if (clipPath != null && pageData.pageCueMap.length == lines.length) {
+      for (var k = 0; k < lines.length; k++) {
+        final cueIndex = pageData.pageCueMap[k];
+        if (cueIndex < 0 || cueIndex >= pageData.cues.length) continue;
+        final cue = pageData.cues[cueIndex];
+        final joined = lines[k].map((p) => p.fullText).join();
+        if (norm(joined) == norm(cue.text)) {
+          clipPaths[k] = clipPath;
+          clipStarts[k] = cue.start;
+          clipEnds[k] = cue.end;
+        }
+      }
+    }
+
+    final sentences = <ShadowingSentence>[];
+    for (var k = 0; k < lines.length; k++) {
+      final items = [for (final p in lines[k]) ...p.textItems];
+      var start = 0;
+      for (var i = 1; i <= items.length; i++) {
+        if (i < items.length && items[i].sentenceId == items[start].sentenceId) {
+          continue;
+        }
+        final group = items.sublist(start, i);
+        start = i;
+
+        final displayText = group.map((item) => item.displayText).join();
+        // 空句(段落间哨兵、纯空格)不进面板:录不出也判不了。
+        if (displayText.trim().isEmpty) continue;
+
+        // 纯标点词元不参与打分:whisper 不会转写出标点,原句侧留着它们
+        // 只会被标成"漏读"白扣分(Web 版把 span.word 全量上传,有同样的
+        // 缺陷)。过滤后为空(整句只有标点)的句子同样剔除。
+        final tokens = [
+          for (final item in group)
+            if (item.text.contains(_wordCharPattern)) item.text,
+        ];
+        if (tokens.isEmpty) continue;
+
+        sentences.add(
+          ShadowingSentence(
+            sentenceId: group.first.sentenceId,
+            tokens: tokens,
+            languageId: group
+                .map((item) => item.langId)
+                .firstWhere((id) => id != null, orElse: () => null),
+            displayText: displayText,
+            clipPath: clipPaths[k],
+            clipStart: clipStarts[k],
+            clipEnd: clipEnds[k],
+          ),
+        );
+      }
+    }
+    return sentences;
+  }
+
+  /// Opens the shadowing panel on the sentence currently being played (or
+  /// the first sentence when nothing is).
+  void _openShadowing(PageData pageData) {
+    final sentences = _buildShadowingSentences(pageData);
+    if (sentences.isEmpty) return;
+
+    var initialIndex = 0;
+    for (var i = 0; i < sentences.length; i++) {
+      if (_shadowingSentenceIds.contains(sentences[i].sentenceId)) {
+        initialIndex = i;
+        break;
+      }
+    }
+
+    // 录音、回放、听原句三方共用出声通道,开面板前把正在出声的全部停掉
+    // -- 不止 MP3:整页 TTS 朗读、点词发音也都各占着一路声音。位置已随
+    // pause 保存,关掉面板按播放就能续上。
+    unawaited(ref.read(audioPlayerProvider.notifier).pause());
+    unawaited(ref.read(ttsPlayerProvider.notifier).stop());
+    unawaited(ref.read(sentenceTTSProvider.notifier).stop());
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0x00000000),
+      builder: (context) => ShadowingSheet(
+        sentences: sentences,
+        initialIndex: initialIndex,
+      ),
+    ).then((_) {
+      if (mounted) {
+        unawaited(ref.read(shadowingProvider.notifier).reset());
+      }
+    });
   }
 
   Future<void> reloadPage({bool forceFresh = false}) async {
@@ -812,6 +1031,20 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final playerMode = ref.watch(playerModeProvider);
     final playerCollapsed = ref.watch(playerCollapsedProvider);
     final showTtsPlayer = _showTtsPlayer(pageData, settings);
+    // 播放条的书签与分段来源，和 _loadAudioIfNeeded 共用一份派生（见
+    // _resolveAudioBookmarks 的注释 —— 两处不一致会互相清空）。
+    final (audioBookmarks, audioSegmentBoundaries) = pageData != null
+        ? _resolveAudioBookmarks(pageData)
+        : (null, const <double>[]);
+
+    // 回到阅读屏时把实体键焦点收回来（见 _hardwareKeyFocus 的注释）。
+    ref.listen<String>(currentScreenRouteProvider, (previous, next) {
+      if (next == 'reader') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _hardwareKeyFocus.requestFocus();
+        });
+      }
+    });
 
     // 播放条模式切换的联动:切到 TTS 时暂停 MP3 并装配当前页的朗读句子;
     // 切回 MP3 时停掉朗读条。两边都不自动发声,等用户按播放。
@@ -845,8 +1078,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     return HardwareKeyNavigator(
       // 只在墨水屏模式接管物理键：手机上音量键就该去管音量。
       enabled: context.eInk,
-      onAction: (action) =>
-          _turnPage(action == HardwareKeyAction.previous ? 1 : -1, pageData),
+      focusNode: _hardwareKeyFocus,
+      onAction: (action) => _handleHardwareKey(action, pageData),
       child: AbsorbPointer(
         absorbing: !isVisible,
         child: Scaffold(
@@ -880,8 +1113,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                         audioUrl: _audioUrlFor(settings, pageData!),
                         bookId: pageData!.bookId,
                         page: pageData!.currentPage,
-                        bookmarks: pageData!.audioBookmarks,
+                        bookmarks: audioBookmarks,
+                        segmentBoundaries: audioSegmentBoundaries,
                         audioCurrentPos: pageData.audioCurrentPos,
+                        onShadowing: pageData!.paragraphs.isEmpty
+                            ? null
+                            : () => _openShadowing(pageData!),
                       ),
                     ),
                   if (showTtsPlayer && !playerCollapsed)
@@ -899,6 +1136,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                       ),
                       child: TTSPlayerWidget(
                         showMp3Toggle: pageData?.hasAudio == true,
+                        onShadowing: (pageData?.paragraphs.isEmpty ?? true)
+                            ? null
+                            : () => _openShadowing(pageData!),
                       ),
                     ),
                   Expanded(
@@ -963,6 +1203,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// 给阅读屏恢复一条常驻导航要吃掉正文行宽，代价太大；一个一次点击的按钮就够。
   /// （原先想让它顶掉 Grammar 按钮，真机上不成立 —— 见 `_buildGrammarButton`。）
   Widget _buildBooksButton() {
+    // 窄屏不渲染：底栏常驻（Reader|Books|Grammar|Review|Stats），Books 入口
+    // 齐全，这个直达按钮是给宽屏（rail 在阅读屏退场）准备的。窄屏还渲染它
+    // 会把 actions 行挤出屏 —— actions 靠右对齐但超宽时向左延伸，第一个
+    // action 正好压在 leading 汉堡上（PHB110 逻辑宽 360dp 实测重叠，见
+    // uiautomator bounds：books [38,176][230,368] 盖住 leading [0,160][224,384]）。
+    // 阈值与 app.dart 的 _wideLayoutMinWidth 保持一致。
+    if (MediaQuery.sizeOf(context).width < 600) {
+      return const SizedBox.shrink();
+    }
     return IconButton(
       icon: const Icon(Icons.collections_bookmark),
       tooltip: 'Books',
@@ -1487,6 +1736,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           cueText: pageData.cues[playingCueIndex].text,
         ),
     };
+    // 影子跟读面板打开时拿不到 watch 上下文,当前句以这里最近一次算出的
+    // 高亮句为准(每次 build 都刷新,面板一开就是"正在播的那句")。
+    _shadowingSentenceIds = highlightedSentenceIds;
 
     final textDisplay = TextDisplay(
       key: _pageKey,
@@ -1785,25 +2037,38 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       // its own feedback and closes this card), or moved on to another word.
       // Drawing now would stack this card on top of the newer gesture.
       if (seq != _tooltipSeq) return;
-      if (termTooltip != null && termTooltip.hasData && mounted) {
+      // A null fetch (offline, or the request failed) no longer means silence:
+      // fall back to a minimal card built from local data. A successful but
+      // empty popup still means "no card" -- that is the server's answer.
+      final tooltip = termTooltip != null && termTooltip.hasData
+          ? termTooltip
+          : termTooltip == null
+          ? await ref
+                .read(readerProvider.notifier)
+                .buildLocalTooltipFallback(item)
+          : null;
+      if (seq != _tooltipSeq) return;
+      if (tooltip != null && mounted) {
         final langId = item.langId;
+        // An annotated reading (romanization) outranks the surface form for
+        // TTS -- the engine pronounces the reading the user wrote down.
+        final speakText = ttsSpeakTextForTerm(
+          term: tooltip.term,
+          reading: tooltip.romanization,
+        );
         // Auto pronounce (Settings -> Reading): read the term as the card opens,
         // so the reader does not have to reach for the speaker button.
         if (ref.read(settingsProvider).autoPronounceOnTap) {
           unawaited(
-            ref
-                .read(sentenceTTSProvider.notifier)
-                .speakSentence(termTooltip.term, 0),
+            ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
           );
         }
         TermTooltipClass.show(
           context,
-          termTooltip,
+          tooltip,
           termRect,
           onSpeak: () => unawaited(
-            ref
-                .read(sentenceTTSProvider.notifier)
-                .speakSentence(termTooltip.term, 0),
+            ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
           ),
           onSentenceTranslation: langId == null
               ? null
