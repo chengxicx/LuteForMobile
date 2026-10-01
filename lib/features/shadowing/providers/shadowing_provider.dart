@@ -18,19 +18,9 @@ enum ShadowingPhase { idle, recording, processing, result, error }
 
 /// Where the whisper model dropdown stands; mirrors the web reader's
 /// `localStorage['shadowingModel']` (default small, remembered per device).
-/// large-v3-turbo is the only size whose weights were trained on
-/// Cantonese ("yue") -- the others rewrite Cantonese as Mandarin.
-const List<String> kShadowingModelSizes = [
-  'base',
-  'small',
-  'medium',
-  'large-v3-turbo',
-];
-
-/// Dropdown label for a model size (raw sizes for everything but the
-/// Cantonese-capable one, which is why it exists).
-String shadowingModelLabel(String size) =>
-    size == 'large-v3-turbo' ? 'large-v3-turbo · Cantonese' : size;
+/// Cantonese is transcribed by the server's SenseVoice engine (independent
+/// of this dropdown); whisper sizes here cover the remaining languages.
+const List<String> kShadowingModelSizes = ['base', 'small', 'medium'];
 
 @immutable
 class ShadowingState {
