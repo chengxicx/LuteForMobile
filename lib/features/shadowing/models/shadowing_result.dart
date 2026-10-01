@@ -6,6 +6,28 @@
 /// surface forms).
 enum ShadowingTokenStatus { miss, fuzzy, match }
 
+/// One word of the shadowing panel, with the kana reading the server
+/// annotated it with.
+///
+/// [reading] is null when the language supplies none (non-Japanese, or a
+/// word that is already kana): the panel then simply shows the word
+/// without furigana.  Tapping a token speaks [reading] when present (the
+/// kana is the correct pronunciation) and [text] otherwise.
+class ShadowingToken {
+  final String text;
+  final String? reading;
+
+  const ShadowingToken({required this.text, this.reading});
+
+  factory ShadowingToken.fromJson(Map<String, dynamic> json) {
+    final reading = json['reading'] as String?;
+    return ShadowingToken(
+      text: json['text'] as String? ?? '',
+      reading: (reading == null || reading.isEmpty) ? null : reading,
+    );
+  }
+}
+
 /// What the server's scoring task is doing while the panel waits.
 ///
 /// Scoring is asynchronous server-side (the first take may download the
@@ -23,6 +45,11 @@ enum ShadowingWaitPhase { loadingModel, transcribing }
 class ShadowingResult {
   /// Raw whisper transcription of the recording ("Heard" on the web panel).
   final String transcription;
+
+  /// The transcription parsed into word tokens with furigana readings --
+  /// what the panel actually renders as the "heard" sentence.  Empty for
+  /// older/error payloads, in which case [transcription] is shown raw.
+  final List<ShadowingToken> transcriptionTokens;
 
   final List<ShadowingTokenStatus> statuses;
 
@@ -48,6 +75,7 @@ class ShadowingResult {
 
   const ShadowingResult({
     required this.transcription,
+    this.transcriptionTokens = const [],
     required this.statuses,
     required this.spokenForFuzzy,
     required this.extras,
@@ -80,6 +108,11 @@ class ShadowingResult {
 
     return ShadowingResult(
       transcription: json['transcription'] as String? ?? '',
+      transcriptionTokens:
+          (json['transcription_tokens'] as List<dynamic>? ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .map(ShadowingToken.fromJson)
+              .toList(),
       statuses: statusList,
       spokenForFuzzy: spokenForFuzzy,
       extras: (json['extras'] as List<dynamic>? ?? const [])

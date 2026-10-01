@@ -58,6 +58,11 @@ class ShadowingState {
   /// asked (fall back to offering every size).
   final List<String>? cachedModels;
 
+  /// Furigana readings for the practised sentence's tokens, parallel to
+  /// [ShadowingSentence.tokens].  Null until the server answers (or when
+  /// the language has no readings): the panel then shows plain words.
+  final List<ShadowingToken>? readings;
+
   /// copyWith 的「未传参」哨兵:与项目其他 Notifier 一致,让「传 null 表示
   /// 清空」和「没传」是两件事,否则错误提示一旦写上就清不掉。
   static const Object _unset = Object();
@@ -74,6 +79,7 @@ class ShadowingState {
     this.waitPhase,
     this.waitSeconds = 0,
     this.cachedModels,
+    this.readings,
   });
 
   bool get isRecording => phase == ShadowingPhase.recording;
@@ -92,6 +98,7 @@ class ShadowingState {
     Object? waitPhase = _unset,
     int? waitSeconds,
     List<String>? cachedModels,
+    Object? readings = _unset,
   }) {
     return ShadowingState(
       phase: phase ?? this.phase,
@@ -106,6 +113,9 @@ class ShadowingState {
           waitPhase == _unset ? this.waitPhase : waitPhase as ShadowingWaitPhase?,
       waitSeconds: waitSeconds ?? this.waitSeconds,
       cachedModels: cachedModels ?? this.cachedModels,
+      readings: readings == _unset
+          ? this.readings
+          : readings as List<ShadowingToken>?,
     );
   }
 }
@@ -190,6 +200,27 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     }
   }
 
+  /// Which sentence the in-flight readings request belongs to; a late
+  /// answer for a sentence the user already navigated away from is
+  /// dropped rather than painted over the new one.
+  int? _readingsSentenceId;
+
+  /// Fetch the practised sentence's furigana readings.  Best-effort:
+  /// nothing is shown when the server has none to give.
+  Future<void> loadReadings(ShadowingSentence sentence) async {
+    final languageId = sentence.languageId;
+    if (languageId == null || sentence.tokens.isEmpty) return;
+    _readingsSentenceId = sentence.sentenceId;
+    final readings = await ref
+        .read(contentServiceProvider)
+        .fetchShadowingReadings(
+          languageId: languageId,
+          tokens: sentence.tokens,
+        );
+    if (readings.isEmpty || sentence.sentenceId != _readingsSentenceId) return;
+    state = state.copyWith(readings: readings);
+  }
+
   AudioRecorder get _recorderInstance {
     final existing = _recorder;
     if (existing != null) return existing;
@@ -228,11 +259,13 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   }
 
   Future<void> _startRecording(ShadowingSentence sentence) async {
-    // 有结果/错误挂着时重录:先把面板回到干净的录音态(模型选择保留)。
+    // 有结果/错误挂着时重录:先把面板回到干净的录音态(模型选择与
+    // 原句假名保留 —— 它们不属于某一次 take)。
     _referencePositionSubscription?.cancel();
     state = ShadowingState(
       modelSize: state.modelSize,
       cachedModels: state.cachedModels,
+      readings: state.readings,
     );
 
     try {
@@ -471,6 +504,7 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   Future<void> reset() async {
     _recordingTimer?.cancel();
     _recordingTimer = null;
+    _readingsSentenceId = null;
     if (state.isRecording) {
       try {
         await _recorderInstance.stop();

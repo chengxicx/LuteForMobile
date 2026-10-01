@@ -1513,6 +1513,33 @@ class ContentService {
     return _pollShadowingTask(taskId, onWait);
   }
 
+  /// Furigana readings for one sentence's tokens, from
+  /// `POST /read/shadowing/readings`.
+  ///
+  /// Best-effort: a failure (or a language without readings) yields an
+  /// empty list, and the panel simply shows the plain words -- never a
+  /// blocking error, because the readings are decoration around the
+  /// practice itself.
+  Future<List<ShadowingToken>> fetchShadowingReadings({
+    required int languageId,
+    required List<String> tokens,
+  }) async {
+    final Map<String, dynamic> body;
+    try {
+      final response = await _apiService.postShadowingReadings({
+        'language_id': languageId,
+        'tokens': tokens,
+      });
+      body = jsonDecode(response.data ?? '') as Map<String, dynamic>;
+    } catch (_) {
+      return const [];
+    }
+    return (body['tokens'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(ShadowingToken.fromJson)
+        .toList();
+  }
+
   /// Polls a scoring task every 1.5s for up to 10 minutes (same budget as
   /// the web reader).  A failed poll is skipped, not fatal: the
   /// server-side worker keeps running regardless of the client's

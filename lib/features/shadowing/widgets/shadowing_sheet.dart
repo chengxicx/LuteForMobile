@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:app_settings/app_settings.dart';
@@ -38,12 +40,113 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   ShadowingSentence get _sentence =>
       widget.sentences[_currentIndex.clamp(0, widget.sentences.length - 1)];
 
+  @override
+  void initState() {
+    super.initState();
+    // 面板一开就取当前句的假名标注:原句在录音之前就要能显示 furigana。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(shadowingProvider.notifier).loadReadings(_sentence);
+    });
+  }
+
   void _moveSentence(int delta) {
     final next = (_currentIndex + delta).clamp(0, widget.sentences.length - 1);
     if (next == _currentIndex) return;
     // 新句子从零开始:上一句的 take、结果、回放都属于上一句。
     ref.read(shadowingProvider.notifier).reset();
     setState(() => _currentIndex = next);
+    ref.read(shadowingProvider.notifier).loadReadings(_sentence);
+  }
+
+  /// 假名标注:只认含假名(平/片)的读音。用户把「发音字符」设成罗马字
+  /// 时 get_reading 会返回罗马字——那不是 furigana,直接当没有,词上方
+  /// 留空、点击读汉字本身。
+  static final RegExp _kanaPattern = RegExp(r'[\u3040-\u309F\u30A0-\u30FF]');
+
+  String? _kanaReading(String? reading) {
+    if (reading == null) return null;
+    final r = reading.trim();
+    if (r.isEmpty || !_kanaPattern.hasMatch(r)) return null;
+    return r;
+  }
+
+  /// 点单词即发音:标注的假名优先(汉字按正确读音发声),没有假名
+  /// 就读词本身。复用句子 TTS 通道,状态与播放条一致。
+  void _speakWord(String spoken) {
+    if (spoken.isEmpty) return;
+    unawaited(
+      ref
+          .read(sentenceTTSProvider.notifier)
+          .speakSentence(spoken, _sentence.sentenceId),
+    );
+  }
+
+  /// 逐词渲染一句话:每个词上方是它的假名(没有则留同样高的空位,
+  /// 保证同一行基线对齐),整词是独立的点击目标,点一下读这个词。
+  Widget _buildFuriganaSentence(
+    String fallbackText,
+    List<String> tokens,
+    List<ShadowingToken>? readings,
+    PlayerPalette palette,
+  ) {
+    if (tokens.isEmpty) {
+      return Text(
+        fallbackText,
+        style: TextStyle(color: palette.icon, fontSize: 19, height: 1.5),
+      );
+    }
+    return Wrap(
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.end,
+      children: [
+        for (var i = 0; i < tokens.length; i++)
+          _buildWord(
+            tokens[i].replaceAll('\u200B', ''),
+            (readings != null && i < readings.length)
+                ? readings[i].reading
+                : null,
+            palette,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildWord(String text, String? reading, PlayerPalette palette) {
+    final kana = _kanaReading(reading);
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _speakWord(kana ?? text),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 13,
+              child: kana != null
+                  ? Text(
+                      kana,
+                      style: TextStyle(
+                        color: palette.muted,
+                        fontSize: 10,
+                        height: 1.0,
+                      ),
+                    )
+                  : null,
+            ),
+            Text(
+              text,
+              style: TextStyle(
+                color: palette.icon,
+                fontSize: 19,
+                height: 1.2,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -74,7 +177,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
             children: [
               _buildHeader(context, palette),
               const SizedBox(height: 8),
-              _buildSentenceText(palette),
+              _buildSentenceText(state, palette),
               const SizedBox(height: 12),
               _buildControls(context, state, palette),
               if (state.isRecording || state.isProcessing)
@@ -142,7 +245,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     );
   }
 
-  Widget _buildSentenceText(PlayerPalette palette) {
+  Widget _buildSentenceText(ShadowingState state, PlayerPalette palette) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
@@ -150,14 +253,11 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         color: palette.groupFill,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text(
+      child: _buildFuriganaSentence(
         _sentence.displayText,
-        style: TextStyle(
-          color: palette.icon,
-          fontSize: 19,
-          height: 1.5,
-          fontWeight: FontWeight.w500,
-        ),
+        _sentence.tokens,
+        state.readings,
+        palette,
       ),
     );
   }
@@ -410,8 +510,19 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         ],
         const SizedBox(height: 8),
         Text(
-          'Heard: ${result.transcription.isEmpty ? '--' : result.transcription}',
-          style: TextStyle(color: palette.muted, fontSize: 13),
+          'Heard',
+          style: TextStyle(
+            color: palette.muted,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 4),
+        _buildFuriganaSentence(
+          result.transcription.isEmpty ? '--' : result.transcription,
+          [for (final t in result.transcriptionTokens) t.text],
+          result.transcriptionTokens.isEmpty ? null : result.transcriptionTokens,
+          palette,
         ),
       ],
     );
