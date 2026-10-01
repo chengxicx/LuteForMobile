@@ -1516,6 +1516,12 @@ class ContentService {
   /// Furigana readings for one sentence's tokens, from
   /// `POST /read/shadowing/readings`.
   ///
+  /// [fullText] is the sentence the tokens belong to.  Sending it lets the
+  /// server parse the sentence once and read each morpheme in context
+  /// (一つ -> ひとつ, not the isolated 一 + つ); without it the server
+  /// falls back to looking each token up on its own.  Optional so a caller
+  /// with only tokens still works against an older server.
+  ///
   /// Best-effort: a failure (or a language without readings) yields an
   /// empty list, and the panel simply shows the plain words -- never a
   /// blocking error, because the readings are decoration around the
@@ -1523,12 +1529,14 @@ class ContentService {
   Future<List<ShadowingToken>> fetchShadowingReadings({
     required int languageId,
     required List<String> tokens,
+    String? fullText,
   }) async {
     final Map<String, dynamic> body;
     try {
       final response = await _apiService.postShadowingReadings({
         'language_id': languageId,
         'tokens': tokens,
+        if (fullText != null && fullText.isNotEmpty) 'full_text': fullText,
       });
       body = jsonDecode(response.data ?? '') as Map<String, dynamic>;
     } catch (_) {
@@ -1609,19 +1617,6 @@ class ContentService {
       ShadowingErrorKind.serverError,
       text.isEmpty ? 'Transcription failed.' : text,
     );
-  }
-
-  /// Per-size whisper model cache status from the server, e.g.
-  /// {installed: true, models: [{size: small, cached: true, size_mb: 461},
-  /// ...]}.  Returns null when the server cannot be reached -- callers
-  /// fall back to showing every model size.
-  Future<Map<String, dynamic>?> fetchWhisperModels() async {
-    try {
-      final response = await _apiService.getWhisperModels();
-      return jsonDecode(response.data ?? '') as Map<String, dynamic>;
-    } catch (_) {
-      return null;
-    }
   }
 
   ShadowingException _shadowingErrorFromDio(DioException e) {

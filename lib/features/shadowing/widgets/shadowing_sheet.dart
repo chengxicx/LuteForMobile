@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:app_settings/app_settings.dart';
 
+import '../../../shared/theme/eink_scope.dart';
 import '../../../shared/theme/player_palette.dart';
+import '../../../shared/theme/theme_extensions.dart';
 import '../../reader/providers/sentence_tts_provider.dart';
 import '../../reader/widgets/player/player_controls.dart';
 import '../models/shadowing_result.dart';
@@ -40,6 +43,18 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   ShadowingSentence get _sentence =>
       widget.sentences[_currentIndex.clamp(0, widget.sentences.length - 1)];
 
+  /// 点词发音的两级反馈:按压瞬间(_pressed)与发音期间(_speaking)。
+  /// 记录 (区域, 词序号):原句和结果 Heard 区共用同一个逐词渲染器,
+  /// 光有序号会撞车(两区都有第 3 个词),所以带上区域名。
+  (String, int)? _pressed;
+  (String, int)? _speaking;
+
+  /// 出分后把结果滚进可视区用的。
+  final GlobalKey _resultKey = GlobalKey();
+
+  static const _areaSentence = 'sentence';
+  static const _areaHeard = 'heard';
+
   @override
   void initState() {
     super.initState();
@@ -54,8 +69,33 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     if (next == _currentIndex) return;
     // 新句子从零开始:上一句的 take、结果、回放都属于上一句。
     ref.read(shadowingProvider.notifier).reset();
-    setState(() => _currentIndex = next);
+    setState(() {
+      _currentIndex = next;
+      _pressed = null;
+      _speaking = null;
+    });
     ref.read(shadowingProvider.notifier).loadReadings(_sentence);
+  }
+
+  /// 左右滑切换句子(左滑下一句、右滑上一句):翻句是"听→读→看分"循环里
+  /// 最高频的动作,给一个不用瞄准按钮的手势。与词的点击、面板竖向滚动
+  /// 各占一个手势方向,互不抢;快速甩动或明确拖过一段距离都算翻页,
+  /// 轻慢的小拖动不算,免得误翻。到边界无动作(与按钮一致)。
+  double? _swipeDistance;
+
+  void _onSwipeUpdate(DragUpdateDetails details) {
+    _swipeDistance = (_swipeDistance ?? 0) + details.delta.dx;
+  }
+
+  void _onSwipeEnd(DragEndDetails details) {
+    final distance = _swipeDistance ?? 0;
+    _swipeDistance = null;
+    final velocity = details.primaryVelocity ?? 0;
+    if (velocity <= -500 || distance <= -100) {
+      _moveSentence(1);
+    } else if (velocity >= 500 || distance >= 100) {
+      _moveSentence(-1);
+    }
   }
 
   /// 假名标注:只认含假名(平/片)的读音。用户把「发音字符」设成罗马字
@@ -72,8 +112,13 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
 
   /// 点单词即发音:标注的假名优先(汉字按正确读音发声),没有假名
   /// 就读词本身。复用句子 TTS 通道,状态与播放条一致。
-  void _speakWord(String spoken) {
+  ///
+  /// 点下的词进入 _speaking 高亮,亮到 TTS 状态回 idle/error 为止
+  /// (亮不亮由 sentenceTTSProvider 的 loading/playing 驱动,不用自己计时)。
+  void _speakWord(String area, int index, String spoken) {
     if (spoken.isEmpty) return;
+    HapticFeedback.selectionClick();
+    setState(() => _speaking = (area, index));
     unawaited(
       ref
           .read(sentenceTTSProvider.notifier)
@@ -87,14 +132,20 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     String fallbackText,
     List<String> tokens,
     List<ShadowingToken>? readings,
-    PlayerPalette palette,
-  ) {
+    PlayerPalette palette, {
+    required String area,
+  }) {
     if (tokens.isEmpty) {
       return Text(
         fallbackText,
         style: TextStyle(color: palette.icon, fontSize: 19, height: 1.5),
       );
     }
+    // 本句的 TTS 在合成/播放期间点亮点下的那个词;播完状态回 idle,高亮自然熄灭。
+    final ttsState = ref.watch(sentenceTTSProvider);
+    final speakingActive =
+        ttsState.currentSentenceId == _sentence.sentenceId &&
+        (ttsState.isLoading || ttsState.isPlaying);
     return Wrap(
       runSpacing: 4,
       crossAxisAlignment: WrapCrossAlignment.end,
@@ -106,44 +157,83 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
                 ? readings[i].reading
                 : null,
             palette,
+            area: area,
+            index: i,
+            speaking: speakingActive && _speaking == (area, i),
+            pressed: _pressed == (area, i),
           ),
       ],
     );
   }
 
-  Widget _buildWord(String text, String? reading, PlayerPalette palette) {
+  Widget _buildWord(
+    String text,
+    String? reading,
+    PlayerPalette palette, {
+    required String area,
+    required int index,
+    required bool speaking,
+    required bool pressed,
+  }) {
     final kana = _kanaReading(reading);
+    // 两级反馈:按下先给浅底色(网络合成要一两秒,先承认这一下),开口后换
+    // 跟读行同一块底色。墨水屏"靠形状不靠色",下边框常驻(不发音时透明),
+    // 高亮亮灭不引起重排。
+    final blockColor = speaking
+        ? context.playingLineHighlight
+        : pressed
+        ? palette.groupFill
+        : null;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => _speakWord(kana ?? text),
+      onTapDown: (_) => setState(() => _pressed = (area, index)),
+      onTapUp: (_) => setState(() => _pressed = null),
+      onTapCancel: () => setState(() => _pressed = null),
+      onTap: () => _speakWord(area, index, kana ?? text),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              height: 13,
-              child: kana != null
-                  ? Text(
-                      kana,
-                      style: TextStyle(
-                        color: palette.muted,
-                        fontSize: 10,
-                        height: 1.0,
-                      ),
-                    )
-                  : null,
-            ),
-            Text(
-              text,
-              style: TextStyle(
-                color: palette.icon,
-                fontSize: 19,
-                height: 1.2,
-                fontWeight: FontWeight.w500,
+        child: Container(
+          decoration: BoxDecoration(
+            color: blockColor,
+            borderRadius: BorderRadius.circular(4),
+            border: context.eInk
+                ? Border(
+                    bottom: BorderSide(
+                      color: speaking
+                          ? context.playingLineText
+                          : Colors.transparent,
+                      width: 2,
+                    ),
+                  )
+                : null,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 13,
+                child: kana != null
+                    ? Text(
+                        kana,
+                        style: TextStyle(
+                          color: palette.muted,
+                          fontSize: 10,
+                          height: 1.0,
+                        ),
+                      )
+                    : null,
               ),
-            ),
-          ],
+              Text(
+                text,
+                style: TextStyle(
+                  color: speaking ? context.playingLineText : palette.icon,
+                  fontSize: 19,
+                  height: 1.2,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -152,12 +242,30 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(shadowingProvider);
+    final ttsState = ref.watch(sentenceTTSProvider);
     final palette = context.playerPalette;
 
+    // 结果超出视口时(长句、判定胶囊多行)把分数滚进可视区。等入场过渡
+    // 走完再滚,否则目标位置按中途布局算会欠滚。
+    ref.listen<ShadowingState>(shadowingProvider, (prev, next) {
+      if (next.hasResult && !(prev?.hasResult ?? false)) {
+        Future.delayed(const Duration(milliseconds: 350), () {
+          if (!mounted) return;
+          final resultContext = _resultKey.currentContext;
+          if (resultContext == null || !resultContext.mounted) return;
+          Scrollable.ensureVisible(
+            resultContext,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        });
+      }
+    });
+
+    // 高度固定:从打开、出分到换句,面板框架一像素都不挪,分数只填进
+    // 底部预留的空位 —— 不再随 take 生命周期长高缩回。
     return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.85,
-      ),
+      height: MediaQuery.of(context).size.height * 0.65,
       decoration: BoxDecoration(
         color: palette.card,
         border: Border.fromBorderSide(
@@ -169,28 +277,97 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       ),
       child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildHeader(context, palette),
-              const SizedBox(height: 8),
-              _buildSentenceText(state, palette),
-              const SizedBox(height: 12),
-              _buildControls(context, state, palette),
-              if (state.isRecording || state.isProcessing)
-                _buildStatusLine(state, palette),
-              _buildErrorBlock(context, state, palette),
-              if (state.hasResult) ...[
+        // translucent:空白区域(预留的结果槽)也要能接住滑动手势,
+        // 同时不挡子级的点击。
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragUpdate: _onSwipeUpdate,
+          onHorizontalDragEnd: _onSwipeEnd,
+          onHorizontalDragCancel: () => _swipeDistance = null,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildHeader(context, palette),
+                const SizedBox(height: 8),
+                _buildSentenceText(state, palette),
                 const SizedBox(height: 12),
-                _buildResult(context, state, palette),
+                _buildControls(context, state, palette),
+                _buildOutcomeZone(context, state, ttsState, palette),
               ],
-            ],
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  /// 控件下方的唯一可变区:空提示、录音/转写状态、错误、评分结果四个
+  /// 状态互斥轮换,同一槽位淡入淡出,互不推挤。墨水屏直接换内容,
+  /// 不做过渡(每一帧局部刷新都留残影,与 term_tooltip 同一取舍)。
+  Widget _buildOutcomeZone(
+    BuildContext context,
+    ShadowingState state,
+    SentenceTTSState ttsState,
+    PlayerPalette palette,
+  ) {
+    final Widget child;
+    if (state.hasResult) {
+      child = KeyedSubtree(
+        key: const ValueKey('result'),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: KeyedSubtree(
+            key: _resultKey,
+            child: _buildResult(context, state, palette),
+          ),
+        ),
+      );
+    } else if (state.error != null) {
+      child = KeyedSubtree(
+        key: const ValueKey('error'),
+        child: _buildErrorBlock(context, state, palette),
+      );
+    } else if (state.isRecording || state.isProcessing) {
+      child = KeyedSubtree(
+        key: const ValueKey('status'),
+        child: _buildStatusLine(state, palette),
+      );
+    } else if (ttsState.hasError && ttsState.errorMessage != null) {
+      // 点词发音失败在这里交代:面板是弹层,ScaffoldMessenger 的 SnackBar
+      // 会落在面板后面看不见;而合成失败是静默的,不提示用户分不清
+      // "点了没反应"和"失败了"。再点一个词即自动清掉。
+      child = KeyedSubtree(
+        key: const ValueKey('ttsError'),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            ttsState.errorMessage!,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: palette.errorInk, fontSize: 12),
+          ),
+        ),
+      );
+    } else {
+      child = KeyedSubtree(
+        key: const ValueKey('hint'),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 24),
+          child: Text(
+            'Your score appears here after you read the sentence.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: palette.muted, fontSize: 13),
+          ),
+        ),
+      );
+    }
+    if (context.eInk) return child;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      switchInCurve: Curves.easeOut,
+      child: child,
     );
   }
 
@@ -248,17 +425,35 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   Widget _buildSentenceText(ShadowingState state, PlayerPalette palette) {
     return Container(
       width: double.infinity,
+      // 最小高度按两行词预留:换句时行数不同(1↔2 行)也不再推挤下方控件。
+      constraints: const BoxConstraints(minHeight: 104),
+      alignment: Alignment.center,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: palette.groupFill,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: _buildFuriganaSentence(
-        _sentence.displayText,
-        _sentence.tokens,
-        state.readings,
-        palette,
+      child: _sentenceSwap(
+        _buildFuriganaSentence(
+          _sentence.displayText,
+          _sentence.tokens,
+          state.readings,
+          palette,
+          area: _areaSentence,
+        ),
       ),
+    );
+  }
+
+  /// 换句时句子内容淡入淡出(滑动手势与按钮翻句共用),让翻页有反馈;
+  /// 墨水屏直接换内容,不做过渡(残影)。假名标注稍后异步到达,
+  /// key 不变,不会因此重播动画。
+  Widget _sentenceSwap(Widget child) {
+    if (context.eInk) return child;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 200),
+      switchInCurve: Curves.easeOut,
+      child: KeyedSubtree(key: ValueKey(_currentIndex), child: child),
     );
   }
 
@@ -306,8 +501,6 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
             ),
           ],
         ),
-        const SizedBox(height: 4),
-        _buildModelSelector(palette, notifier),
       ],
     );
   }
@@ -343,47 +536,6 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
           color: recording ? palette.playInk : palette.icon,
         ),
       ),
-    );
-  }
-
-  Widget _buildModelSelector(
-    PlayerPalette palette,
-    ShadowingNotifier notifier,
-  ) {
-    // Only sizes already downloaded on the server, once at least one is
-    // cached -- a dropdown tap must not silently start a multi-hundred-MB
-    // download server-side.  Nothing cached yet (or the server could not
-    // be asked): every size stays offered, the first download is
-    // unavoidable anyway.
-    final state = ref.watch(shadowingProvider);
-    final offered = state.cachedModels ?? kShadowingModelSizes;
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Text(
-          'Whisper model',
-          style: TextStyle(color: palette.muted, fontSize: 12),
-        ),
-        const SizedBox(width: 6),
-        DropdownButton<String>(
-          value: offered.contains(state.modelSize)
-              ? state.modelSize
-              : offered.first,
-          underline: const SizedBox.shrink(),
-          isDense: true,
-          style: TextStyle(color: palette.icon, fontSize: 13),
-          dropdownColor: palette.card,
-          icon: Icon(Icons.arrow_drop_down, color: palette.muted, size: 20),
-          items: offered
-              .map(
-                (size) => DropdownMenuItem(value: size, child: Text(size)),
-              )
-              .toList(),
-          onChanged: (size) {
-            if (size != null) notifier.setModelSize(size);
-          },
-        ),
-      ],
     );
   }
 
@@ -530,6 +682,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
           [for (final t in result.transcriptionTokens) t.text],
           result.transcriptionTokens.isEmpty ? null : result.transcriptionTokens,
           palette,
+          area: _areaHeard,
         ),
       ],
     );
