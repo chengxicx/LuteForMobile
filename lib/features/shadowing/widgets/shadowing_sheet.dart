@@ -110,6 +110,20 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     return r;
   }
 
+  /// 正文那一行的强制行高(strut)。
+  ///
+  /// 为什么需要:每个词是「注音盒(13) + 正文」的 Column,整行按底边对齐
+  /// (WrapCrossAlignment.end),所以**列高必须一致**,否则列高的词会把注音
+  /// 顶上去。而正文行盒的高度并不总等于 fontSize*height——同一行里汉字和假名
+  /// 若落到不同的回退字体,行高会取两者的 max(ascent)+max(descent),比纯汉字
+  /// 或纯假名那一行更高。实测(OPPO PHB110,dpr 4)「青い」「広い」列高 25.0,
+  /// 「地球」「世界」「の」「で」23.0 逻辑 px,差的 2px 就是注音高低不平的来源。
+  /// 强制 strut 后所有词的行盒都等于 fontSize*height,注音与正文基线同时对齐。
+  static final StrutStyle _wordStrut = StrutStyle.fromTextStyle(
+    const TextStyle(fontSize: 19, height: 1.2),
+    forceStrutHeight: true,
+  );
+
   /// 点单词即发音:标注的假名优先(汉字按正确读音发声),没有假名
   /// 就读词本身。复用句子 TTS 通道,状态与播放条一致。
   ///
@@ -126,8 +140,11 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     );
   }
 
-  /// 逐词渲染一句话:每个词上方是它的假名(没有则留同样高的空位,
-  /// 保证同一行基线对齐),整词是独立的点击目标,点一下读这个词。
+  /// 逐词渲染一句话:每个词上方是它的假名(没有则留同样高的空位),
+  /// 整词是独立的点击目标,点一下读这个词。
+  ///
+  /// 对齐靠两件事同时成立:注音留位是定高的 SizedBox,正文行高由 _wordStrut
+  /// 强制统一。少一个,列高就会随词变化,而 Wrap 是底对齐的,注音立刻高低不平。
   Widget _buildFuriganaSentence(
     String fallbackText,
     List<String> tokens,
@@ -225,6 +242,9 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
               ),
               Text(
                 text,
+                // 见 _wordStrut:不强制行高时,汉字+假名混排的词会因回退字体
+                // 而比纯汉字/纯假名高一截,注音随之被顶高,整行高低不平。
+                strutStyle: _wordStrut,
                 style: TextStyle(
                   color: speaking ? context.playingLineText : palette.icon,
                   fontSize: 19,
