@@ -188,6 +188,17 @@ class TextDisplay extends StatefulWidget {
       fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
     );
 
+    // 行盒高度并不总等于 fontSize*height:同一行里汉字与假名若落到不同的回退
+    // 字体,行高会取两者的 max(ascent)+max(descent),比纯汉字/纯假名那一行高
+    // (实测手机上 25.0 vs 23.0 逻辑 px)。而正文是**每个词各自成块**、在 Wrap
+    // 里按顶对齐排的(默认 WrapCrossAlignment.start),列高一不同,词的基线就
+    // 互相错开 —— 看起来就是「汉字和假名不平齐」,汉字+假名混排的词最明显。
+    // 强制 strut 把每个词的行盒都钉死在 fontSize*height,词与词基线自然对齐。
+    final strutStyle = StrutStyle.fromTextStyle(
+      textStyle,
+      forceStrutHeight: true,
+    );
+
     final textWidget = Container(
       padding: backgroundColor != null || isSelected
           ? const EdgeInsets.symmetric(horizontal: 2.0)
@@ -208,7 +219,11 @@ class TextDisplay extends StatefulWidget {
           ...?glowEffect == null ? null : [glowEffect],
         ],
       ),
-      child: Text(displayOverride ?? item.displayText, style: textStyle),
+      child: Text(
+        displayOverride ?? item.displayText,
+        style: textStyle,
+        strutStyle: strutStyle,
+      ),
     );
 
     if (item.wordId != null) {
