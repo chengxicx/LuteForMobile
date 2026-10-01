@@ -376,10 +376,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
           icon: Icon(Icons.arrow_drop_down, color: palette.muted, size: 20),
           items: offered
               .map(
-                (size) => DropdownMenuItem(
-                  value: size,
-                  child: Text(shadowingModelLabel(size)),
-                ),
+                (size) => DropdownMenuItem(value: size, child: Text(size)),
               )
               .toList(),
           onChanged: (size) {
