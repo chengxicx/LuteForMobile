@@ -376,7 +376,10 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
           icon: Icon(Icons.arrow_drop_down, color: palette.muted, size: 20),
           items: offered
               .map(
-                (size) => DropdownMenuItem(value: size, child: Text(size)),
+                (size) => DropdownMenuItem(
+                  value: size,
+                  child: Text(shadowingModelLabel(size)),
+                ),
               )
               .toList(),
           onChanged: (size) {
@@ -501,6 +504,13 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         ),
         const SizedBox(height: 8),
         _buildTokenChips(result, palette),
+        if (result.languageNote != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            result.languageNote!,
+            style: TextStyle(color: palette.muted, fontSize: 12),
+          ),
+        ],
         if (result.extras.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(
