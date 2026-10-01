@@ -950,6 +950,20 @@ class ApiService {
     );
   }
 
+  /// POST /read/shadowing/readings -- pairs the panel's sentence tokens
+  /// with kana readings (furigana) so each word can be shown with its
+  /// reading above it.  Body: {language_id, tokens: [surface, ...]};
+  /// response: {tokens: [{text, reading}]}.  Cheap and synchronous.
+  Future<Response<String>> postShadowingReadings(
+    Map<String, dynamic> data,
+  ) async {
+    return await _dio.post<String>(
+      '/read/shadowing/readings',
+      data: data,
+      options: Options(extra: _noQueue),
+    );
+  }
+
   /// GET /read/shadowing/status/`taskId` -- poller payload for a scoring
   /// task: {state, result, error}.  state is one of queued /
   /// loading_model / transcribing / finished / error, or unknown once the

@@ -89,6 +89,29 @@ void main() {
     expect(result.tokenKind, 'word');
   });
 
+  test('parses the annotated heard sentence with furigana readings', () {
+    // transcription_tokens 是服务端对识别结果逐词标注后的形态:面板据此
+    // 画假名,并把每个词做成可点击发音的目标。
+    final result = ShadowingResult.fromJson({
+      'transcription': '天気がいい',
+      'transcription_tokens': [
+        {'text': '天気', 'reading': 'てんき'},
+        {'text': 'が', 'reading': null},
+        {'text': 'いい', 'reading': ''}, // 空串与 null 同等:无假名
+      ],
+    });
+    expect(result.transcriptionTokens, hasLength(3));
+    expect(result.transcriptionTokens[0].text, '天気');
+    expect(result.transcriptionTokens[0].reading, 'てんき');
+    expect(result.transcriptionTokens[1].reading, isNull);
+    expect(result.transcriptionTokens[2].reading, isNull);
+  });
+
+  test('transcription_tokens defaults to empty when absent', () {
+    final result = ShadowingResult.fromJson({});
+    expect(result.transcriptionTokens, isEmpty);
+  });
+
   test('numeric JSON values may arrive as int or double', () {
     // duration 走 round(duration, 2),可能是 int 形态的 3;tokens_per_minute
     // 可能是 70 而不是 70.2。
