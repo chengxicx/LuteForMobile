@@ -73,6 +73,11 @@ class ShadowingResult {
   final double? tokensPerMinute;
   final String tokenKind;
 
+  /// Server-side warning for a model/language combination that
+  /// transcribes poorly (Cantonese on a non-yue model comes back as a
+  /// Mandarin rewrite).  Null most of the time.
+  final String? languageNote;
+
   const ShadowingResult({
     required this.transcription,
     this.transcriptionTokens = const [],
@@ -86,6 +91,7 @@ class ShadowingResult {
     required this.duration,
     required this.tokensPerMinute,
     required this.tokenKind,
+    this.languageNote,
   });
 
   factory ShadowingResult.fromJson(Map<String, dynamic> json) {
@@ -125,6 +131,7 @@ class ShadowingResult {
       duration: (json['duration'] as num?)?.toDouble() ?? 0,
       tokensPerMinute: (json['tokens_per_minute'] as num?)?.toDouble(),
       tokenKind: json['token_kind'] as String? ?? 'word',
+      languageNote: json['language_note'] as String?,
     );
   }
 }
