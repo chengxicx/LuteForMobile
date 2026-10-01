@@ -960,7 +960,13 @@ class ApiService {
     return await _dio.post<String>(
       '/read/shadowing/readings',
       data: data,
-      options: Options(extra: _noQueue),
+      options: Options(
+        // 全局默认 Content-Type 是 text/html(_buildDio),不覆盖的话
+        // Flask 的 get_json 拒收请求体 → payload 变空 → 端点永远 400。
+        // 其他 JSON POST 都显式写了这一行,这里曾漏掉。
+        contentType: 'application/json',
+        extra: _noQueue,
+      ),
     );
   }
 
@@ -974,18 +980,6 @@ class ApiService {
       options: Options(extra: _noQueue),
     );
   }
-
-  /// GET /book/whisper/models -- install state + per-size model cache
-  /// status: {installed: bool, models: [{size, cached, size_mb}]}.
-  /// Lets the shadowing panel hide model sizes that were never
-  /// downloaded, so picking one cannot trigger a server-side download.
-  Future<Response<String>> getWhisperModels() async {
-    return await _dio.get<String>(
-      '/book/whisper/models',
-      options: Options(extra: _noQueue),
-    );
-  }
-
 
   // -------------------------------------------------------------------------
   // Review queue (mirrors lute.review.routes; the web UI posts the same JSON)

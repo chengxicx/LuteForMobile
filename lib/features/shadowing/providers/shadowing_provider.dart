@@ -55,11 +55,6 @@ class ShadowingState {
   /// Seconds elapsed since the scoring task started -- the wait label.
   final int waitSeconds;
 
-  /// Model sizes that are already on the server (downloaded and cached).
-  /// Null until the first lookup lands, or when the server could not be
-  /// asked (fall back to offering every size).
-  final List<String>? cachedModels;
-
   /// Furigana readings for the practised sentence's tokens, parallel to
   /// [ShadowingSentence.tokens].  Null until the server answers (or when
   /// the language has no readings): the panel then shows plain words.
@@ -80,7 +75,6 @@ class ShadowingState {
     this.playingReference = false,
     this.waitPhase,
     this.waitSeconds = 0,
-    this.cachedModels,
     this.readings,
   });
 
@@ -99,7 +93,6 @@ class ShadowingState {
     bool? playingReference,
     Object? waitPhase = _unset,
     int? waitSeconds,
-    List<String>? cachedModels,
     Object? readings = _unset,
   }) {
     return ShadowingState(
@@ -114,7 +107,6 @@ class ShadowingState {
       waitPhase:
           waitPhase == _unset ? this.waitPhase : waitPhase as ShadowingWaitPhase?,
       waitSeconds: waitSeconds ?? this.waitSeconds,
-      cachedModels: cachedModels ?? this.cachedModels,
       readings: readings == _unset
           ? this.readings
           : readings as List<ShadowingToken>?,
@@ -134,7 +126,6 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   ShadowingState build() {
     ref.onDispose(_disposeResources);
     _loadModelSize();
-    _loadCachedModels();
     return const ShadowingState();
   }
 
@@ -143,10 +134,6 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   /// 一次 take 的上限。跟读是逐句的,任何长句 60 秒都足够;不设上限的
   /// 录音只会把麦克风一直占着,而用户往往意识不到自己还在录。
   static const int maxRecordingSeconds = 60;
-
-  /// 正在录的句子 —— 计时到上限自动收口时要用它打分(回调里拿不到
-  /// 点击时的那个参数)。
-  ShadowingSentence? _activeSentence;
 
   AudioRecorder? _recorder;
   Timer? _recordingTimer;
@@ -161,7 +148,8 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   String? _lastTakePath;
 
   void _loadModelSize() {
-    // SharedPreferences 读取是异步的,但值只影响下拉框初值,晚一拍无妨。
+    // 选择器已从面板移除(与 web 一致):SenseVoice 转写 zh/yue/en/ja/ko,
+    // 这个值只影响 whisper 兜底的语言。遗留偏好仍生效并随请求发送。
     SharedPreferences.getInstance().then((prefs) {
       final saved = prefs.getString(_modelSizePrefKey);
       if (saved != null && kShadowingModelSizes.contains(saved)) {
@@ -177,31 +165,6 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     await prefs.setString(_modelSizePrefKey, size);
   }
 
-  /// Asks the server which whisper sizes are already downloaded.  Once at
-  /// least one size is cached, the picker narrows to those: picking a
-  /// never-downloaded size would silently trigger a multi-hundred-MB
-  /// download on the server, which is not a decision a dropdown tap
-  /// should make.  When nothing is cached yet that first download is
-  /// unavoidable, so every size stays offered.  A saved modelSize that
-  /// is not cached is re-pointed to the first cached size.
-  Future<void> _loadCachedModels() async {
-    final info = await ref.read(contentServiceProvider).fetchWhisperModels();
-    final models = info?['models'];
-    if (models is! List) return;
-    final cached = kShadowingModelSizes
-        .where(
-          (size) => models.any(
-            (m) => m is Map && m['size'] == size && m['cached'] == true,
-          ),
-        )
-        .toList();
-    if (cached.isEmpty) return;
-    state = state.copyWith(cachedModels: cached);
-    if (!cached.contains(state.modelSize)) {
-      await setModelSize(cached.first);
-    }
-  }
-
   /// Which sentence the in-flight readings request belongs to; a late
   /// answer for a sentence the user already navigated away from is
   /// dropped rather than painted over the new one.
@@ -209,6 +172,11 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
 
   /// Fetch the practised sentence's furigana readings.  Best-effort:
   /// nothing is shown when the server has none to give.
+  ///
+  /// The whole sentence goes along as `full_text` so the server reads each
+  /// morpheme in context (一つ -> ひとつ, not いち + つ); [displayText] is
+  /// the sentence as rendered, punctuation included, which is exactly the
+  /// text the server needs to parse.
   Future<void> loadReadings(ShadowingSentence sentence) async {
     final languageId = sentence.languageId;
     if (languageId == null || sentence.tokens.isEmpty) return;
@@ -218,6 +186,7 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
         .fetchShadowingReadings(
           languageId: languageId,
           tokens: sentence.tokens,
+          fullText: sentence.displayText,
         );
     if (readings.isEmpty || sentence.sentenceId != _readingsSentenceId) return;
     state = state.copyWith(readings: readings);
@@ -266,7 +235,6 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     _referencePositionSubscription?.cancel();
     state = ShadowingState(
       modelSize: state.modelSize,
-      cachedModels: state.cachedModels,
       readings: state.readings,
     );
 
@@ -312,7 +280,6 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
       );
 
       _recordingTimer?.cancel();
-      _activeSentence = sentence;
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
         final next = state.recordingSeconds + 1;
         if (next >= maxRecordingSeconds) {
@@ -519,7 +486,6 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     } catch (_) {}
     state = ShadowingState(
       modelSize: state.modelSize,
-      cachedModels: state.cachedModels,
     );
   }
 
