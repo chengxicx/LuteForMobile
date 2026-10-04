@@ -54,13 +54,14 @@ dependencies:
   audioplayers: ^6.5.1
 
   # Shadowing (read-aloud scoring) -- records the user's voice for
-  # /read/shadowing/transcribe.  AAC-LC at 16 kHz (.m4a): tiny uploads,
-  # lossless for whisper transcription, and off the BOOX audio HAL's
-  # compress-offload recording path.  7.x: the 5.x line's federated
-  # packages never lined up (record_linux 0.7.2 does not implement the
-  # startStream/hasPermission of any published record_platform_interface,
-  # which breaks *Android* builds too -- Flutter compiles every platform
-  # package's Dart code into the kernel).
+  # /read/shadowing/transcribe.  AAC-LC 48 kHz mono (voiceRecognition
+  # source, no AEC/NS -- see shadowing_provider.dart: the BOOX audio HAL
+  # occasionally routes 16 kHz captures onto a broken compress-offload
+  # path; 48 kHz + the recognition source stay off it).  7.x: the 5.x
+  # line's federated packages never lined up (record_linux 0.7.2 does not
+  # implement the startStream/hasPermission of any published
+  # record_platform_interface, which breaks *Android* builds too --
+  # Flutter compiles every platform package's Dart code into the kernel).
   record: ^7.1.1
 
   # AI Integration

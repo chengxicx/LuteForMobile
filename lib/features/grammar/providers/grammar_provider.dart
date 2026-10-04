@@ -7,6 +7,26 @@ import '../../reader/models/page_data.dart';
 import '../../reader/providers/reader_provider.dart';
 import '../models/grammar_point.dart';
 
+/// One `grammar_analysis` request at a time, app-wide.
+///
+/// The server's Japanese analyser shares a single global tokenizer, and two
+/// overlapping calls raise "RuntimeError: Already borrowed" and a 500. The
+/// page analysis and the sentence-level fallback (sentence_grammar_provider)
+/// both go through here, so a background pre-analysis and a card the user
+/// just opened can never race each other on the server.
+class GrammarRequestLock {
+  Future<void> _tail = Future.value();
+
+  Future<T> run<T>(Future<T> Function() action) {
+    final task = _tail.then((_) => action());
+    // Keep the chain alive when a task fails: the next request must still run.
+    _tail = task.then((_) {}, onError: (_) {});
+    return task;
+  }
+}
+
+final grammarRequestLock = GrammarRequestLock();
+
 /// Grammar points for the page the reader is currently showing.
 ///
 /// The analysis is done server-side (`/read/grammar_analysis`), on the page
@@ -95,13 +115,15 @@ class GrammarNotifier extends Notifier<GrammarState> {
 
     _inFlightKey = key;
     try {
-      final points = await ref
-          .read(contentServiceProvider)
-          .getGrammarAnalysis(
-            bookId: page.bookId,
-            pageNum: page.currentPage,
-            text: pageText(page),
-          );
+      final points = await grammarRequestLock.run(
+        () => ref
+            .read(contentServiceProvider)
+            .getGrammarAnalysis(
+              bookId: page.bookId,
+              pageNum: page.currentPage,
+              text: pageText(page),
+            ),
+      );
 
       state = GrammarState(
         points: points,

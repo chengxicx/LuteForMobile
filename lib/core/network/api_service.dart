@@ -1194,6 +1194,11 @@ class ApiService {
 
   /// Grammar points detected on a reading page.  [text] is the page text the
   /// reader is showing; the server analyses the whole page when it is empty.
+  ///
+  /// The timestamp busts intermediary caches (the CDN in front of the server
+  /// caches by URL): the grammar library evolves, and a stale cached response
+  /// for an unchanged page text once greyed out every Grammar button until
+  /// the next fresh analysis replaced it.
   Future<Response<String>> getGrammarAnalysis({
     required int bookId,
     required int pageNum,
@@ -1203,6 +1208,7 @@ class ApiService {
       '/read/grammar_analysis/$bookId/$pageNum',
       queryParameters: {
         if (text != null && text.trim().isNotEmpty) 'text': text,
+        '_': DateTime.now().millisecondsSinceEpoch.toString(),
       },
     );
   }

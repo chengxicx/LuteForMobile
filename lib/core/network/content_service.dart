@@ -1467,6 +1467,7 @@ class ContentService {
     required String audioPath,
     required int languageId,
     required List<String> tokens,
+    String? fullText,
     String? model,
     void Function(ShadowingWaitPhase phase, int elapsedSeconds)? onWait,
   }) async {
@@ -1475,6 +1476,11 @@ class ContentService {
       'audio': await MultipartFile.fromFile(audioPath, filename: filename),
       'language_id': languageId.toString(),
       'tokens': jsonEncode(tokens),
+      // The sentence the tokens belong to: the server scores Japanese
+      // against the contextual readings the panel displays, not the
+      // isolated per-token dictionary readings (香山 is こうやま in its
+      // sentence, かやま alone).  Optional: older servers ignore it.
+      if (fullText != null && fullText.isNotEmpty) 'full_text': fullText,
       if (model != null && model.isNotEmpty) 'model': model,
     });
 

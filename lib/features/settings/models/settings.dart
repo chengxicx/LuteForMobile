@@ -17,7 +17,6 @@ class Settings {
   final bool isUrlValid;
   final String basicAuthUser;
   final String basicAuthPassword;
-  final String translationProvider;
   final bool showTags;
   final bool showLastRead;
   final String? languageFilter;
@@ -30,7 +29,6 @@ class Settings {
   final bool showKnownTermsInSentenceReader;
   final int doubleTapTimeout;
   final bool pageTurnAnimations;
-  final bool enableTooltipCaching;
   final bool showStatsBar;
   final bool showKnownTermsCount;
   final bool showTermStatsCard;
@@ -41,14 +39,12 @@ class Settings {
   final AIProvider? aiProvider;
   final bool enableTripleTapToMarkKnown;
   final bool autoPronounceOnTap;
-  final bool enablePagePreload;
   final bool termuxIntegrationEnabled;
   final int statsCalcSampleSize;
   final int stats500SampleSize;
   final int statsRefreshBatchSize;
   final int statsRefreshCooldownHours;
   final bool alwaysRefreshBookDetails;
-  final int maxConcurrentTooltipFetches;
   final bool autoRefreshFullStats;
   final bool experimentalBookDetailsFullStatsEndpoint;
 
@@ -70,7 +66,6 @@ class Settings {
     this.isUrlValid = true,
     this.basicAuthUser = '',
     this.basicAuthPassword = '',
-    this.translationProvider = 'local',
     this.showTags = true,
     this.showLastRead = true,
     this.languageFilter,
@@ -83,12 +78,6 @@ class Settings {
     this.showKnownTermsInSentenceReader = true,
     this.doubleTapTimeout = 300,
     this.pageTurnAnimations = true,
-    // On by default: this switch gates the per-page tooltip prefetch, and
-    // leaving it off made every single word tap a bare network round trip
-    // (the card only appears once that fetch returns).  It also gates
-    // offline reuse: prefetch warms the on-disk cache so term cards keep
-    // working on the subway.
-    this.enableTooltipCaching = true,
     this.showStatsBar = true,
     this.showKnownTermsCount = false,
     this.showTermStatsCard = false,
@@ -99,14 +88,12 @@ class Settings {
     this.aiProvider,
     this.enableTripleTapToMarkKnown = false,
     this.autoPronounceOnTap = true,
-    this.enablePagePreload = true,
     this.termuxIntegrationEnabled = false,
     this.statsCalcSampleSize = 5,
     this.stats500SampleSize = 100,
     this.statsRefreshBatchSize = 1,
     this.statsRefreshCooldownHours = 96,
     this.alwaysRefreshBookDetails = true,
-    this.maxConcurrentTooltipFetches = 4,
     this.autoRefreshFullStats = false,
     this.experimentalBookDetailsFullStatsEndpoint = false,
     this.eInkMode = false,
@@ -121,7 +108,6 @@ class Settings {
     bool? isUrlValid,
     String? basicAuthUser,
     String? basicAuthPassword,
-    String? translationProvider,
     bool? showTags,
     bool? showLastRead,
     String? languageFilter,
@@ -137,7 +123,6 @@ class Settings {
     bool? showKnownTermsInSentenceReader,
     int? doubleTapTimeout,
     bool? pageTurnAnimations,
-    bool? enableTooltipCaching,
     bool? showStatsBar,
     bool? showKnownTermsCount,
     bool? showTermStatsCard,
@@ -148,14 +133,12 @@ class Settings {
     AIProvider? aiProvider,
     bool? enableTripleTapToMarkKnown,
     bool? autoPronounceOnTap,
-    bool? enablePagePreload,
     bool? termuxIntegrationEnabled,
     int? statsCalcSampleSize,
     int? stats500SampleSize,
     int? statsRefreshBatchSize,
     int? statsRefreshCooldownHours,
     bool? alwaysRefreshBookDetails,
-    int? maxConcurrentTooltipFetches,
     bool? autoRefreshFullStats,
     bool? experimentalBookDetailsFullStatsEndpoint,
     bool? eInkMode,
@@ -169,7 +152,6 @@ class Settings {
       isUrlValid: isUrlValid ?? this.isUrlValid,
       basicAuthUser: basicAuthUser ?? this.basicAuthUser,
       basicAuthPassword: basicAuthPassword ?? this.basicAuthPassword,
-      translationProvider: translationProvider ?? this.translationProvider,
       showTags: showTags ?? this.showTags,
       showLastRead: showLastRead ?? this.showLastRead,
       languageFilter: clearLanguageFilter
@@ -193,7 +175,6 @@ class Settings {
           showKnownTermsInSentenceReader ?? this.showKnownTermsInSentenceReader,
       doubleTapTimeout: doubleTapTimeout ?? this.doubleTapTimeout,
       pageTurnAnimations: pageTurnAnimations ?? this.pageTurnAnimations,
-      enableTooltipCaching: enableTooltipCaching ?? this.enableTooltipCaching,
       showStatsBar: showStatsBar ?? this.showStatsBar,
       showKnownTermsCount: showKnownTermsCount ?? this.showKnownTermsCount,
       showTermStatsCard: showTermStatsCard ?? this.showTermStatsCard,
@@ -208,7 +189,6 @@ class Settings {
       enableTripleTapToMarkKnown:
           enableTripleTapToMarkKnown ?? this.enableTripleTapToMarkKnown,
       autoPronounceOnTap: autoPronounceOnTap ?? this.autoPronounceOnTap,
-      enablePagePreload: enablePagePreload ?? this.enablePagePreload,
       termuxIntegrationEnabled:
           termuxIntegrationEnabled ?? this.termuxIntegrationEnabled,
       statsCalcSampleSize: statsCalcSampleSize ?? this.statsCalcSampleSize,
@@ -219,8 +199,6 @@ class Settings {
           statsRefreshCooldownHours ?? this.statsRefreshCooldownHours,
       alwaysRefreshBookDetails:
           alwaysRefreshBookDetails ?? this.alwaysRefreshBookDetails,
-      maxConcurrentTooltipFetches:
-          maxConcurrentTooltipFetches ?? this.maxConcurrentTooltipFetches,
       autoRefreshFullStats: autoRefreshFullStats ?? this.autoRefreshFullStats,
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint ??
@@ -237,7 +215,6 @@ class Settings {
       aiServerUrl: null,
       ttsServerUrl: null,
       isUrlValid: true,
-      translationProvider: 'local',
       showTags: true,
       showLastRead: true,
       languageFilter: null,
@@ -250,7 +227,6 @@ class Settings {
       showKnownTermsInSentenceReader: true,
       doubleTapTimeout: 300,
       pageTurnAnimations: true,
-      enableTooltipCaching: true,
       showStatsBar: true,
       showKnownTermsCount: false,
       showTermStatsCard: false,
@@ -261,14 +237,12 @@ class Settings {
       aiProvider: AIProvider.none,
       enableTripleTapToMarkKnown: false,
       autoPronounceOnTap: true,
-      enablePagePreload: true,
       termuxIntegrationEnabled: false,
       statsCalcSampleSize: 5,
       stats500SampleSize: 100,
       statsRefreshBatchSize: 1,
       statsRefreshCooldownHours: 48,
       alwaysRefreshBookDetails: true,
-      maxConcurrentTooltipFetches: 4,
       autoRefreshFullStats: false,
       experimentalBookDetailsFullStatsEndpoint: false,
       eInkMode: false,
@@ -287,7 +261,6 @@ class Settings {
         other.isUrlValid == isUrlValid &&
         other.basicAuthUser == basicAuthUser &&
         other.basicAuthPassword == basicAuthPassword &&
-        other.translationProvider == translationProvider &&
         other.showTags == showTags &&
         other.showLastRead == showLastRead &&
         other.languageFilter == languageFilter &&
@@ -301,7 +274,6 @@ class Settings {
             showKnownTermsInSentenceReader &&
         other.doubleTapTimeout == doubleTapTimeout &&
         other.pageTurnAnimations == pageTurnAnimations &&
-        other.enableTooltipCaching == enableTooltipCaching &&
         other.showStatsBar == showStatsBar &&
         other.showKnownTermsCount == showKnownTermsCount &&
         other.showTermStatsCard == showTermStatsCard &&
@@ -313,13 +285,11 @@ class Settings {
         other.aiProvider == aiProvider &&
         other.enableTripleTapToMarkKnown == enableTripleTapToMarkKnown &&
         other.autoPronounceOnTap == autoPronounceOnTap &&
-        other.enablePagePreload == enablePagePreload &&
         other.termuxIntegrationEnabled == termuxIntegrationEnabled &&
         other.statsCalcSampleSize == statsCalcSampleSize &&
         other.statsRefreshBatchSize == statsRefreshBatchSize &&
         other.statsRefreshCooldownHours == statsRefreshCooldownHours &&
         other.alwaysRefreshBookDetails == alwaysRefreshBookDetails &&
-        other.maxConcurrentTooltipFetches == maxConcurrentTooltipFetches &&
         other.autoRefreshFullStats == autoRefreshFullStats &&
         other.experimentalBookDetailsFullStatsEndpoint ==
             experimentalBookDetailsFullStatsEndpoint &&
@@ -336,7 +306,6 @@ class Settings {
     isUrlValid,
     basicAuthUser,
     basicAuthPassword,
-    translationProvider,
     showTags,
     showLastRead,
     languageFilter,
@@ -349,7 +318,6 @@ class Settings {
     showKnownTermsInSentenceReader,
     doubleTapTimeout,
     pageTurnAnimations,
-    enableTooltipCaching,
     showStatsBar,
     showKnownTermsCount,
     showTermStatsCard,
@@ -360,13 +328,11 @@ class Settings {
     aiProvider,
     enableTripleTapToMarkKnown,
     autoPronounceOnTap,
-    enablePagePreload,
     termuxIntegrationEnabled,
     statsCalcSampleSize,
     statsRefreshBatchSize,
     statsRefreshCooldownHours,
     alwaysRefreshBookDetails,
-    maxConcurrentTooltipFetches,
     autoRefreshFullStats,
     experimentalBookDetailsFullStatsEndpoint,
     eInkMode,

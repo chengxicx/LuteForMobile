@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/cache/providers/cache_manager_provider.dart';
 import '../../../core/logger/widget_logger.dart';
@@ -22,144 +21,6 @@ import 'ai_settings_section.dart';
 import 'backup_restore_card.dart';
 import 'termux_screen.dart';
 import 'text_formatting_controls.dart';
-import '../../../shared/utils/number_input.dart';
-
-/// A bounded integer field.
-///
-/// Commits on submit or on losing focus, not per keystroke.  Saving per
-/// keystroke silently lost values: typing 500 into a 1-10 field saved the 5,
-/// dropped the 50 and 500 as out of range, and left the field reading 500
-/// while the setting was 5.  Out-of-range input is now clamped, the applied
-/// value is written back into the field, and the reason is shown under it.
-class NumberField extends StatefulWidget {
-  final String label;
-  final String initialValue;
-  final String hint;
-  final int minValue;
-  final int maxValue;
-  final ValueChanged<String> onChanged;
-
-  const NumberField({
-    super.key,
-    required this.label,
-    required this.initialValue,
-    required this.hint,
-    required this.minValue,
-    required this.maxValue,
-    required this.onChanged,
-  });
-
-  @override
-  State<NumberField> createState() => _NumberFieldState();
-}
-
-class _NumberFieldState extends State<NumberField> {
-  late final TextEditingController _controller;
-  late final FocusNode _focusNode;
-
-  /// The value actually in effect -- what the field falls back to when the
-  /// input cannot be used.
-  late String _committed;
-  String? _error;
-  bool _disposed = false;
-  bool _settingText = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _committed = widget.initialValue;
-    _controller = TextEditingController(text: widget.initialValue);
-    _focusNode = FocusNode();
-    _focusNode.addListener(() {
-      if (!_focusNode.hasFocus) _commit();
-    });
-  }
-
-  @override
-  void didUpdateWidget(NumberField oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.initialValue != widget.initialValue &&
-        _controller.text != widget.initialValue) {
-      _setControllerText(widget.initialValue);
-      _committed = widget.initialValue;
-    }
-  }
-
-  @override
-  void dispose() {
-    _disposed = true;
-    // A value typed and then left on screen (card collapsed, screen popped)
-    // is committed on the way out.
-    _commit();
-    _focusNode.dispose();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _setControllerText(String text) {
-    // Setting the text programmatically still fires onChanged, which would
-    // clear the error this commit is about to show.
-    _settingText = true;
-    _controller.text = text;
-    _settingText = false;
-  }
-
-  void _commit() {
-    final resolved = resolveNumberInput(
-      _controller.text,
-      min: widget.minValue,
-      max: widget.maxValue,
-      fallback: _committed,
-    );
-    final nextText = resolved.value;
-    final error = resolved.error;
-
-    if (_controller.text != nextText) {
-      _setControllerText(nextText);
-    }
-    if (nextText != _committed) {
-      _committed = nextText;
-      widget.onChanged(nextText);
-    }
-    if (!_disposed && error != _error) {
-      setState(() => _error = error);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(widget.label, style: const TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        TextField(
-          keyboardType: TextInputType.number,
-          textInputAction: TextInputAction.done,
-          focusNode: _focusNode,
-          decoration: InputDecoration(
-            border: const OutlineInputBorder(),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 8,
-            ),
-            hintText: widget.hint,
-            errorText: _error,
-          ),
-          controller: _controller,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          onChanged: (_) {
-            if (_settingText) return;
-            if (!_disposed && _error != null) {
-              setState(() => _error = null);
-            }
-          },
-          onSubmitted: (_) => _commit(),
-        ),
-      ],
-    );
-  }
-}
 
 class SettingsScreen extends ConsumerStatefulWidget {
   final GlobalKey<ScaffoldState>? scaffoldKey;
@@ -1020,9 +881,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               );
                               await notifier.updateEInkMode(true);
                               await notifier.updatePageTurnAnimations(false);
-                              await notifier.updateEnableTooltipCaching(true);
                               await notifier.updateAutoPronounceOnTap(false);
-                              await notifier.updateEnablePagePreload(true);
                               await ref
                                   .read(termFormSettingsProvider.notifier)
                                   .updateShowTooltipImages(false);
@@ -1238,47 +1097,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ],
                           ),
                           const SizedBox(height: 24),
-                          const Text('Page Preloading'),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'Enable page preloading',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    Text(
-                                      'Preload next page for faster navigation',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurface
-                                            .withValues(alpha: 0.6),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Transform.scale(
-                                scale: 0.8,
-                                child: Switch(
-                                  value: settings.enablePagePreload,
-                                  onChanged: (value) {
-                                    ref
-                                        .read(settingsProvider.notifier)
-                                        .updateEnablePagePreload(value);
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
                           Row(
                             children: [
                               Expanded(
@@ -1317,68 +1135,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 24),
-                          const Text('Tooltip Caching'),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'Enable tooltip caching',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    Text(
-                                      'Cache tooltips for faster loading (48 hour expiry)',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurface
-                                            .withValues(alpha: 0.6),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Transform.scale(
-                                scale: 0.8,
-                                child: Switch(
-                                  value: settings.enableTooltipCaching,
-                                  onChanged: (value) {
-                                    ref
-                                        .read(settingsProvider.notifier)
-                                        .updateEnableTooltipCaching(value);
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (settings.enableTooltipCaching) ...[
-                            const SizedBox(height: 16),
-                            NumberField(
-                              label: 'Max Concurrent Tooltip Fetches',
-                              initialValue: settings.maxConcurrentTooltipFetches
-                                  .toString(),
-                              hint: '1-10',
-                              minValue: 1,
-                              maxValue: 10,
-                              onChanged: (value) {
-                                final intValue = int.tryParse(value);
-                                if (intValue != null) {
-                                  ref
-                                      .read(settingsProvider.notifier)
-                                      .updateMaxConcurrentTooltipFetches(
-                                        intValue,
-                                      );
-                                }
-                              },
-                            ),
-                          ],
                           const SizedBox(height: 24),
                           Row(
                             children: [

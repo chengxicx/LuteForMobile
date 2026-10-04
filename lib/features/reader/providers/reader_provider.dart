@@ -85,14 +85,16 @@ class ReaderNotifier extends Notifier<ReaderState> {
 
   /// Parsed term tooltips, keyed by word id.
   ///
-  /// Deliberately independent of `enableTooltipCaching` -- that switch governs
-  /// the on-disk cache ("prefetch a whole page, keep it 48 hours") and is off by
-  /// default, which left every single tap on a word as a bare network round
-  /// trip.  This layer only has to make a tap instant, so it is unconditional.
-  /// Entries are dropped when a term changes (see _forgetTooltip); the rest die
-  /// with the notifier, so nothing needs invalidating across pages.
+  /// The first layer to answer a tap so it is instant; the on-disk tooltip
+  /// cache (prefetched per page, kept 48 hours) is the second -- it makes
+  /// taps work offline.  Entries are dropped when a term changes (see
+  /// _forgetTooltip); the rest die with the notifier, so nothing needs
+  /// invalidating across pages.
   final Map<int, TermTooltip> _tooltipMemory = {};
   static const int _tooltipMemoryMax = 300;
+
+  /// Parallel fetches per tooltip preload pass.
+  static const int _maxConcurrentTooltipFetches = 4;
 
   void _rememberTooltip(int termId, TermTooltip tooltip) {
     if (!_tooltipMemory.containsKey(termId) &&
@@ -598,8 +600,6 @@ class ReaderNotifier extends Notifier<ReaderState> {
   /// -- for manga -- the next page's image into the disk cache.
   void _triggerNextPagePreload(PageData pageData) {
     if (pageData.currentPage >= pageData.pageCount) return;
-    final settings = ref.read(settingsProvider);
-    if (!settings.enablePagePreload) return;
 
     _enqueuePrefetch(() async {
       await preloadNextPage();
@@ -651,11 +651,8 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
   }
 
-  /// Preload tooltips for terms on the current page if caching is enabled
+  /// Preload tooltips for terms on the current page
   Future<void> preloadTooltipsForCurrentPage() async {
-    final settings = ref.read(settingsProvider);
-    if (!settings.enableTooltipCaching) return;
-
     final currentPageData = state.pageData;
     if (currentPageData == null) return;
 
@@ -678,7 +675,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
   }
 
   /// Helper method to preload tooltips for a set of term IDs
-  /// Fetches in parallel based on maxConcurrentTooltipFetches setting
+  /// Fetches in parallel (see [_maxConcurrentTooltipFetches])
   /// Uses concurrent queue pattern - maintains N concurrent requests,
   /// starting a new one as soon as any completes
   Future<void> _preloadTooltipsForTerms(
@@ -687,11 +684,8 @@ class ReaderNotifier extends Notifier<ReaderState> {
   ) async {
     if (termIds.isEmpty) return;
 
-    final settings = ref.read(settingsProvider);
-    if (!settings.enableTooltipCaching) return;
-
     final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-    final maxConcurrent = settings.maxConcurrentTooltipFetches.clamp(1, 10);
+    const maxConcurrent = _maxConcurrentTooltipFetches;
     int cachedCount = 0;
     final fetchedHtmlByTermId = <int, String>{};
 
@@ -776,11 +770,8 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
   }
 
-  /// Preload tooltips for terms on the next page if caching is enabled
+  /// Preload tooltips for terms on the next page
   Future<void> preloadTooltipsForNextPage() async {
-    final settings = ref.read(settingsProvider);
-    if (!settings.enableTooltipCaching) return;
-
     final currentPageData = state.pageData;
     if (currentPageData == null) return;
 
@@ -894,12 +885,10 @@ class ReaderNotifier extends Notifier<ReaderState> {
 
       for (final termId in termIds) {
         _forgetTooltip(termId);
-        if (ref.read(settingsProvider).enableTooltipCaching) {
-          try {
-            await ref.read(tooltipCacheServiceProvider).removeFromCache(termId);
-          } catch (e) {
-            ApiLogger.logError('outboxSyncedTooltip', e);
-          }
+        try {
+          await ref.read(tooltipCacheServiceProvider).removeFromCache(termId);
+        } catch (e) {
+          ApiLogger.logError('outboxSyncedTooltip', e);
         }
       }
 
@@ -935,27 +924,23 @@ class ReaderNotifier extends Notifier<ReaderState> {
     final memo = _tooltipMemory[termId];
     if (memo != null) return memo;
 
-    final settings = ref.read(settingsProvider);
+    // On-disk cache next: prefetched per page, so a first tap on a word the
+    // page preload has already seen costs no network round trip.
+    try {
+      final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
 
-    // If tooltip caching is enabled, check the cache first
-    if (settings.enableTooltipCaching) {
-      try {
-        final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-
-        // Try to get from cache
-        final cachedEntry = await tooltipCacheService.getFromCache(termId);
-        if (cachedEntry != null) {
-          // Parse the cached HTML to create a TermTooltip object using the same parser as the server
-          final contentService = ref.read(contentServiceProvider);
-          final tooltip = contentService.parser.parseTermTooltip(
-            cachedEntry.tooltipHtml,
-          );
-          _rememberTooltip(termId, tooltip);
-          return tooltip;
-        }
-      } catch (e) {
-        ApiLogger.logError('getTooltipFromCache', e, details: 'termId=$termId');
+      final cachedEntry = await tooltipCacheService.getFromCache(termId);
+      if (cachedEntry != null) {
+        // Parse the cached HTML to create a TermTooltip object using the same parser as the server
+        final contentService = ref.read(contentServiceProvider);
+        final tooltip = contentService.parser.parseTermTooltip(
+          cachedEntry.tooltipHtml,
+        );
+        _rememberTooltip(termId, tooltip);
+        return tooltip;
       }
+    } catch (e) {
+      ApiLogger.logError('getTooltipFromCache', e, details: 'termId=$termId');
     }
 
     // Offline: the popup GET would only sit in the request queue until its
@@ -973,19 +958,17 @@ class ReaderNotifier extends Notifier<ReaderState> {
       if (resultWithHtml != null) {
         final (tooltip, rawHtml) = resultWithHtml;
 
-        // If caching is enabled, save to cache (including empty HTML as " " marker)
-        if (settings.enableTooltipCaching) {
-          try {
-            final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-            final htmlToCache = rawHtml.isEmpty ? ' ' : rawHtml;
-            await tooltipCacheService.saveToCache(termId, htmlToCache);
-          } catch (e) {
-            ApiLogger.logError(
-              'saveTooltipToCache',
-              e,
-              details: 'termId=$termId',
-            );
-          }
+        // Save to cache (including empty HTML as " " marker)
+        try {
+          final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
+          final htmlToCache = rawHtml.isEmpty ? ' ' : rawHtml;
+          await tooltipCacheService.saveToCache(termId, htmlToCache);
+        } catch (e) {
+          ApiLogger.logError(
+            'saveTooltipToCache',
+            e,
+            details: 'termId=$termId',
+          );
         }
 
         _rememberTooltip(termId, tooltip);
@@ -1075,17 +1058,6 @@ class ReaderNotifier extends Notifier<ReaderState> {
     try {
       await _repository.saveTermForm(langId, text, data);
 
-      // Invalidate tooltip cache for this term if caching is enabled
-      final settings = ref.read(settingsProvider);
-      if (settings.enableTooltipCaching) {
-        try {
-          // Note: We don't have the termId here, so we can't invalidate the specific cache entry
-          // The cache will be refreshed on next fetch
-        } catch (e) {
-          ApiLogger.logError('invalidateTooltipCache', e);
-        }
-      }
-
       return true;
     } catch (e) {
       return false;
@@ -1097,19 +1069,15 @@ class ReaderNotifier extends Notifier<ReaderState> {
       await _repository.editTerm(termId, data);
       _forgetTooltip(termId);
 
-      // Invalidate tooltip cache for this term if caching is enabled
-      final settings = ref.read(settingsProvider);
-      if (settings.enableTooltipCaching) {
-        try {
-          final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-          await tooltipCacheService.removeFromCache(termId);
-        } catch (e) {
-          ApiLogger.logError(
-            'invalidateTooltipCache',
-            e,
-            details: 'termId=$termId',
-          );
-        }
+      try {
+        final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
+        await tooltipCacheService.removeFromCache(termId);
+      } catch (e) {
+        ApiLogger.logError(
+          'invalidateTooltipCache',
+          e,
+          details: 'termId=$termId',
+        );
       }
 
       return true;
@@ -1181,23 +1149,20 @@ class ReaderNotifier extends Notifier<ReaderState> {
         }
       }
 
-      // Invalidate tooltip cache for this term if caching is enabled
-      final settings = ref.read(settingsProvider);
-      if (settings.enableTooltipCaching) {
-        try {
-          final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-          await tooltipCacheService.removeFromCache(termId);
+      // Invalidate tooltip cache for this term and its parents
+      try {
+        final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
+        await tooltipCacheService.removeFromCache(termId);
 
-          // Also invalidate cache for parent terms
-          for (final parent in termForm.parents) {
-            if (parent.id != null) {
-              await tooltipCacheService.removeFromCache(parent.id!);
-              _forgetTooltip(parent.id!);
-            }
+        // Also invalidate cache for parent terms
+        for (final parent in termForm.parents) {
+          if (parent.id != null) {
+            await tooltipCacheService.removeFromCache(parent.id!);
+            _forgetTooltip(parent.id!);
           }
-        } catch (e) {
-          ApiLogger.logError('invalidateTooltipCache', e);
         }
+      } catch (e) {
+        ApiLogger.logError('invalidateTooltipCache', e);
       }
     } catch (e) {
       // The edit is already queued; a local repaint failure must not turn
@@ -1241,15 +1206,12 @@ class ReaderNotifier extends Notifier<ReaderState> {
           .read(sentenceReaderProvider.notifier)
           .updateTermStatusInSentences(termId, status);
 
-      // Invalidate tooltip cache for this term if caching is enabled
-      final settings = ref.read(settingsProvider);
-      if (settings.enableTooltipCaching) {
-        try {
-          final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-          await tooltipCacheService.removeFromCache(termId);
-        } catch (e) {
-          ApiLogger.logError('invalidateTooltipCache', e);
-        }
+      // Invalidate tooltip cache for this term
+      try {
+        final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
+        await tooltipCacheService.removeFromCache(termId);
+      } catch (e) {
+        ApiLogger.logError('invalidateTooltipCache', e);
       }
     }
   }

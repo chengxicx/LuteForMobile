@@ -33,7 +33,6 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyBasicAuthUser = 'basic_auth_user';
   static const String _keyBasicAuthPassword = 'basic_auth_password';
   static const String _keyUseTermux = 'use_termux';
-  static const String _keyTranslationProvider = 'translation_provider';
   static const String _keyShowTags = 'show_tags';
   static const String _keyShowLastRead = 'show_last_read';
   static const String _keyLanguageFilter = 'language_filter';
@@ -48,7 +47,6 @@ class SettingsNotifier extends Notifier<Settings> {
       'show_known_terms_in_sentence_reader';
   static const String _keyDoubleTapTimeout = 'double_tap_timeout';
   static const String _keyPageTurnAnimations = 'page_turn_animations';
-  static const String _keyEnableTooltipCaching = 'enable_tooltip_caching';
   static const String _keyShowStatsBar = 'show_stats_bar';
   static const String _keyShowKnownTermsCount = 'show_known_terms_count';
   static const String _keyShowTermStatsCard = 'show_term_stats_card';
@@ -59,7 +57,6 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyEnableTripleTapToMarkKnown =
       'enable_triple_tap_to_mark_known';
   static const String _keyAutoPronounceOnTap = 'auto_pronounce_on_tap';
-  static const String _keyEnablePagePreload = 'enable_page_preload';
   static const String _keyTermuxIntegrationEnabled =
       'termux_integration_enabled';
   static const String _keyStatsCalcSampleSize = 'stats_calc_sample_size';
@@ -69,8 +66,6 @@ class SettingsNotifier extends Notifier<Settings> {
       'stats_refresh_cooldown_hours';
   static const String _keyAlwaysRefreshBookDetails =
       'always_refresh_book_details';
-  static const String _keyMaxConcurrentTooltipFetches =
-      'max_concurrent_tooltip_fetches';
   static const String _keyAutoRefreshFullStats = 'auto_refresh_full_stats';
   static const String _keyExperimentalBookDetailsFullStatsEndpoint =
       'experimental_book_details_full_stats_endpoint';
@@ -113,8 +108,6 @@ class SettingsNotifier extends Notifier<Settings> {
   }
 
   Future<void> _loadOtherSettings(SharedPreferences prefs) async {
-    final translationProvider =
-        prefs.getString(_keyTranslationProvider) ?? 'local';
     final showTags = prefs.getBool(_keyShowTags) ?? true;
     final showLastRead = prefs.getBool(_keyShowLastRead) ?? true;
     final languageFilter = prefs.getString(_keyLanguageFilter);
@@ -124,11 +117,6 @@ class SettingsNotifier extends Notifier<Settings> {
         prefs.getBool(_keyShowKnownTermsInSentenceReader) ?? true;
     final doubleTapTimeout = prefs.getInt(_keyDoubleTapTimeout) ?? 300;
     final pageTurnAnimations = prefs.getBool(_keyPageTurnAnimations) ?? true;
-    // On by default (was false until 2026-09-28): the switch gates the
-    // per-page tooltip prefetch, and off meant every word tap waited on a
-    // bare network round trip -- and nothing was cached for offline reuse.
-    final enableTooltipCaching =
-        prefs.getBool(_keyEnableTooltipCaching) ?? true;
     final showStatsBar = prefs.getBool(_keyShowStatsBar) ?? true;
     final showKnownTermsCount = prefs.getBool(_keyShowKnownTermsCount) ?? false;
     final showTermStatsCard = prefs.getBool(_keyShowTermStatsCard) ?? false;
@@ -140,10 +128,6 @@ class SettingsNotifier extends Notifier<Settings> {
     final enableTripleTapToMarkKnown =
         prefs.getBool(_keyEnableTripleTapToMarkKnown) ?? false;
     final autoPronounceOnTap = prefs.getBool(_keyAutoPronounceOnTap) ?? true;
-    // On by default: the next page is one tap away, and preloading its
-    // content (and, for manga, its image) is what makes a page turn
-    // instant.  Users can still turn it off in settings.
-    final enablePagePreload = prefs.getBool(_keyEnablePagePreload) ?? true;
     final termuxIntegrationEnabled =
         prefs.getBool(_keyTermuxIntegrationEnabled) ?? false;
     final statsCalcSampleSize = prefs.getInt(_keyStatsCalcSampleSize) ?? 5;
@@ -153,8 +137,6 @@ class SettingsNotifier extends Notifier<Settings> {
         prefs.getInt(_keyStatsRefreshCooldownHours) ?? 48;
     final alwaysRefreshBookDetails =
         prefs.getBool(_keyAlwaysRefreshBookDetails) ?? true;
-    final maxConcurrentTooltipFetches =
-        prefs.getInt(_keyMaxConcurrentTooltipFetches) ?? 4;
     final autoRefreshFullStats =
         prefs.getBool(_keyAutoRefreshFullStats) ?? false;
     final experimentalBookDetailsFullStatsEndpoint =
@@ -174,7 +156,6 @@ class SettingsNotifier extends Notifier<Settings> {
     );
 
     state = state.copyWith(
-      translationProvider: translationProvider,
       showTags: showTags,
       showLastRead: showLastRead,
       languageFilter: languageFilter,
@@ -187,7 +168,6 @@ class SettingsNotifier extends Notifier<Settings> {
       showKnownTermsInSentenceReader: showKnownTermsInSentenceReader,
       doubleTapTimeout: doubleTapTimeout,
       pageTurnAnimations: pageTurnAnimations,
-      enableTooltipCaching: enableTooltipCaching,
       showStatsBar: showStatsBar,
       showKnownTermsCount: showKnownTermsCount,
       showTermStatsCard: showTermStatsCard,
@@ -196,14 +176,12 @@ class SettingsNotifier extends Notifier<Settings> {
       showPageNumbers: showPageNumbers,
       enableTripleTapToMarkKnown: enableTripleTapToMarkKnown,
       autoPronounceOnTap: autoPronounceOnTap,
-      enablePagePreload: enablePagePreload,
       termuxIntegrationEnabled: termuxIntegrationEnabled,
       statsCalcSampleSize: statsCalcSampleSize,
       stats500SampleSize: stats500SampleSize,
       statsRefreshBatchSize: statsRefreshBatchSize,
       statsRefreshCooldownHours: statsRefreshCooldownHours,
       alwaysRefreshBookDetails: alwaysRefreshBookDetails,
-      maxConcurrentTooltipFetches: maxConcurrentTooltipFetches,
       autoRefreshFullStats: autoRefreshFullStats,
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint,
@@ -318,13 +296,6 @@ class SettingsNotifier extends Notifier<Settings> {
       password: state.basicAuthPassword,
     );
     ServerStatusManager.setReachable(isReachable);
-  }
-
-  Future<void> updateTranslationProvider(String provider) async {
-    state = state.copyWith(translationProvider: provider);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyTranslationProvider, provider);
   }
 
   Future<void> updateShowTags(bool show) async {
@@ -476,12 +447,6 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.setString(_keyOrientationLock, lock.name);
   }
 
-  Future<void> updateEnableTooltipCaching(bool enabled) async {
-    state = state.copyWith(enableTooltipCaching: enabled);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_keyEnableTooltipCaching, enabled);
-  }
-
   Future<void> updateShowStatsBar(bool show) async {
     state = state.copyWith(showStatsBar: show);
     final prefs = await SharedPreferences.getInstance();
@@ -530,12 +495,6 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.setBool(_keyAutoPronounceOnTap, enabled);
   }
 
-  Future<void> updateEnablePagePreload(bool enabled) async {
-    state = state.copyWith(enablePagePreload: enabled);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_keyEnablePagePreload, enabled);
-  }
-
   Future<void> updateTermuxIntegrationEnabled(bool enabled) async {
     state = state.copyWith(termuxIntegrationEnabled: enabled);
     final prefs = await SharedPreferences.getInstance();
@@ -572,12 +531,6 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.setBool(_keyAlwaysRefreshBookDetails, value);
   }
 
-  Future<void> updateMaxConcurrentTooltipFetches(int value) async {
-    state = state.copyWith(maxConcurrentTooltipFetches: value);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_keyMaxConcurrentTooltipFetches, value);
-  }
-
   Future<void> updateAutoRefreshFullStats(bool value) async {
     state = state.copyWith(autoRefreshFullStats: value);
     final prefs = await SharedPreferences.getInstance();
@@ -611,7 +564,6 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.remove(_keyBasicAuthUser);
     await prefs.remove(_keyBasicAuthPassword);
     await prefs.remove(_keyUseTermux);
-    await prefs.remove(_keyTranslationProvider);
     await prefs.remove(_keyShowTags);
     await prefs.remove(_keyShowLastRead);
     await prefs.remove(_keyLanguageFilter);
@@ -622,7 +574,6 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.remove(_keyCombineShortSentences);
     await prefs.remove(_keyDoubleTapTimeout);
     await prefs.remove(_keyPageTurnAnimations);
-    await prefs.remove(_keyEnableTooltipCaching);
     await prefs.remove(_keyShowStatsBar);
     await prefs.remove(_keyShowKnownTermsCount);
     await prefs.remove(_keyShowTermStatsCard);

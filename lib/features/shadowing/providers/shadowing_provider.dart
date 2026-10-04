@@ -135,6 +135,24 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   /// 录音只会把麦克风一直占着,而用户往往意识不到自己还在录。
   static const int maxRecordingSeconds = 60;
 
+  /// 引擎单次调用的兜底时限。BOOX 的音频 HAL 偶发把**普通 PCM 采集**也
+  /// 路由进 compress-offload 录音用例(audio-record-compress2),而它要
+  /// 打开的 /dev/snd/comprC0D36 在内核侧根本不存在——输入流在
+  /// start/standby 里无限横跳、一帧都出不来,引擎的 stop() 等 finalize
+  /// 就永远等不到,Dart 侧的 await 随之挂死(2026-10-03 Leaf5C 实测:
+  /// 面板停在 Recording、系统栏麦克风常亮,所有经过 stop() 的路径全部
+  /// 卡死)。所以每个引擎调用都套超时;超时即整个 recorder 实例作废
+  /// (_abandonRecorder),面板回到可用状态并交代清楚。
+  static const Duration _engineCallTimeout = Duration(seconds: 5);
+
+  /// 无声看门狗的判定线:插件在零帧时报告的振幅正好是地板值
+  /// (-160 dBFS)。真麦克风哪怕在寂静房间也有自噪声,不会贴地;贴地
+  /// 只可能是采集零帧(HAL 横跳)。
+  static const double _amplitudeFloorDb = -160.0;
+
+  /// 看门狗的检查点(开口第 3、8 秒各查一次,减少误伤)。
+  static const Set<int> _silentCheckSeconds = {3, 8};
+
   AudioRecorder? _recorder;
   Timer? _recordingTimer;
 
@@ -200,6 +218,52 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     return recorder;
   }
 
+  /// 录音引擎挂死后的断舍离:实例整个作废(dispose 也可能挂,同样套
+  /// 超时,超时就随它去——它持有的系统资源随进程退出回收),下次
+  /// start() 用全新实例;挂死 take 的半成品文件一并清掉。麦克风仍被
+  /// 僵尸流占着时,重启 App 才能真正释放,错误文案会交代这一点。
+  void _abandonRecorder([AudioRecorder? instance]) {
+    final recorder = instance ?? _recorder;
+    _recorder = null;
+    if (recorder == null) return;
+    unawaited(
+      recorder.dispose().timeout(_engineCallTimeout, onTimeout: () {}),
+    );
+    final path = _lastTakePath;
+    _lastTakePath = null;
+    if (path != null) {
+      unawaited(File(path).delete().then((_) {}, onError: (_) {}));
+    }
+  }
+
+  /// 采集零帧的看门狗:开口后振幅仍贴地,说明 HAL 又横跳了,这通 take
+  /// 注定无声。与其让用户对着 "Recording…" 白读、再卡在 stop 上,不如
+  /// 当场收口交代。查不到振幅(调用本身也挂了)就放着不管,超时与
+  /// 停止路径各自有兜底。
+  Future<void> _abortIfSilent(AudioRecorder recorder) async {
+    if (!state.isRecording) return;
+    double amplitude;
+    try {
+      amplitude =
+          (await recorder.getAmplitude().timeout(_engineCallTimeout)).current;
+    } catch (_) {
+      return;
+    }
+    if (amplitude > _amplitudeFloorDb || !state.isRecording) return;
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+    _abandonRecorder(recorder);
+    state = state.copyWith(
+      phase: ShadowingPhase.error,
+      recordingSeconds: 0,
+      error: const ShadowingException(
+        ShadowingErrorKind.serverError,
+        'The microphone delivered no audio (device audio glitch). '
+        'Restart the app, then take again.',
+      ),
+    );
+  }
+
   AudioPlayer get _takePlayerInstance {
     final existing = _takePlayer;
     if (existing != null) return existing;
@@ -261,23 +325,53 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
           '${shadowingDir.path}/shadowing_take_${DateTime.now().millisecondsSinceEpoch}.m4a';
       _lastTakePath = path;
 
-      // record 5.x 的 start() 返回 void:起不来的情况(输入被占用等)以
-      // 异常形态出现,由下面的 catch 统一兜住,没有 bool 可查。
+      // AAC-LC 48kHz 单声道 + voiceRecognition 音源,体积与旧配置相同
+      // (48kbps ≈ 6KB/s,60s 上限约 360KB)。
       //
-      // 编码 AAC-LC、16kHz:跟读只管语音,16k 对转写无损失(whisper 就以
-      // 16kHz 训练),5 秒的 take 只有约 20KB;非标准采样率也基本不会落进
-      // BOOX 音频 HAL 的 compress-offload 录音路径(44.1k AAC 在它上面
-      // 出现过 start/standby 反复横跳)。真机上若再遇到录音异常,退回
-      // AudioEncoder.wav 是一行的事(PCM 直通,兼容性最好,但体积大十倍)。
-      await _recorderInstance.start(
-        const RecordConfig(
-          encoder: AudioEncoder.aacLc,
-          sampleRate: 16000,
-          numChannels: 1,
-          bitRate: 48000,
-        ),
-        path: path,
-      );
+      // 唯一与旧配置的实质差异是采样率与音源,都冲着 Leaf5C 的音频 HAL:
+      // 16k 的普通采集偶尔会被路由进 compress-offload 录音用例
+      // (audio-record-compress2),而它要打开的 /dev/snd/comprC0D36 在
+      // 内核侧根本不存在——输入流 start/standby 无限横跳、一帧不出,
+      // 引擎的 stop() 由此挂死(2026-10-03 实测,面板停在 Recording、
+      // 系统栏麦克风常亮)。48k 是 HAL 的原生采样率,不走压缩采集的
+      // 低采样率偏好;voiceRecognition 音源 + 显式关掉回声消除/噪声
+      // 抑制,既绕开 Fluence 前置处理的路由,也不再给转写染色。
+      // record 7.x 里无论 AAC 还是 WAV,采集都是 AudioRecord PCM,文件
+      // 格式本身不参与路由,体积小的 AAC 没有理由换掉。服务器侧解码后
+      // 本来就统一重采样到 16k,采样率的提升不增加任何服务器改动。
+      //
+      // 即便如此,挂死仍可能发生(超时+看门狗兜底,见 _engineCallTimeout);
+      // start 也可能挂死(HAL 被上一条僵尸流占着):同样超时作废。
+      final recorder = _recorderInstance;
+      try {
+        await recorder
+            .start(
+              const RecordConfig(
+                encoder: AudioEncoder.aacLc,
+                sampleRate: 48000,
+                numChannels: 1,
+                bitRate: 48000,
+                echoCancel: false,
+                noiseSuppress: false,
+                androidConfig: AndroidRecordConfig(
+                  audioSource: AndroidAudioSource.voiceRecognition,
+                ),
+              ),
+              path: path,
+            )
+            .timeout(_engineCallTimeout);
+      } on TimeoutException {
+        _abandonRecorder(recorder);
+        state = state.copyWith(
+          phase: ShadowingPhase.error,
+          error: const ShadowingException(
+            ShadowingErrorKind.serverError,
+            'The recorder did not start (device audio is stuck). '
+            'Restart the app, then take again.',
+          ),
+        );
+        return;
+      }
 
       _recordingTimer?.cancel();
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
@@ -288,6 +382,9 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
           return;
         }
         state = state.copyWith(recordingSeconds: next);
+        if (_silentCheckSeconds.contains(next)) {
+          await _abortIfSilent(recorder);
+        }
       });
 
       state = state.copyWith(phase: ShadowingPhase.recording);
@@ -306,10 +403,31 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     _recordingTimer = null;
 
     String? path;
+    var engineStuck = false;
+    // 先把面板拨到 processing:stop() 若在 HAL 上挂死,超时+兜底要几秒才
+    // 落地,面板不能还停在 "Recording…" 让用户以为没点上。
+    state = state.copyWith(phase: ShadowingPhase.processing);
     try {
-      path = await _recorderInstance.stop();
+      path = await _recorderInstance.stop().timeout(_engineCallTimeout);
+    } on TimeoutException {
+      // 引擎挂死(见 _engineCallTimeout 的说明):实例作废,take 无法
+      // finalize,只能整条放弃并交代。
+      engineStuck = true;
+      _abandonRecorder();
     } catch (e) {
       debugPrint('Shadowing: recorder.stop() failed: $e');
+    }
+    if (engineStuck) {
+      state = state.copyWith(
+        phase: ShadowingPhase.error,
+        recordingSeconds: 0,
+        error: const ShadowingException(
+          ShadowingErrorKind.serverError,
+          'The recorder stopped responding (device audio glitch). '
+          'If recording keeps failing, restart the app.',
+        ),
+      );
+      return;
     }
     if (path == null) {
       // stop() 拿不到文件时无从打分:回 idle,面板按钮恢复可按。
@@ -344,6 +462,7 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
         audioPath: path,
         languageId: languageId,
         tokens: sentence.tokens,
+        fullText: sentence.displayText,
         model: state.modelSize,
         onWait: (phase, seconds) {
           state = state.copyWith(waitPhase: phase, waitSeconds: seconds);
@@ -476,7 +595,9 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     _readingsSentenceId = null;
     if (state.isRecording) {
       try {
-        await _recorderInstance.stop();
+        await _recorderInstance.stop().timeout(_engineCallTimeout);
+      } on TimeoutException {
+        _abandonRecorder();
       } catch (_) {}
     }
     await stopRecordingPlayback();
@@ -494,7 +615,10 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     _referencePositionSubscription?.cancel();
     _takeCompleteSubscription?.cancel();
     try {
-      await _recorder?.dispose();
+      await _recorder?.dispose().timeout(_engineCallTimeout);
+    } on TimeoutException {
+      // 挂死的引擎不再等待,资源随进程回收。
+      _recorder = null;
     } catch (_) {}
     try {
       await _takePlayer?.dispose();

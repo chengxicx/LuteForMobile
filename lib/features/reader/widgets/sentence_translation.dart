@@ -16,7 +16,6 @@ import '../providers/current_book_provider.dart';
 class SentenceTranslationWidget extends ConsumerStatefulWidget {
   final String sentence;
   final SentenceTranslation? translation;
-  final String translationProvider;
   final VoidCallback? onTranslate;
   final VoidCallback onClose;
   final VoidCallback? onPreviousSentence;
@@ -28,7 +27,6 @@ class SentenceTranslationWidget extends ConsumerStatefulWidget {
     super.key,
     required this.sentence,
     this.translation,
-    required this.translationProvider,
     this.onTranslate,
     required this.onClose,
     this.onPreviousSentence,

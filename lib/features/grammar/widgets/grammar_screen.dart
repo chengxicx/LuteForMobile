@@ -5,13 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app.dart';
 import '../../../core/logger/widget_logger.dart';
+import '../../../shared/theme/eink_scope.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/loading_indicator.dart';
 import '../../reader/providers/reader_provider.dart';
-import '../models/grammar_point.dart';
 import '../providers/grammar_provider.dart';
+import 'grammar_point_card.dart';
 
 /// Grammar analysis of the page being read, mirroring the web reader's
 /// "Analyze grammar" panel.
@@ -140,9 +141,8 @@ class _GrammarScreenState extends ConsumerState<GrammarScreen> {
         children: [
           _buildHeader(context, state),
           const SizedBox(height: 8),
-          ...state.points.map(
-            (point) => GrammarPointCard(point: point),
-          ),
+          for (var i = 0; i < state.points.length; i++)
+            GrammarPointCard(point: state.points[i], index: i),
         ],
       ),
     );
@@ -155,22 +155,51 @@ class _GrammarScreenState extends ConsumerState<GrammarScreen> {
       (sum, point) => sum + point.examples.length,
     );
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final eink = context.eInk;
+    final colors = context.appColorScheme;
+
+    return Row(
       children: [
-        Text(
-          state.bookTitle ?? 'Current page',
-          style: Theme.of(context).textTheme.titleMedium,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            // 墨水屏不铺色块：描边方框 + 墨色图标（实色，无 alpha）。
+            color: eink ? null : context.m3PrimaryContainer,
+            borderRadius: BorderRadius.circular(10),
+            border: eink
+                ? Border.all(color: colors.border.outline, width: 1.5)
+                : null,
+          ),
+          child: Icon(
+            Icons.spellcheck,
+            size: 22,
+            color: eink ? colors.text.primary : context.m3Primary,
+          ),
         ),
-        const SizedBox(height: 2),
-        Text(
-          'Page ${state.pageNum ?? '-'} · $total grammar point'
-          '${total == 1 ? '' : 's'} · $examples example'
-          '${examples == 1 ? '' : 's'}',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: context.appColorScheme.text.secondary,
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                state.bookTitle ?? 'Current page',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Page ${state.pageNum ?? '-'} · $total grammar point'
+                '${total == 1 ? '' : 's'} · $examples example'
+                '${examples == 1 ? '' : 's'}',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colors.text.secondary,
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -190,7 +219,27 @@ class _GrammarScreenState extends ConsumerState<GrammarScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 64, color: context.appColorScheme.text.secondary),
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: context.eInk ? null : context.m3PrimaryContainer,
+                border: context.eInk
+                    ? Border.all(
+                        color: context.appColorScheme.border.outline,
+                        width: 1.5,
+                      )
+                    : null,
+              ),
+              child: Icon(
+                icon,
+                size: 36,
+                color: context.eInk
+                    ? context.appColorScheme.text.primary
+                    : context.m3Primary,
+              ),
+            ),
             const SizedBox(height: 16),
             Text(title, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
@@ -206,263 +255,5 @@ class _GrammarScreenState extends ConsumerState<GrammarScreen> {
         ),
       ),
     );
-  }
-}
-
-/// One grammar point: name, level badge, explanation, example sentences.
-class GrammarPointCard extends StatelessWidget {
-  final GrammarPoint point;
-
-  const GrammarPointCard({super.key, required this.point});
-
-  @override
-  Widget build(BuildContext context) {
-    final desc = point.desc;
-    // Same label rule as the web panel: a CJK explanation means the entry
-    // speaks Chinese, so the summary line does too.
-    final cjkDesc =
-        RegExp(r'[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]').hasMatch(desc ?? '');
-    final moreLabel = cjkDesc ? '参考例句 · 注意点' : 'Reference · notes';
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text(
-                    point.name,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-                if (point.level != null) ...[
-                  const SizedBox(width: 8),
-                  _LevelBadge(level: point.level!),
-                ],
-              ],
-            ),
-            if (point.formation != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                point.formation!,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: context.appColorScheme.text.secondary,
-                  fontWeight: FontWeight.w600,
-                  height: 1.4,
-                ),
-              ),
-            ],
-            if (desc != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                desc,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: context.appColorScheme.text.secondary,
-                ),
-              ),
-            ],
-            if (point.examples.isNotEmpty) const SizedBox(height: 12),
-            ...point.examples.map(
-              (example) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _ExampleSentence(example: example),
-              ),
-            ),
-            if (point.reference != null || point.notes != null) ...[
-              const SizedBox(height: 4),
-              _ReferenceNotesSection(
-                label: moreLabel,
-                reference: point.reference,
-                notes: point.notes,
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// The folded "reference example + notes" block, mirroring the web panel's
-/// `<details class="grammar-item__more">`: collapsed by default, tap to open.
-/// No animation -- the reader runs on e-ink devices.
-class _ReferenceNotesSection extends StatefulWidget {
-  final String label;
-  final GrammarReference? reference;
-  final String? notes;
-
-  const _ReferenceNotesSection({
-    required this.label,
-    this.reference,
-    this.notes,
-  });
-
-  @override
-  State<_ReferenceNotesSection> createState() => _ReferenceNotesSectionState();
-}
-
-class _ReferenceNotesSectionState extends State<_ReferenceNotesSection> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final reference = widget.reference;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () => setState(() => _expanded = !_expanded),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Row(
-              children: [
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: context.appColorScheme.text.secondary,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  widget.label,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: context.appColorScheme.text.secondary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_expanded) ...[
-          if (reference != null && reference.sentence.isNotEmpty) ...[
-            _ExampleSentence(
-              example: GrammarExample(
-                sentence: reference.sentence,
-                matches: reference.matches,
-              ),
-            ),
-            if (reference.text != null) ...[
-              const SizedBox(height: 4),
-              Padding(
-                padding: const EdgeInsets.only(left: 12, right: 12),
-                child: Text(
-                  reference.text!,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: context.appColorScheme.text.secondary,
-                    fontStyle: FontStyle.italic,
-                    height: 1.4,
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 8),
-          ],
-          if (widget.notes != null)
-            Padding(
-              padding: const EdgeInsets.only(left: 12, right: 12, bottom: 4),
-              child: Text(
-                widget.notes!,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: context.appColorScheme.text.secondary,
-                  height: 1.4,
-                ),
-              ),
-            ),
-        ],
-      ],
-    );
-  }
-}
-
-class _LevelBadge extends StatelessWidget {
-  final String level;
-
-  const _LevelBadge({required this.level});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: context.m3SecondaryContainer,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        level,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: context.appColorScheme.text.onPrimaryContainer,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    );
-  }
-}
-
-/// An example sentence with the matched fragments marked.
-class _ExampleSentence extends StatelessWidget {
-  final GrammarExample example;
-
-  const _ExampleSentence({required this.example});
-
-  @override
-  Widget build(BuildContext context) {
-    final highlightStyle = TextStyle(
-      backgroundColor: context.m3PrimaryContainer,
-      color: context.appColorScheme.text.onPrimaryContainer,
-      fontWeight: FontWeight.bold,
-    );
-
-    final baseStyle = Theme.of(context).textTheme.bodyLarge?.copyWith(
-      height: 1.4,
-    );
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: context.appColorScheme.background.surfaceContainerHighest
-            .withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: baseStyle,
-          children: _spans(highlightStyle),
-        ),
-      ),
-    );
-  }
-
-  List<TextSpan> _spans(TextStyle highlightStyle) {
-    if (example.matches.isEmpty) {
-      return [TextSpan(text: example.sentence)];
-    }
-
-    final spans = <TextSpan>[];
-    var cursor = 0;
-    for (final match in example.matches) {
-      if (match.start > cursor) {
-        spans.add(TextSpan(text: example.sentence.substring(cursor, match.start)));
-      }
-      spans.add(
-        TextSpan(
-          text: example.sentence.substring(match.start, match.end),
-          style: highlightStyle,
-        ),
-      );
-      cursor = match.end;
-    }
-    if (cursor < example.sentence.length) {
-      spans.add(TextSpan(text: example.sentence.substring(cursor)));
-    }
-    return spans;
   }
 }

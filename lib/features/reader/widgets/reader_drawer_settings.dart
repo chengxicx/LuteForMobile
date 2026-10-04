@@ -261,17 +261,14 @@ class ReaderDrawerSettings extends ConsumerWidget {
           ],
           _buildTooltipImagesToggle(context, ref, termFormSettings),
           const SizedBox(height: 24),
-          // Show tooltip cache management when enabled
           Consumer(
             builder: (context, ref, _) {
-              final cacheSettings = ref.watch(settingsProvider);
-              if (cacheSettings.enableTooltipCaching) {
-                // Refresh cache stats when this section is built
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  ref.invalidate(cacheStatsProvider);
-                });
+              // Refresh cache stats when this section is built
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                ref.invalidate(cacheStatsProvider);
+              });
 
-                return Column(
+              return Column(
                   children: [
                     Consumer(
                       builder: (context, ref, _) {
@@ -344,9 +341,7 @@ class ReaderDrawerSettings extends ConsumerWidget {
                       },
                     ),
                   ],
-                );
-              }
-              return const SizedBox.shrink();
+              );
             },
           ),
           const SizedBox(height: 8),

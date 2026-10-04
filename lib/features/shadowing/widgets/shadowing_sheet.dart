@@ -44,16 +44,25 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
       widget.sentences[_currentIndex.clamp(0, widget.sentences.length - 1)];
 
   /// 点词发音的两级反馈:按压瞬间(_pressed)与发音期间(_speaking)。
-  /// 记录 (区域, 词序号):原句和结果 Heard 区共用同一个逐词渲染器,
+  /// 记录 (区域, 词序号):原句、结果 Heard 区和判定胶囊共用同一个状态,
   /// 光有序号会撞车(两区都有第 3 个词),所以带上区域名。
   (String, int)? _pressed;
   (String, int)? _speaking;
+
+  /// 判定胶囊的「先读对的、再读错的」:第一段(正确读音)由
+  /// _speakChip 直接开口;第二段(实际听到的错词)挂在
+  /// _pendingChipSpoken 上,等句子 TTS 状态回到 idle/错误时由 build 里的
+  /// ref.listen 接上 —— speakSentence 在开播后就返回,播完信号只有
+  /// 状态回落,没有别的回调可用。
+  String? _pendingChipSpoken;
+  int? _pendingChipIndex;
 
   /// 出分后把结果滚进可视区用的。
   final GlobalKey _resultKey = GlobalKey();
 
   static const _areaSentence = 'sentence';
   static const _areaHeard = 'heard';
+  static const _areaChip = 'chip';
 
   @override
   void initState() {
@@ -73,6 +82,8 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
       _currentIndex = next;
       _pressed = null;
       _speaking = null;
+      _pendingChipSpoken = null;
+      _pendingChipIndex = null;
     });
     ref.read(shadowingProvider.notifier).loadReadings(_sentence);
   }
@@ -132,11 +143,66 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   void _speakWord(String area, int index, String spoken) {
     if (spoken.isEmpty) return;
     HapticFeedback.selectionClick();
-    setState(() => _speaking = (area, index));
+    setState(() {
+      // 新的一次点词作废胶囊两连读里还没接上的第二段。
+      _pendingChipSpoken = null;
+      _pendingChipIndex = null;
+      _speaking = (area, index);
+    });
     unawaited(
       ref
           .read(sentenceTTSProvider.notifier)
           .speakSentence(spoken, _sentence.sentenceId),
+    );
+  }
+
+  /// 点判定胶囊:绿(读对)读这个词;琥珀(错读)先读正确读音、播完再
+  /// 读实际听到的那个词;红(漏读)没有"听到的"可放,只读正确读音。
+  ///
+  /// 错词优先按它的假名注音发声:字面汉字丢给 TTS 会自挑读音(高山可能
+  /// 被读成 たかやま),假名才是识别实际听到的那串音。两连读的第二段走
+  /// _pendingChipSpoken,由 build 里的监听在第一段播完后接上。
+  void _speakChip(
+    int index,
+    String token,
+    ShadowingTokenStatus status,
+    ShadowingResult result,
+  ) {
+    final readings = ref.read(shadowingProvider).readings;
+    final correctKana = _kanaReading(
+      (readings != null && index < readings.length)
+          ? readings[index].reading
+          : null,
+    );
+    final correct = correctKana ?? token.replaceAll('\u200B', '');
+    if (correct.isEmpty) return;
+
+    String? heard;
+    if (status == ShadowingTokenStatus.fuzzy) {
+      final heardText =
+          (result.spokenForFuzzy[index] ?? '').replaceAll('\u200B', '');
+      if (heardText.isNotEmpty) {
+        ShadowingToken? heardToken;
+        for (final t in result.transcriptionTokens) {
+          if (t.text.replaceAll('\u200B', '') == heardText) {
+            heardToken = t;
+            break;
+          }
+        }
+        heard = _kanaReading(heardToken?.reading) ?? heardText;
+      }
+    }
+
+    HapticFeedback.selectionClick();
+    setState(() {
+      _pendingChipSpoken = heard;
+      _pendingChipIndex = heard != null ? index : null;
+      _speaking = (_areaChip, index);
+    });
+    unawaited(
+      ref
+          .read(sentenceTTSProvider.notifier)
+          .speakSentence(correct, _sentence.sentenceId),
     );
   }
 
@@ -280,6 +346,28 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
           );
         });
       }
+    });
+
+    // 胶囊两连读的第二段:第一段播完(或失败)后状态回落,这里接上错词。
+    ref.listen<SentenceTTSState>(sentenceTTSProvider, (prev, next) {
+      if (_pendingChipSpoken == null) return;
+      final wasActive = prev != null && (prev.isLoading || prev.isPlaying);
+      final settled =
+          next.status == SentenceTTSStatus.idle ||
+          next.status == SentenceTTSStatus.error;
+      if (!wasActive || !settled) return;
+      final spoken = _pendingChipSpoken!;
+      final index = _pendingChipIndex!;
+      setState(() {
+        _pendingChipSpoken = null;
+        _pendingChipIndex = null;
+        _speaking = (_areaChip, index);
+      });
+      unawaited(
+        ref
+            .read(sentenceTTSProvider.notifier)
+            .speakSentence(spoken, _sentence.sentenceId),
+      );
     });
 
     // 高度固定:从打开、出分到换句,面板框架一像素都不挪,分数只填进
@@ -533,6 +621,9 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   }
 
   /// 录音主键:与播放条的主播放键同一视觉层级(大圆底),录音中变停止键。
+  /// 图标用 playInk:它和 playSurface 是一对(墨水屏=黑圆底白图标)。之前
+  /// 空闲态误用 palette.icon——墨水屏下 icon=黑,黑圆底画黑 mic,整个图标
+  /// 隐形,只剩一个大黑球,完全看不出是录音键(2026-10-03 Leaf 5C 反馈)。
   Widget _buildRecordButton(
     BuildContext context,
     ShadowingState state,
@@ -553,7 +644,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         child: Icon(
           recording ? Icons.stop : Icons.mic,
           size: palette.playIconSize,
-          color: recording ? palette.playInk : palette.icon,
+          color: palette.playInk,
         ),
       ),
     );
@@ -672,7 +763,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
           ],
         ),
         const SizedBox(height: 8),
-        _buildTokenChips(result, palette),
+        _buildTokenChips(state, result, palette),
         if (result.languageNote != null) ...[
           const SizedBox(height: 8),
           Text(
@@ -720,7 +811,18 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
   /// 逐词判词:绿 = 读对、琥珀 = 错读(附实际听到的)、红 = 漏读。
   /// 颜色之外每个状态还带一个符号前缀 —— 墨水屏把三色量化成灰阶后,
   /// 符号仍把状态区分开(与播放条 active 键"靠形状不靠色"同一个道理)。
-  Widget _buildTokenChips(ShadowingResult result, PlayerPalette palette) {
+  ///
+  /// 每颗胶囊都是独立的点击目标,点一下发音(见 _speakChip:错读先读
+  /// 正确读音再读听到的词);发音/按压期间换底色,与逐词渲染同一套反馈。
+  Widget _buildTokenChips(
+    ShadowingState state,
+    ShadowingResult result,
+    PlayerPalette palette,
+  ) {
+    final ttsState = ref.watch(sentenceTTSProvider);
+    final speakingActive =
+        ttsState.currentSentenceId == _sentence.sentenceId &&
+        (ttsState.isLoading || ttsState.isPlaying);
     final tokens = _sentence.tokens;
     final children = <Widget>[];
     for (var i = 0; i < result.statuses.length && i < tokens.length; i++) {
@@ -734,27 +836,42 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
         ShadowingTokenStatus.miss => (Colors.red.shade700, '✗ ', BorderStyle.solid),
       };
 
+      final speaking = speakingActive && _speaking == (_areaChip, i);
+      final pressed = _pressed == (_areaChip, i);
+
       children.add(
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            border: Border.fromBorderSide(
-              BorderSide(
-                color: status == ShadowingTokenStatus.match
-                    ? Colors.transparent
-                    : color,
-                style: borderStyle ?? BorderStyle.none,
-                width: 1.4,
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (_) => setState(() => _pressed = (_areaChip, i)),
+          onTapUp: (_) => setState(() => _pressed = null),
+          onTapCancel: () => setState(() => _pressed = null),
+          onTap: () => _speakChip(i, token, status, result),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: speaking
+                  ? context.playingLineHighlight
+                  : pressed
+                  ? palette.groupFill
+                  : null,
+              border: Border.fromBorderSide(
+                BorderSide(
+                  color: status == ShadowingTokenStatus.match
+                      ? Colors.transparent
+                      : color,
+                  style: borderStyle ?? BorderStyle.none,
+                  width: 1.4,
+                ),
               ),
+              borderRadius: BorderRadius.circular(6),
             ),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Text(
-            status == ShadowingTokenStatus.fuzzy
-                ? '$prefix$token → ${result.spokenForFuzzy[i] ?? '?'}'
-                : '$prefix$token',
-            style: TextStyle(color: color, fontSize: 14, height: 1.3),
+            child: Text(
+              status == ShadowingTokenStatus.fuzzy
+                  ? '$prefix$token → ${result.spokenForFuzzy[i] ?? '?'}'
+                  : '$prefix$token',
+              style: TextStyle(color: color, fontSize: 14, height: 1.3),
+            ),
           ),
         ),
       );

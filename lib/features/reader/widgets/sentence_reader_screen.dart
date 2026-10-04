@@ -7,12 +7,16 @@ import '../../../shared/theme/eink.dart';
 import '../../../shared/widgets/hardware_key_navigator.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
 import '../models/text_item.dart';
+import '../models/page_data.dart';
 import '../models/term_form.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
 import '../providers/sentence_reader_provider.dart';
 import '../providers/sentence_tts_provider.dart';
 import '../providers/current_book_provider.dart';
+import '../../grammar/providers/grammar_provider.dart';
+import '../../grammar/providers/sentence_grammar_provider.dart';
+import '../../grammar/widgets/sentence_grammar_screen.dart';
 import '../widgets/term_tooltip.dart';
 import '../widgets/term_form.dart';
 import '../widgets/sentence_translation.dart';
@@ -168,6 +172,11 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   bool _isLastPageMarkedDone = false;
   SentenceTTSNotifier? _ttsNotifier;
   Timer? _glowTimer;
+
+  /// 翻页后延迟触发整页语法预分析的定时器（同 reader_screen，见其 pageData
+  /// 监听处的注释）。两个阅读屏都挂了触发，analyzeCurrentPage 按页去重，
+  /// 谁在屏上谁生效，不会重复发请求。
+  Timer? _grammarPreAnalysisTimer;
   int? _highlightedWordId;
   int? _highlightedParagraphId;
   int? _highlightedOrder;
@@ -217,6 +226,7 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     WidgetsBinding.instance.removeObserver(this);
     _ttsNotifier?.stop();
     _glowTimer?.cancel();
+    _grammarPreAnalysisTimer?.cancel();
     _hardwareKeyFocus.dispose();
     super.dispose();
   }
@@ -460,6 +470,30 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           prevPage != nextPage) {
         ref.read(sentenceReaderProvider.notifier).syncStatusFromPageData();
       }
+    });
+
+    // Grammar pre-analysis trigger, same as reader_screen's (see its pageData
+    // listener for the rationale).  analyzeCurrentPage dedupes by page key,
+    // so having the trigger on both screens is harmless.
+    ref.listen<PageData?>(readerProvider.select((s) => s.pageData), (
+      previous,
+      next,
+    ) {
+      if (next == null ||
+          next.currentPage <= 0 ||
+          next.paragraphs.isEmpty) {
+        return;
+      }
+      if (previous?.bookId == next.bookId &&
+          previous?.currentPage == next.currentPage) {
+        return;
+      }
+      _grammarPreAnalysisTimer?.cancel();
+      _grammarPreAnalysisTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) {
+          unawaited(ref.read(grammarProvider.notifier).analyzeCurrentPage());
+        }
+      });
     });
 
     if (readerState.isLoading || sentenceReader.isParsing) {
@@ -1381,6 +1415,15 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
             ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
           );
         }
+        // Grammar button state from the page pre-analysis -- same rule as
+        // reader_screen.dart: grey only on a valid "no", stay tappable on
+        // unknown so the sentence-level request can still answer.
+        final sentence = _extractSentence(item);
+        final grammarPresence = sentence.isEmpty
+            ? GrammarPresence.unknown
+            : ref
+                  .read(sentenceGrammarProvider.notifier)
+                  .presenceFor(sentence);
         TermTooltipClass.show(
           context,
           tooltip,
@@ -1391,6 +1434,10 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           onSentenceTranslation: langId == null
               ? null
               : () => _translateSentenceFromCard(item, langId),
+          onGrammar: sentence.isEmpty
+              ? null
+              : () => _openSentenceGrammar(sentence),
+          grammarEnabled: grammarPresence != GrammarPresence.no,
         );
       }
     } catch (e) {
@@ -1407,6 +1454,26 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     if (sentence.isEmpty) return;
     TermTooltipClass.close();
     _showSentenceTranslation(sentence, langId);
+  }
+
+  /// Sentence grammar, entered from the button on the word card.
+  ///
+  /// The card goes first for the same reason as the translation: the grammar
+  /// screen is pushed onto the navigator, and the card lives in the root
+  /// overlay, which would otherwise float above it.
+  void _openSentenceGrammar(String sentence) {
+    final page = ref.read(readerProvider).pageData;
+    if (page == null) return;
+    TermTooltipClass.close();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SentenceGrammarScreen(
+          sentenceText: sentence,
+          bookId: page.bookId,
+          pageNum: page.currentPage,
+        ),
+      ),
+    );
   }
 
   /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.
@@ -1989,7 +2056,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
         return SentenceTranslationWidget(
           sentence: sentence,
           translation: null,
-          translationProvider: 'local',
           languageId: languageId,
           dictionaryService: DictionaryService(
             fetchLanguageSettingsHtml: (langId) =>

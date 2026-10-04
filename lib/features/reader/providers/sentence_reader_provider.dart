@@ -514,14 +514,6 @@ class SentenceReaderNotifier extends Notifier<SentenceReaderState> {
 
     await _cacheService.clearBookCache(bookId);
 
-    // Also clear tooltip cache for this book if needed
-    final settings = ref.read(settingsProvider);
-    if (settings.enableTooltipCaching) {
-      try {} catch (e) {
-        ApiLogger.logError('clearTooltipCache', e);
-      }
-    }
-
     await ref
         .read(readerProvider.notifier)
         .loadPage(
@@ -539,28 +531,23 @@ class SentenceReaderNotifier extends Notifier<SentenceReaderState> {
     }
   }
 
-  /// Fetch term tooltip using cache if enabled
+  /// Fetch term tooltip using the on-disk cache first
   Future<TermTooltip?> fetchTermTooltip(int termId) async {
-    final settings = ref.read(settingsProvider);
+    try {
+      final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
 
-    // If tooltip caching is enabled, check the cache first
-    if (settings.enableTooltipCaching) {
-      try {
-        final tooltipCacheService = ref.read(tooltipCacheServiceProvider);
-
-        // Try to get from cache
-        final cachedEntry = await tooltipCacheService.getFromCache(termId);
-        if (cachedEntry != null) {
-          // Parse the cached HTML to create a TermTooltip object using the same parser as the server
-          final contentService = ref.read(contentServiceProvider);
-          final tooltip = contentService.parser.parseTermTooltip(
-            cachedEntry.tooltipHtml,
-          );
-          return tooltip;
-        }
-      } catch (e) {
-        ApiLogger.logError('getTooltipFromCache', e);
+      // Try to get from cache
+      final cachedEntry = await tooltipCacheService.getFromCache(termId);
+      if (cachedEntry != null) {
+        // Parse the cached HTML to create a TermTooltip object using the same parser as the server
+        final contentService = ref.read(contentServiceProvider);
+        final tooltip = contentService.parser.parseTermTooltip(
+          cachedEntry.tooltipHtml,
+        );
+        return tooltip;
       }
+    } catch (e) {
+      ApiLogger.logError('getTooltipFromCache', e);
     }
 
     // Fetch from network via the reader provider

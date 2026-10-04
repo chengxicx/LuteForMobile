@@ -35,6 +35,9 @@ import '../providers/player_mode_provider.dart';
 import '../providers/sentence_tts_provider.dart';
 import '../providers/tts_player_provider.dart';
 import '../providers/current_book_provider.dart';
+import '../../grammar/providers/grammar_provider.dart';
+import '../../grammar/providers/sentence_grammar_provider.dart';
+import '../../grammar/widgets/sentence_grammar_screen.dart';
 import '../utils/playing_line.dart';
 import '../utils/player_lifecycle.dart';
 import '../widgets/term_tooltip.dart';
@@ -175,6 +178,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   bool _lastFullscreenMode = false;
   Timer? _hideUiTimer;
   Timer? _glowTimer;
+
+  /// 翻页后延迟触发整页语法预分析的定时器（见 build 里的 pageData 监听）。
+  Timer? _grammarPreAnalysisTimer;
   int? _highlightedWordId;
   int? _highlightedParagraphId;
   int? _highlightedOrder;
@@ -469,6 +475,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     WidgetsBinding.instance.removeObserver(this);
     _hideUiTimer?.cancel();
     _glowTimer?.cancel();
+    _grammarPreAnalysisTimer?.cancel();
     _scrollController.removeListener(_handleScrollPosition);
     _scrollController.dispose();
     _hardwareKeyFocus.dispose();
@@ -1014,6 +1021,26 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       if (next == null) return;
       final page = next.currentPage;
       if (page <= 0) return;
+
+      // 语法预分析：翻页稳定 3 秒后后台跑一次整页分析（与 Grammar tab 同一个
+      // 请求、同一份缓存）。词卡的 Grammar 按钮状态和句子语法页靠它秒出。
+      // analyzeCurrentPage 按页去重，不会重复发；延迟 3 秒是让位给开页时的
+      // 正文/词条请求。原先"仅 Grammar tab 可见才分析"的取舍在这里被刻意
+      // 反转 —— 一次预分析喂三处（按钮状态、句子页、tab）。
+      if (previous?.bookId == next.bookId &&
+          previous?.currentPage == page) {
+        return; // 同页刷新不重置计时器，否则预分析会被反复推迟。
+      }
+      _grammarPreAnalysisTimer?.cancel();
+      if (next.paragraphs.isNotEmpty) {
+        _grammarPreAnalysisTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted) {
+            unawaited(
+              ref.read(grammarProvider.notifier).analyzeCurrentPage(),
+            );
+          }
+        });
+      }
 
       if (previous?.currentPage != page || previous?.bookId != next.bookId) {
         unawaited(
@@ -2063,6 +2090,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
           );
         }
+        // Grammar button state comes from the page pre-analysis: it knows
+        // whether this sentence matched anything.  no -> greyed out; yes ->
+        // tappable and the grammar page opens instantly; unknown (page not
+        // analysed yet, or the analysis failed) -> keep tappable and let the
+        // sentence-level request answer.
+        final sentence = _extractSentence(item);
+        final grammarPresence = sentence.isEmpty
+            ? GrammarPresence.unknown
+            : ref
+                  .read(sentenceGrammarProvider.notifier)
+                  .presenceFor(sentence);
         TermTooltipClass.show(
           context,
           tooltip,
@@ -2073,6 +2111,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           onSentenceTranslation: langId == null
               ? null
               : () => _translateSentenceFromCard(item, langId),
+          onGrammar: sentence.isEmpty
+              ? null
+              : () => _openSentenceGrammar(sentence),
+          grammarEnabled: grammarPresence != GrammarPresence.no,
         );
       }
     } catch (e) {
@@ -2089,6 +2131,26 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     if (sentence.isEmpty) return;
     TermTooltipClass.close();
     _showSentenceTranslation(sentence, langId);
+  }
+
+  /// Sentence grammar, entered from the button on the word card.
+  ///
+  /// The card goes first for the same reason as the translation: the grammar
+  /// screen is pushed onto the navigator, and the card lives in the root
+  /// overlay, which would otherwise float above it.
+  void _openSentenceGrammar(String sentence) {
+    final page = ref.read(readerProvider).pageData;
+    if (page == null) return;
+    TermTooltipClass.close();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SentenceGrammarScreen(
+          sentenceText: sentence,
+          bookId: page.bookId,
+          pageNum: page.currentPage,
+        ),
+      ),
+    );
   }
 
   /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.
@@ -2615,7 +2677,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         return SentenceTranslationWidget(
           sentence: sentence,
           translation: null,
-          translationProvider: 'local',
           languageId: languageId,
           dictionaryService: DictionaryService(
             fetchLanguageSettingsHtml: (langId) =>
