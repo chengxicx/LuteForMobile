@@ -187,6 +187,11 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   /// The card is shown only if no newer tap has happened while it was fetching.
   int _tooltipSeq = 0;
 
+  /// Bumped on every long press that asks for a term form; see reader_screen.dart
+  /// for the full rationale.  The sheet is shown only if no newer long press has
+  /// happened while it was fetching, so repeated presses cannot stack it.
+  int _termFormSeq = 0;
+
   /// 实体键的焦点节点。回屏时收回焦点，理由同 reader_screen 的
   /// _hardwareKeyFocus —— IndexedStack 里其它屏的控件会拿走焦点不还。
   final FocusNode _hardwareKeyFocus = FocusNode();
@@ -1539,11 +1544,13 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   Future<void> _openTermForm(TextItem item) async {
     final wordId = item.wordId;
     if (wordId == null) return;
+    final seq = ++_termFormSeq;
     try {
       final termForm = await ref
           .read(readerProvider.notifier)
           .fetchTermFormById(wordId);
-      if (termForm == null || !mounted) return;
+      // Superseded while we waited: a later long press already owns the sheet.
+      if (termForm == null || !mounted || seq != _termFormSeq) return;
       _showTermForm(
         termForm,
         sentence: _extractSentence(item),

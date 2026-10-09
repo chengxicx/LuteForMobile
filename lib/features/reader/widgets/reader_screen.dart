@@ -205,6 +205,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// (text_display.dart:285), so this is the normal case, not a rare race.
   int _tooltipSeq = 0;
 
+  /// Bumped on every long press that asks for a term form.  The form is built
+  /// from a server round trip, and the long-press buzz lands long before the
+  /// sheet does: pressing again inside that window queues one sheet per press,
+  /// so three long presses end in three identical cards.  Same rule as
+  /// _tooltipSeq above -- only the newest gesture gets to draw.
+  int _termFormSeq = 0;
+
   /// 实体键的焦点节点。从别的屏（设置等）回到阅读屏时要把焦点收回来 ——
   /// IndexedStack 常驻其它屏，那里的输入框（如设置页的 Server Host）会
   /// 拿走焦点且不还，实体键从此失灵直到重启 app。
@@ -2261,11 +2268,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   Future<void> _openTermForm(TextItem item) async {
     final wordId = item.wordId;
     if (wordId == null) return;
+    final seq = ++_termFormSeq;
     try {
       final termForm = await ref
           .read(readerProvider.notifier)
           .fetchTermFormById(wordId);
-      if (termForm == null || !mounted) return;
+      // Superseded while we waited: a later long press already owns the sheet.
+      if (termForm == null || !mounted || seq != _termFormSeq) return;
       _showTermForm(
         termForm,
         sentence: _extractSentence(item),
