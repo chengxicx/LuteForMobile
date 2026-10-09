@@ -6,8 +6,10 @@
 // 旧的 600ms 固定屏蔽窗口一过，旧位置就被当成真实前进，跨段判定据此把播放头
 // 拉回旧句。所以判定改成"播放器报出的位置真的到达目标"。
 //
-// 这里钉住的就是这个判定的两个关键点：**方向**（往回跳不能用"往前走"的规则）
-// 和**放弃等待的上限**（不设上限会把播放条永久冻住）。
+// 这里钉住的就是这个判定的三个关键点：**方向**（往回跳不能用"往前走"的规则）、
+// **放弃等待的上限**（不设上限会把播放条永久冻住），以及**谁有权记在途 seek**
+// （没下发 seek 却记了，等于把播放条冻到超时为止 —— 2026-10-10 真机在普通
+// 播放模式下撞到过：跨过第一个句尾后 12 秒不动）。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:song_mobile/features/reader/utils/pending_seek.dart';
@@ -163,6 +165,48 @@ void main() {
           elapsed: const Duration(seconds: 30),
         ),
         PendingSeekVerdict.proceed,
+      );
+    });
+  });
+
+  group('segmentBoundaryAction —— 句尾跨界该不该 seek', () {
+    test('循环开 → 跳回句首继续播（循环优先于自动暂停）', () {
+      expect(
+        segmentBoundaryAction(loopMode: true, autoPauseMode: true),
+        SegmentBoundaryAction.loopBack,
+      );
+      expect(
+        segmentBoundaryAction(loopMode: true, autoPauseMode: false),
+        SegmentBoundaryAction.loopBack,
+      );
+    });
+
+    test('只开自动暂停 → 跳回句首并停住', () {
+      expect(
+        segmentBoundaryAction(loopMode: false, autoPauseMode: true),
+        SegmentBoundaryAction.pauseBack,
+      );
+    });
+
+    test('两个都关（普通播放）→ 不下发 seek，因而也不许记在途 seek', () {
+      // 2026-10-10 真机回归：这里曾经无条件记下"在途 seek = 句首"，而句首在
+      // 播放头后面，seekHasLanded 对往回跳要求 position <= 句首 + 容差 ——
+      // 永远不成立，于是每条位置事件都被丢掉，进度条冻 12 秒后突然跳到
+      // 13.149s（loop=off autoPause=off 的普通播放最容易撞上）。
+      expect(
+        segmentBoundaryAction(loopMode: false, autoPauseMode: false),
+        SegmentBoundaryAction.keepPlaying,
+      );
+      // 反向钉住上面那段话：句首在播放头后面时，位置事件确实判"没落地"。
+      expect(
+        evaluatePendingSeek(
+          position: ms(1012),
+          target: Duration.zero,
+          origin: Duration.zero,
+          elapsed: ms(1000),
+        ),
+        PendingSeekVerdict.pending,
+        reason: '所以 keepPlaying 分支绝不能调 _markSeekIssued',
       );
     });
   });

@@ -1,7 +1,7 @@
 /// 音频缓存文件的命名规则，以及「哪些文件是孤儿、可以回收」的判定。
 ///
 /// 命名：`audiobook_<bookId>_v<version>.audio`；下载中的半截文件是
-/// `<同名>.part`（见 `_downloadAudioToFile` 的断点续传）。
+/// `<同名>.part`（原生侧导出缓存时也沿用这个后缀，见 `exportAudioCache`）。
 ///
 /// **为什么把版本写进文件名**（2026-10-10）：
 /// 旧命名是 `audiobook_<bookId>_<audioUrl.hashCode.abs()>.audio`。服务端给音源

@@ -319,34 +319,12 @@ class WrappedPlayer internal constructor(
         ref.handleError(this, errorCode, errorMessage, errorDetails)
     }
 
-    fun onError(what: Int, extra: Int): Boolean {
-        val whatMsg = if (what == MediaPlayer.MEDIA_ERROR_SERVER_DIED) {
-            "MEDIA_ERROR_SERVER_DIED"
-        } else {
-            "MEDIA_ERROR_UNKNOWN {what:$what}"
-        }
-        val extraMsg = when (extra) {
-            MEDIA_ERROR_SYSTEM -> "MEDIA_ERROR_SYSTEM"
-            MediaPlayer.MEDIA_ERROR_IO -> "MEDIA_ERROR_IO"
-            MediaPlayer.MEDIA_ERROR_MALFORMED -> "MEDIA_ERROR_MALFORMED"
-            MediaPlayer.MEDIA_ERROR_UNSUPPORTED -> "MEDIA_ERROR_UNSUPPORTED"
-            MediaPlayer.MEDIA_ERROR_TIMED_OUT -> "MEDIA_ERROR_TIMED_OUT"
-            else -> "MEDIA_ERROR_UNKNOWN {extra:$extra}"
-        }
-        if (!prepared && extraMsg == "MEDIA_ERROR_SYSTEM") {
-            handleError(
-                "AndroidAudioError",
-                "Failed to set source. For troubleshooting, see: " +
-                    "https://github.com/bluefireteam/audioplayers/blob/main/troubleshooting.md",
-                "$whatMsg, $extraMsg",
-            )
-        } else {
-            // When an error occurs, reset player to not [prepared].
-            // Then no functions will be called, which end up in an illegal player state.
-            prepared = false
-            handleError("AndroidAudioError", whatMsg, extraMsg)
-        }
-        return false
+    fun onError(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+        // 出错后播放器不再处于 prepared：不置回去的话，上层会继续往一个坏掉的
+        // 播放器下发 play/seek，全部静默无效。（原 MediaPlayer 版在这里比的是
+        // what/extra 两个 int，Media3 报的是 PlaybackException，语义一样。）
+        prepared = false
+        handleError(errorCode, errorMessage, errorDetails)
     }
 
     /**
@@ -358,7 +336,10 @@ class WrappedPlayer internal constructor(
      */
     private fun createPlayer(): PlayerWrapper {
         return when (playerMode) {
-            MEDIA_PLAYER -> MediaPlayerWrapper(this)
+            // MEDIA_PLAYER 是默认模式，实现已从 android.media.MediaPlayer 换成
+            // Media3/ExoPlayer（见 ExoPlayerWrapper）—— 为的是能共用一份磁盘缓存，
+            // 让「流式起播」和「补一份完整文件」只走一次网络。
+            MEDIA_PLAYER -> ExoPlayerWrapper(this)
             LOW_LATENCY -> SoundPoolPlayer(this, soundPoolManager)
         }
     }

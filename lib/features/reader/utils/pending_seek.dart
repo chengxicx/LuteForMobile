@@ -33,6 +33,35 @@ enum PendingSeekVerdict {
   expired,
 }
 
+/// 跨过一个句尾边界时，播放头该往哪儿走。
+enum SegmentBoundaryAction {
+  /// 循环关、自动暂停关 —— 接着往下播，**不下发 seek**。
+  ///
+  /// 这一条是"记在途 seek"的禁区。没有真的 seek，却把句首（在播放头
+  /// **后面**）记成在途目标的话，[seekHasLanded] 对往回跳要求
+  /// `position <= target + 容差`，于是每条位置事件都被判成"还没落地"丢掉，
+  /// 播放条会冻在跨界那一刻，直到 [kSeekPendingTimeout] 超时才放行。
+  keepPlaying,
+
+  /// 循环：跳回句首继续播。
+  loopBack,
+
+  /// 自动暂停：跳回句首并停住。
+  pauseBack,
+}
+
+/// 句尾边界被跨越时该做什么。循环优先于自动暂停（与 web 播放器一致）。
+///
+/// 调用方必须按返回值决定要不要记在途 seek：[keepPlaying] 时**不能**记。
+SegmentBoundaryAction segmentBoundaryAction({
+  required bool loopMode,
+  required bool autoPauseMode,
+}) {
+  if (loopMode) return SegmentBoundaryAction.loopBack;
+  if (autoPauseMode) return SegmentBoundaryAction.pauseBack;
+  return SegmentBoundaryAction.keepPlaying;
+}
+
 /// 播放器报出的 [position] 是不是已经到达 [target]（从 [origin] 出发）。
 ///
 /// 方向按 `target > origin` 判：往前走就要求 `position >= target - 容差`，

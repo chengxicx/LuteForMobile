@@ -5,10 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioAttributes.Builder
 import android.media.AudioAttributes.CONTENT_TYPE_MUSIC
 import android.media.AudioAttributes.USAGE_MEDIA
-import android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE
-import android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
 import android.media.AudioManager
-import android.media.MediaPlayer
 import android.os.Build
 import androidx.annotation.RequiresApi
 import java.util.*
@@ -31,14 +28,11 @@ data class AudioContextAndroid(
         audioMode = AudioManager.MODE_NORMAL,
     )
 
-    fun setAttributesOnPlayer(player: MediaPlayer) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            player.setAudioAttributes(buildAttributes())
-        } else {
-            @Suppress("DEPRECATION")
-            player.setAudioStreamType(getStreamType())
-        }
-    }
+    // 原来还有一个 setAttributesOnPlayer(MediaPlayer) 和它专用的 getStreamType()
+    // （LOLLIPOP 之前按 usage 挑 stream type）。随 MediaPlayer 一起删掉：
+    // Media3 用 Builder.setAudioAttributes() / player.setAudioAttributes() 直接吃
+    // 这里产出的 AudioAttributes（见 ExoPlayerWrapper），本模块的 minSdk 已是 24，
+    // 那条 pre-LOLLIPOP 分支本来也不会再走到。
 
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     fun buildAttributes(): AudioAttributes {
@@ -46,15 +40,6 @@ data class AudioContextAndroid(
             .setUsage(usageType)
             .setContentType(contentType)
             .build()
-    }
-
-    @Deprecated("This is used for Android older than LOLLIPOP", replaceWith = ReplaceWith("buildAttributes"))
-    private fun getStreamType(): Int {
-        return when (usageType) {
-            USAGE_VOICE_COMMUNICATION -> AudioManager.STREAM_VOICE_CALL
-            USAGE_NOTIFICATION_RINGTONE -> AudioManager.STREAM_RING
-            else -> AudioManager.STREAM_MUSIC
-        }
     }
 
     override fun hashCode() = Objects.hash(isSpeakerphoneOn, stayAwake, contentType, usageType, audioFocus, audioMode)

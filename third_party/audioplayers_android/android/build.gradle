@@ -50,7 +50,8 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 19
+        // Media3 的底线是 21；本 app 是 24，取 24 少一档兼容分支。
+        minSdkVersion 24
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -67,8 +68,27 @@ allprojects {
     }
 }
 
+ext {
+    // Media3 替换了原来的 android.media.MediaPlayer 后端。
+    //
+    // 为什么值得换：MediaPlayer 没有任何可共享的磁盘缓存，而 app 既要「点了
+    // 立刻出声」（流式）又要「手上有一份完整文件」（离线 + 影子跟读裁剪），
+    // 只能一边流一边另开一条 Dio 把同一份字节再下一遍 —— 打开一本未缓存的
+    // 有声书就是两份全量流量（2026-10-10 diag.log：book 273 6.4MB ×2）。
+    // Media3 的 CacheDataSource + SimpleCache 让「播放」和「补全」读写同一份
+    // 磁盘缓存，一次传输同时满足两者。
+    //
+    // 1.8.0 而不是更新的 1.11.x：1.8.0 的 minCompileSdk 是 35，与本模块的
+    // compileSdk 对齐；1.11.x 要求 36，会连带把 compileSdk 也顶上去。
+    media3_version = '1.8.0'
+}
+
 dependencies {
     implementation "androidx.core:core-ktx:1.9.0" // Do not pump unless dropping support for AGP7
+    implementation "androidx.media3:media3-exoplayer:$media3_version"
+    // 显式声明，虽然 media3-exoplayer 已经传递依赖了它：缓存、CacheWriter、
+    // DefaultHttpDataSource 全在这里，是本模块的主要用法，写出来更清楚。
+    implementation "androidx.media3:media3-datasource:$media3_version"
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version"

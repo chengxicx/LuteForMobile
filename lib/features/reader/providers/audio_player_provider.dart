@@ -10,7 +10,6 @@ import '../../../core/network/session_manager.dart';
 import '../../../core/cache/audio_cache_layout.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import 'reader_provider.dart';
-import '../utils/audio_download_resume.dart';
 import '../utils/pending_seek.dart';
 import '../utils/player_save_policy.dart';
 import '../../../features/settings/providers/settings_provider.dart';
@@ -128,13 +127,15 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   /// 有声书的缓存本来就是离线播放的根基，复用同一份文件。
   File? lastLocalAudioFile;
 
-  /// 已在下载/已下载过的 `${bookId}|$url`，避免同一次会话反复预取同一份音频
+  /// 已在补全/已补全过的 `${bookId}|$url`，避免同一次会话反复补同一份音频
   /// （并发写同一个 `.part` 文件会互相破坏）。
   final Set<String> _prefetchingAudio = {};
 
-  /// 正在跑的那条预取（同一时刻只留一条）与它的去重键。换书/换页时要把上
-  /// 一条掐掉：旧书的 64MB 还在后台下，新书的又要开始，两条一起抢带宽。
-  CancelToken? _prefetchCancel;
+  /// 正在跑的那条补全的去重键（同一时刻只留一条）。换书/换页时要把上一条
+  /// 掐掉：旧书的 64MB 还在后台下，新书的又要开始，两条一起抢带宽。
+  ///
+  /// 真正的取消在原生侧做（新的 `fillAudioCache` 会顶掉旧的，离开阅读页时显式
+  /// `cancelAudioCacheFill`）；这里留着只是判「我这条还是不是当前那条」。
   String? _prefetchKey;
 
   /// 切后台前播放到的位置，等回到前台时用来复位播放条。
@@ -361,13 +362,24 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
           'loop=${state.loopMode}, autoPause=${state.autoPauseMode}',
         );
         _boundaryHandledAt = DateTime.now();
-        _markSeekIssued(segStart);
-        if (state.loopMode) {
+        // `_markSeekIssued` 只在**真的下发 seek** 时才调：它声明的是"在途 seek
+        // 的目标"，而 [seekHasLanded] 对往回跳的要求是 `position <= target +
+        // 容差`。循环关、自动暂停关时这里并不 seek，却记下 `segStart`（在
+        // 播放头**后面**），于是每条位置事件都被判成"还没落地"丢掉，
+        // `state.position` 会一直冻在跨界那一刻，直到 12s 超时才放行 ——
+        // 2026-10-10 真机实测：普通播放（loop=off autoPause=off）播到 1.012s
+        // 跨过第一个句尾后，进度条/时间/句子高亮整整 12 秒不动，然后跳到
+        // 13.149s。（`01091d5` 引入。）判定本身在 `segmentBoundaryAction`。
+        final action = segmentBoundaryAction(
+          loopMode: state.loopMode,
+          autoPauseMode: state.autoPauseMode,
+        );
+        if (action != SegmentBoundaryAction.keepPlaying) {
+          _markSeekIssued(segStart);
           unawaited(_seekPlayer(segStart));
-          finalPosition = segStart;
-        } else if (state.autoPauseMode) {
-          unawaited(_seekPlayer(segStart));
-          unawaited(_audioPlayer?.pause());
+          if (action == SegmentBoundaryAction.pauseBack) {
+            unawaited(_audioPlayer?.pause());
+          }
           finalPosition = segStart;
         }
       }
@@ -861,12 +873,23 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   /// third_party/audioplayers），一个不带头的请求会被多用户服务器 302 到
   /// /login。起播的同时把文件补进缓存目录：缓存是离线播放的根基，影子跟读
   /// 的原句裁剪也从它取片段。
+  ///
+  /// **补全要在起播之前发出去**：原生侧播放器只读缓存、补全只写缓存，谁先拿到
+  /// 缓存锁谁就决定「开头那几 MB 谁下」。补全先发（它带着这里已经探好的
+  /// `remoteSize`，拿到锁之前不用再花网络往返），播放器的第一次读就直接落在
+  /// 缓存里。
+  ///
+  /// 光靠"先发"还不够 —— 两个方法通道的回调各自在不同线程上真正开跑，先后没有
+  /// 保证。真正兜住这件事的是原生侧的让行闸门（`AudioCacheFillGate`）：播放器的
+  /// data source 在第一次 open 之前会等补全把锁抓到手。这里负责的是"别让补全在
+  /// 拿到锁之前先花掉一个网络往返"，也就是把 `remoteSize` 一起带过去。
   Future<void> _setAudioSource(
     String audioUrl,
     Map<String, String> authHeaders,
   ) async {
     final cacheFile = await _audioCacheFile(audioUrl);
-    if (await _isCacheComplete(cacheFile, audioUrl, authHeaders)) {
+    final cacheState = await _cacheState(cacheFile, audioUrl, authHeaders);
+    if (cacheState.complete) {
       lastLocalAudioFile = cacheFile;
       await _audioPlayer!.setSourceDeviceFile(cacheFile.path);
       return;
@@ -875,11 +898,15 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     // 手上那份旧的完整文件也先交给影子跟读用，预取会把它更新成新版本。
     final hasStaleCopy = await cacheFile.exists();
     lastLocalAudioFile = hasStaleCopy ? cacheFile : null;
+    // 已经确定服务器不可达就别起这条补全：它必然失败，重试三次要白等九秒，
+    // 而这几秒里播放器还在等让行闸门放行。手上的文件（含原生缓存）照样能播。
+    if (ServerStatusManager.isReachable) {
+      _prefetchAudio(audioUrl, authHeaders, cacheFile, cacheState.remoteSize);
+    }
     await _audioPlayer!.setSourceUrl(
       audioUrl,
       headers: authHeaders.isEmpty ? null : authHeaders,
     );
-    _prefetchAudio(audioUrl, authHeaders, cacheFile);
   }
 
   /// 缓存文件路径。
@@ -897,103 +924,161 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     );
   }
 
-  /// 缓存文件是否与远端一致、可以直接播放。
+  /// 缓存文件是否与远端一致、可以直接播放；顺带把探到的远端大小带出来。
   ///
-  /// 探测大小这一步在离线时必然失败 —— 失败不能当成「缓存无效」，得当成
-  /// 「网络不可用」，信手上的文件。
-  Future<bool> _isCacheComplete(
+  /// 那个大小有两个用处：这里拿它比长度，[fillAudioCache] 拿它当 `totalLength`
+  /// —— 补全有了它就不用自己再探一次，也就能在**播放器起播之前**先把缓存锁抓到
+  /// 手（见 [_setAudioSource]）。
+  ///
+  /// **没有本地文件时也要探**：那正是"第一次打开这本书"的场景，也是最需要
+  /// `totalLength` 的场景 —— 不探的话原生侧得自己发一次 `Range` 请求问长度，而
+  /// 那个往返恰好落在"播放器已经 prepare、补全还没拿到锁"的窗口里。真机
+  /// 2026-10-10 的日志里 `fill start … (fromDart=false)` 加
+  /// `[player] open pos=0 len=unset` 早于 `[fill] open` 就是这么来的。
+  ///
+  /// 探测失败（离线 / 服务器不可达）不能当成「缓存无效」，得当成「网络不可用」，
+  /// 信手上的文件。
+  Future<({bool complete, int? remoteSize})> _cacheState(
     File cacheFile,
     String audioUrl,
     Map<String, String> authHeaders,
   ) async {
-    if (!await cacheFile.exists()) return false;
+    final exists = await cacheFile.exists();
     // 离线（服务器已判不可达）就别再发 Range 探测了：它只会白等一个
     // connectTimeout 再失败，让离线开书平白多挂十几秒。
     if (!ServerStatusManager.isReachable) {
-      debugPrint('AudioPlayer: probe skipped/unreachable, using cached copy');
-      return true;
+      debugPrint('AudioPlayer: probe skipped/unreachable, exists=$exists');
+      return (complete: exists, remoteSize: null);
     }
     final remoteSize = await _probeAudioSize(audioUrl, authHeaders);
     if (remoteSize == null) {
-      debugPrint('AudioPlayer: probe failed, using cached copy');
-      return true;
+      debugPrint('AudioPlayer: probe failed, using cached copy (exists=$exists)');
+      return (complete: exists, remoteSize: null);
     }
-    return await cacheFile.length() == remoteSize;
+    if (!exists) {
+      return (complete: false, remoteSize: remoteSize);
+    }
+    return (
+      complete: await cacheFile.length() == remoteSize,
+      remoteSize: remoteSize,
+    );
   }
 
   /// 后台把音频补进缓存目录，补完再交给影子跟读做原句裁剪。
   ///
-  /// 中断不再等于白下：[_downloadAudioToFile] 会从 `.part` 已有的字节续传，
-  /// 这里再补几次重试，让**一次** loadAudio 就把文件补完，而不是干等下一次
-  /// 进这本书（2026-10-10 diag.log：64MB 下到 52MB 被掐，下一次 loadAudio
-  /// 又从 0 下了一遍，白扔 50 多 MB）。失败静默：在线流式播放不受影响。
+  /// 补的是**播放器正在读的那份缓存**（Media3 的 `SimpleCache`）：播放器只读、
+  /// 补全只写，播放器要的那段补全已经下过就从缓存里读，所以「起播」和「攒一份
+  /// 完整文件」合起来只有一次传输 —— 换掉 MediaPlayer 之前是 MediaPlayer 流
+  /// 一份、Dio 再下一份，2026-10-10 diag.log 里 book 273 的 6.4MB 出现过两次。
+  ///
+  /// 补完还要 `exportAudioCache` 把缓存导出成 `audiobooks/` 里的普通文件：
+  /// 离线播放与影子跟读裁剪要的是真文件，而缓存内部是分片。导出只花本地 IO，
+  /// 不再走网络。
+  ///
+  /// 中断不再等于白下：补全从缓存里已有的位置接着走，这里再补几次重试，让
+  /// **一次** loadAudio 就把文件补完，而不是干等下一次进这本书（2026-10-10
+  /// diag.log：64MB 下到 52MB 被掐，下一次 loadAudio 又从 0 下了一遍，白扔
+  /// 50 多 MB）。失败静默：在线流式播放不受影响。
   void _prefetchAudio(
     String audioUrl,
     Map<String, String> authHeaders,
     File target,
+    int? totalLength,
   ) {
     final key = '$_bookId|$audioUrl';
     if (!_prefetchingAudio.add(key)) return;
     // 同一时刻只跑一条：换书/换页时把上一条掐掉，别让旧书的几十 MB
     // 还在后台跟新书的抢带宽。
     _cancelPrefetch();
-    final token = CancelToken();
-    _prefetchCancel = token;
     _prefetchKey = key;
     unawaited(() async {
+      var reloggedIn = false;
       try {
         for (var attempt = 1; ; attempt++) {
           try {
-            await _downloadAudioToFile(
+            final done = await _fillAndExportAudio(
               audioUrl,
               authHeaders,
               target,
-              cancelToken: token,
+              totalLength,
             );
+            // 被新的一条顶掉了（换书/换页）：这次已经没有意义。
+            if (!done) return;
             if (key == '$_bookId|$_lastAudioUrl') {
               lastLocalAudioFile = target;
             }
             return;
           } catch (e) {
             // 被主动掐掉（换书/换页）不是失败，别重试也别刷日志。
-            if (token.isCancelled) return;
+            if (_prefetchKey != key) return;
             if (attempt >= _prefetchMaxAttempts) rethrow;
             debugPrint(
-              'AudioPlayer: 预取中断（第 $attempt 次），'
+              'AudioPlayer: 补全音频中断（第 $attempt 次），'
               '${_prefetchRetryDelay.inSeconds}s 后从已下字节续传: $e',
             );
             await Future<void>.delayed(_prefetchRetryDelay);
-            if (token.isCancelled) return;
+            if (_prefetchKey != key) return;
+            // 会话失效时（音频流被 302 到 /login）重新登录一次再试。
+            //
+            // 只在**有记住的凭据**时才试：`tryAutoRelogin()` 在没凭据的分支里
+            // 会把会话状态直接打成「需要登录」并通知 UI —— 那会弹出一个假的
+            // 登录提示，而这里的失败可能只是网络抖动。
+            if (!reloggedIn && SessionManager.hasRememberedCredentials) {
+              reloggedIn = true;
+              await SessionManager.tryAutoRelogin();
+            }
           }
         }
       } catch (e) {
-        debugPrint('AudioPlayer: 后台预取音频失败（不影响在线播放）: $e');
+        debugPrint('AudioPlayer: 后台补全音频失败（不影响在线播放）: $e');
       } finally {
         // 只有这条还是"当前那条"时才清键：被掐掉的那条收尾时，新的那条
         // 可能已经占用了同一个键，清掉它等于让去重失效。
-        if (identical(_prefetchCancel, token)) {
+        if (_prefetchKey == key) {
           _prefetchingAudio.remove(key);
-          _prefetchCancel = null;
           _prefetchKey = null;
         }
       }
     }());
   }
 
+  /// 补全 → 导出。
+  ///
+  /// 返回 false 表示这次补全被后一次调用顶掉了（原生侧同一时刻只跑一条，
+  /// 新的会 cancel 旧的）—— 调用方应当直接收工，不是当失败重试。
+  ///
+  /// [totalLength] 一路透传到原生侧：见 [_cacheState] 的说明，它让补全不必重复
+  /// 探测、也就能赶在播放器起播前把缓存锁拿到手。
+  Future<bool> _fillAndExportAudio(
+    String audioUrl,
+    Map<String, String> authHeaders,
+    File target,
+    int? totalLength,
+  ) async {
+    final filled = await AudioPlayer.global.fillAudioCache(
+      audioUrl,
+      headers: authHeaders.isEmpty ? null : authHeaders,
+      totalLength: totalLength,
+    );
+    if (!filled) return false;
+    await AudioPlayer.global.exportAudioCache(audioUrl, target.path);
+    return true;
+  }
+
   /// 预取的最大尝试次数与两次尝试之间的间隔（从已下字节续传，代价很小）。
   static const int _prefetchMaxAttempts = 3;
   static const Duration _prefetchRetryDelay = Duration(seconds: 3);
 
-  /// 掐掉在跑的预取（换书、换页、离开阅读页）。
+  /// 掐掉在跑的补全（换书、换页、离开阅读页）。
   void _cancelPrefetch() {
-    final token = _prefetchCancel;
     final key = _prefetchKey;
-    _prefetchCancel = null;
     _prefetchKey = null;
-    // 同步摘掉去重键：紧接着的同名预取不能被上一次的 finally 抢跑，否则新的
+    // 同步摘掉去重键：紧接着的同名补全不能被上一次的 finally 抢跑，否则新的
     // 那份会被当成"已经在下了"直接跳过，缓存就永远补不上了。
     if (key != null) _prefetchingAudio.remove(key);
-    token?.cancel();
+    // 传输在原生侧跑，得显式告诉它停 —— 否则用户退出阅读页之后那几十 MB 还会
+    // 在后台默默下完（这是重复流量之外的另一类浪费）。
+    unawaited(AudioPlayer.global.cancelAudioCacheFill());
   }
 
   Future<int?> _probeAudioSize(
@@ -1024,91 +1109,16 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     }
   }
 
-  /// 把音频下到 [target]，**断点续传**。
-  ///
-  /// 服务端的 `/useraudio/stream/<id>` 支持 Range（`_send_audio_range_aware`），
-  /// 所以中断后从 `${target.path}.part` 已有的字节接着下，而不是删掉重来：
-  /// 2026-10-10 的 diag.log 里一本 64MB 的有声书下到 `bs=52826112` 被掐，
-  /// 下一次 loadAudio 又从 0 下了一遍（`bs=64231987`），白扔 50 多 MB。
-  ///
-  /// 续传只在服务端**确实按我们的起点回了 206** 时才追加（判定见
-  /// [resumeWriteOffset]）；回 200（不支持 Range、或 `?v=` 换了文件）就从头
-  /// 重写 —— 否则会把整份内容接在半截文件后面，得到一个长度对、内容坏的缓存。
-  Future<void> _downloadAudioToFile(
-    String url,
-    Map<String, String> authHeaders,
-    File target, {
-    bool retriedAfterLogin = false,
-    CancelToken? cancelToken,
-  }) async {
-    final tmp = File('${target.path}.part');
-    final existing = await tmp.exists() ? await tmp.length() : 0;
-    IOSink? sink;
-    try {
-      final response = await _audioDio.get<ResponseBody>(
-        url,
-        options: Options(
-          headers: {
-            ...authHeaders,
-            if (existing > 0) 'Range': 'bytes=$existing-',
-          },
-          responseType: ResponseType.stream,
-        ),
-        cancelToken: cancelToken,
-      );
-      final status = response.statusCode ?? 0;
-      if (status >= 300 && status < 400) {
-        // Redirected (e.g. to /login): the multi-user session is gone.
-        if (!retriedAfterLogin && await SessionManager.tryAutoRelogin()) {
-          await _downloadAudioToFile(
-            url,
-            SessionManager.authHeaders(),
-            target,
-            retriedAfterLogin: true,
-            cancelToken: cancelToken,
-          );
-          return;
-        }
-        throw const ServerLoginRequiredException();
-      }
-      final offset = resumeWriteOffset(
-        existing: existing,
-        status: status,
-        contentRange: response.headers.value('content-range'),
-      );
-      debugPrint(
-        'AudioPlayer: 下载音频 $url status=$status '
-        '已有=$existing 起点=$offset',
-      );
-      sink = tmp.openWrite(mode: offset > 0 ? FileMode.append : FileMode.write);
-      await sink.addStream(response.data!.stream);
-      await sink.flush();
-      await sink.close();
-      sink = null;
-      // 下完再对一次长度：续传的起点是"我们手上有什么"，服务端可能已经换了
-      // 文件，长度对不上说明这份是拼出来的，不能留。
-      final total =
-          contentRangeTotal(response.headers.value('content-range')) ??
-          _intHeader(response.headers.value('content-length'));
-      final actual = await tmp.length();
-      if (total != null && actual != total) {
-        await tmp.delete();
-        throw StateError('音频下载长度不符: $actual != $total');
-      }
-      await tmp.rename(target.path);
-    } catch (_) {
-      // **不删** `.part`：它就是下次续传的起点。半截文件不会被当成缓存用
-      // （`_isCacheComplete` 只认最终文件名，且长度要对上远端）。
-      // 关掉 sink 是为了把已写入的部分刷到磁盘，别让下一次续传从头开始。
-      try {
-        await sink?.close();
-      } catch (_) {}
-      rethrow;
-    }
-  }
-
-  int? _intHeader(String? value) =>
-      value == null ? null : int.tryParse(value.trim());
+  // 这里原来有一个 `_downloadAudioToFile`：Dio + Range 断点续传，把音频整份
+  // 下到 `audiobooks/*.audio`。它和播放器是**两条独立的传输**，同一本书的字节
+  // 于是走两遍（2026-10-10 diag.log：book 273 的 6.4MB 由 `stagefright/1.2`
+  // 与 `Dart/3.13` 各拉了一次）。
+  //
+  // 现在整段搬到了原生侧：Media3 的 `CacheWriter`（`fillAudioCache`）从播放器
+  // 自己写进缓存的位置接着补 —— 断点续传、长度校验、`.part` 语义都由它保证；
+  // 补完再由 `exportAudioCache` 导出成同样命名的 `audiobooks/*.audio` 文件。
+  // 纯函数版的 Range 判定（原 `utils/audio_download_resume.dart`）随之删除，
+  // 它只服务于那条已经不存在的手写下载路径。
 
   Future<void> stop() async {
     _stopSafely();

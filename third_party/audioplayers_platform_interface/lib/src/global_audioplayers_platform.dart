@@ -50,6 +50,40 @@ mixin MethodChannelGlobalAudioplayersPlatform
       },
     );
   }
+
+  @override
+  Future<bool> fillAudioCache(
+    String url, {
+    Map<String, String>? headers,
+    int? totalLength,
+  }) async {
+    final result = await _globalMethodChannel.compute<bool>(
+      'fillAudioCache',
+      <String, dynamic>{
+        'url': url,
+        'headers': headers,
+        'totalLength': totalLength,
+      },
+    );
+    return result ?? false;
+  }
+
+  @override
+  Future<int> exportAudioCache(String url, String destPath) async {
+    final result = await _globalMethodChannel.compute<int>(
+      'exportAudioCache',
+      <String, dynamic>{
+        'url': url,
+        'destPath': destPath,
+      },
+    );
+    return result ?? 0;
+  }
+
+  @override
+  Future<void> cancelAudioCacheFill() {
+    return _globalMethodChannel.call('cancelAudioCacheFill');
+  }
 }
 
 mixin EventChannelGlobalAudioplayersPlatform
