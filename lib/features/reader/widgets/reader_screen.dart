@@ -1251,7 +1251,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// 2026-09-26 做书架入口时把它撤了（"拼写检查不是阅读动作"），真机上很快
   /// 被找回来：宽屏阅读页没有 rail，抽屉是 Grammar 唯一的路，而抽屉是整屏
   /// 覆盖。位置紧挨 `Aa` —— 两者都是"对正文做的事"，一起放在同一侧。
+  ///
+  /// 窄屏不渲染：底栏常驻（Reader|Books|Grammar|Review|Stats）已经有一个
+  /// Grammar tab，同一个动作不该上下各出一遍。顺带也解掉顶栏拥挤 —— 窄屏
+  /// actions 本就超宽，这一个 48dp 正好把最左边的离线云徽标挤到 leading
+  /// 汉堡上（与 _buildBooksButton 同一处阈值、同一个原因）。
   Widget _buildGrammarButton() {
+    if (MediaQuery.sizeOf(context).width < 600) {
+      return const SizedBox.shrink();
+    }
     return IconButton(
       icon: const Icon(Icons.spellcheck),
       tooltip: 'Grammar',
