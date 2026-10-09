@@ -156,6 +156,15 @@ class OnDeviceTTSService implements TTSService {
   AudioPlayer? _audioPlayer;
   final _playerStateController = StreamController<PlayerState>.broadcast();
 
+  /// 引擎级错误。**刻意不塞进 [playerStateStream]**：那条流里的 `stopped`
+  /// 曾被整页朗读读成「这一句读完了」，于是「引擎报错」被当成「播完」——
+  /// 高亮一路往前走、却没有任何声音。错误必须走自己的通道。
+  final _engineErrorController = StreamController<TTSException>.broadcast();
+
+  /// 引擎错误流（引擎报错 / 引擎不肯接受这句话）。整页朗读订阅它，
+  /// 收到就停下来报错，而不是当作播完继续往下走。
+  Stream<TTSException> get engineErrorStream => _engineErrorController.stream;
+
   /// Last applied config. A rebuilt engine loses voice/rate/pitch settings,
   /// so they are re-applied after recovery.
   TTSSettingsConfig? _config;
@@ -186,7 +195,10 @@ class OnDeviceTTSService implements TTSService {
       _playerStateController.add(PlayerState.completed);
     });
     _flutterTts.setErrorHandler((msg) {
-      _playerStateController.add(PlayerState.stopped);
+      // 只报错，**不发** PlayerState.stopped：见 [engineErrorStream]。
+      _engineErrorController.add(
+        TTSException('On-device TTS engine error: $msg'),
+      );
     });
   }
 
@@ -206,13 +218,43 @@ class OnDeviceTTSService implements TTSService {
       // Rebuild the engine instance: setEngine re-binds it, resolves once
       // the new engine is initialized (throws PlatformException on init
       // failure), and re-runs the parked utterance on the fresh engine.
-      await _rebuildEngine();
-      // The re-run of the parked utterance may already be queued by now;
-      // flush it and speak fresh, so exactly one copy goes out.
-      await _flutterTts.stop();
-      await _flutterTts.speak(text);
+      try {
+        await _recoverStalledEngine(text);
+      } catch (e) {
+        throw TTSException('On-device TTS engine did not recover: $e');
+      }
     } catch (e) {
+      if (e is TTSException) rethrow;
       throw TTSException('Failed to speak with on-device TTS: $e');
+    }
+  }
+
+  /// 引擎卡死后的重建 + 重念。
+  ///
+  /// 重建之前先 `stop()`：被 park 的那句话有可能其实已经被引擎收下，
+  /// 若不清掉，它会在新语句之外多念一遍 —— 那正是「听到的句子和字幕
+  /// 不是同一句」的来源之一（同一句被排两遍，音频永远落后高亮一句）。
+  /// 重建后同样再 `stop()` 一次，只让最后那次 speak 出声。
+  Future<void> _recoverStalledEngine(String text) async {
+    await _flushEngineQueue();
+    await _rebuildEngine();
+    await _flushEngineQueue();
+    await _flutterTts.speak(text).timeout(
+      _speakAcceptTimeout,
+      onTimeout: () => throw TTSException(
+        'On-device TTS engine accepted no utterance after a rebuild.',
+      ),
+    );
+  }
+
+  /// Best effort flush of whatever the engine still holds. 引擎已经死了时
+  /// `stop()` 自己也可能卡住，所以给个上限，超时就当冲掉了。
+  Future<void> _flushEngineQueue() async {
+    try {
+      await _flutterTts.stop().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Nothing to flush, or the engine is beyond saving; either way the
+      // rebuild (or the error) below is what matters.
     }
   }
 
@@ -367,6 +409,7 @@ class OnDeviceTTSService implements TTSService {
   void dispose() {
     _audioPlayer?.dispose();
     _playerStateController.close();
+    _engineErrorController.close();
   }
 
   @override

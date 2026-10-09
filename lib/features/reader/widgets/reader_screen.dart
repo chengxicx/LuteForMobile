@@ -18,6 +18,7 @@ import '../../../features/settings/providers/tts_settings_provider.dart';
 import '../../../features/settings/models/tts_settings.dart';
 import '../../../features/settings/models/settings.dart';
 import '../../../features/terms/providers/terms_provider.dart';
+import '../../books/providers/books_provider.dart';
 import '../../../features/stats/providers/stats_provider.dart';
 import '../../../features/stats/models/stats_data.dart';
 import '../../../core/services/termux_service.dart';
@@ -711,7 +712,43 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     if (_lastTtsPageKey == key) return;
     _lastTtsPageKey = key;
     final sentences = _sentencesForPage(pageData);
-    ref.read(ttsPlayerProvider.notifier).loadPage(sentences);
+    ref
+        .read(ttsPlayerProvider.notifier)
+        .loadPage(
+          sentences,
+          // 语言随页面一起交给播放器：播放器每句开口前推给 TTS 服务。
+          // 只靠 currentBookProvider 的异步解析会输给「启动即恢复阅读」的
+          // 时序（书架还没到货），日文句子就会被送去英文语音。
+          bookLanguageName: _languageNameFor(_findLangId(pageData)),
+        );
+  }
+
+  /// 本页朗读该用的语言名（TTS 语言标签由它换算）。
+  ///
+  /// 优先用 [currentBookProvider] 里已经解析好的名字；没有就从书架里同语言的
+  /// 书取 `LgName` —— 那是服务端 datatables 的 JSON 字段，不依赖
+  /// `/language/index` 的 HTML 解析，也就不会跟着它一起失败。
+  ///
+  /// 两条都拿不到就返回 null：播放器会用设置里的回退语言码，**并在播放条上
+  /// 把这件事说出来**，而不是悄悄发一串注定 422 的请求。
+  String? _languageNameFor(int? langId) {
+    final resolved = ref.read(currentBookProvider).languageName?.trim();
+    if (resolved != null && resolved.isNotEmpty) return resolved;
+    if (langId == null) return null;
+    try {
+      final booksState = ref.read(booksProvider);
+      for (final b in [
+        ...booksState.activeBooks,
+        ...booksState.archivedBooks,
+      ]) {
+        if (b.langId == langId && b.language.trim().isNotEmpty) {
+          return b.language.trim();
+        }
+      }
+    } catch (_) {
+      // 书架还没就绪；语言交给 currentBookProvider 的自愈逻辑补。
+    }
+    return null;
   }
 
   /// Stops the read-aloud player when the page in front of the reader is not
@@ -918,6 +955,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           );
 
       final langId = _findLangId(pageData);
+
+      // 与 loadBook 同一个理由（见 current_book_provider.setBookLanguage）：
+      // 底栏「Reader」走的是本方法，不补语言的话 TTS 与点词发音都只能退回
+      // 设置页那个兜底语言码 —— 日文句子被送去英文语音，整页朗读无声。
+      unawaited(
+        ref
+            .read(currentBookProvider.notifier)
+            .setBookLanguage(pageData.bookId, langId),
+      );
 
       if (langId != null) {
         unawaited(_ensureLanguageDirectionLoaded(langId));

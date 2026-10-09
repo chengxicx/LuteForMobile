@@ -17,11 +17,21 @@ class PlayerCard extends StatelessWidget {
   /// 报错条末尾关闭按钮的回调;为 null 时不显示关闭按钮。
   final VoidCallback? onDismissError;
 
+  /// 中性提示(不是错误):例如「书的语言未解析,朗读按回退语言 en」。
+  /// 语义与 [errorMessage] 不同,所以既不带 Error: 前缀,也不染成报错色 ——
+  /// 它说的是一件需要知道、但并不是故障的事。
+  final String? notice;
+
+  /// 提示条末尾关闭按钮的回调;为 null 时不显示关闭按钮。
+  final VoidCallback? onDismissNotice;
+
   const PlayerCard({
     super.key,
     required this.child,
     this.errorMessage,
     this.onDismissError,
+    this.notice,
+    this.onDismissNotice,
   });
 
   @override
@@ -47,7 +57,23 @@ class PlayerCard extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (errorMessage != null)
-              _buildErrorBanner(context, errorMessage!),
+              _buildBanner(
+                context,
+                message: errorMessage!,
+                background: palette.errorBackground,
+                ink: palette.errorInk,
+                onDismiss: onDismissError,
+              ),
+            if (notice != null)
+              _buildBanner(
+                context,
+                message: notice!,
+                // 中性色:既不是报错的粉底,也不是卡面本色(后者在彩色主题里
+                // 会彻底看不见)。groupFill 是这套配色里现成的"次要区块底"。
+                background: palette.groupFill,
+                ink: palette.icon,
+                onDismiss: onDismissNotice,
+              ),
             child,
           ],
         ),
@@ -55,9 +81,15 @@ class PlayerCard extends StatelessWidget {
     );
   }
 
-  Widget _buildErrorBanner(BuildContext context, String message) {
+  Widget _buildBanner(
+    BuildContext context, {
+    required String message,
+    required Color background,
+    required Color ink,
+    required VoidCallback? onDismiss,
+  }) {
     final palette = context.playerPalette;
-    // 墨水屏下报错底就是卡面本身(原先那层 20% 透明粉在灰阶里不存在),
+    // 墨水屏下提示底就是卡面本身(原先那层 20% 透明粉在灰阶里不存在),
     // 所以补一圈 1px 描边,让"这是一条独立提示"还看得出来。
     final needsBorder = palette.eInk;
 
@@ -66,7 +98,7 @@ class PlayerCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(10, 2, 2, 2),
       decoration: BoxDecoration(
-        color: palette.errorBackground,
+        color: background,
         borderRadius: BorderRadius.circular(10),
         border: needsBorder
             ? Border.all(color: palette.cardBorder, width: 1)
@@ -77,19 +109,16 @@ class PlayerCard extends StatelessWidget {
           Expanded(
             child: Text(
               message,
-              style: TextStyle(
-                color: palette.errorInk,
-                fontSize: palette.labelFontSize,
-              ),
+              style: TextStyle(color: ink, fontSize: palette.labelFontSize),
             ),
           ),
-          if (onDismissError != null)
+          if (onDismiss != null)
             IconButton(
-              icon: Icon(Icons.close, size: 18, color: palette.errorInk),
-              onPressed: onDismissError,
+              icon: Icon(Icons.close, size: 18, color: ink),
+              onPressed: onDismiss,
               padding: EdgeInsets.zero,
               visualDensity: VisualDensity.compact,
-              tooltip: 'Dismiss error',
+              tooltip: 'Dismiss',
             ),
         ],
       ),

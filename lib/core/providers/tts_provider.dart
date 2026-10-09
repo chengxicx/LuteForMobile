@@ -34,9 +34,20 @@ class TTSNotifier extends Notifier<TTSService> {
     return service;
   }
 
-  /// Edge TTS 要用的语言标签：优先跟随当前书的语言，书还没打开时退回
+  /// Edge TTS 要用的语言标签：优先用调用方显式给的书语言（整页朗读会把本页
+  /// 的语言直接传下来），其次跟随 [currentBookProvider]，书还没打开时退回
   /// 设置页里的「兜底语言码」，最后才用 [defaultTtsLanguageTag]。
-  String _resolveEdgeLanguageCode() {
+  ///
+  /// 显式参数不是多余的：整页朗读原先只在「语言发生变化」时同步一次，服务
+  /// 一旦在书打开之前建好、而语言又没解析成功，它就会一直用兜底的 `en` ——
+  /// 日文句子被送去英文语音，edge-tts 答 NoAudioReceived，服务端回 422，
+  /// 整页朗读于是无声地一句句连播过去。
+  String resolveEdgeLanguageCode({String? bookLanguageName}) {
+    final explicit = bookLanguageName?.trim();
+    if (explicit != null && explicit.isNotEmpty) {
+      return ttsLanguageCodeFor(explicit);
+    }
+
     final bookLanguage = ref.read(currentBookProvider).languageName;
     if (bookLanguage != null && bookLanguage.trim().isNotEmpty) {
       return ttsLanguageCodeFor(bookLanguage);
@@ -52,19 +63,31 @@ class TTSNotifier extends Notifier<TTSService> {
         : configured;
   }
 
+  /// 把语言推给当前的主服务 —— 只对 Edge TTS 生效（其余 provider 的语言由
+  /// 各自的 `setSettings` 决定，在别处插一手会改变它们既有行为）。
+  ///
+  /// 每句开口前调用（见 tts_player_provider 的 `_applyLanguage`）：语言不该
+  /// 只在服务创建那一刻定一次，也不该只在「语言发生变化」时才更新。返回实际
+  /// 推下去的标签供调用方做诊断显示；主服务不是 Edge 时返回 null。
+  Future<String?> syncEdgeLanguage({String? bookLanguageName}) async {
+    final service = _currentService;
+    if (service is! EdgeTTSService) return null;
+    final tag = resolveEdgeLanguageCode(bookLanguageName: bookLanguageName);
+    try {
+      await service.setLanguage(tag);
+    } catch (e) {
+      debugPrint('Failed to apply book language to Edge TTS: $e');
+    }
+    return tag;
+  }
+
   /// 把当前书的语言同步给已建好的服务。
   ///
   /// 只对 Edge TTS 生效：其余 provider 的语言由各自的 `setSettings` 决定，
   /// 在别处插一手会改变它们既有行为（例如 on-device 的 setLanguage 会真的
   /// 去切系统语音）。
   Future<void> _applyBookLanguage(String? languageName) async {
-    final service = _currentService;
-    if (service is! EdgeTTSService) return;
-    try {
-      await service.setLanguage(ttsLanguageCodeFor(languageName));
-    } catch (e) {
-      debugPrint('Failed to apply book language to Edge TTS: $e');
-    }
+    await syncEdgeLanguage(bookLanguageName: languageName);
   }
 
   Future<void> _updateService() {
@@ -139,7 +162,7 @@ class TTSNotifier extends Notifier<TTSService> {
           return EdgeTTSService(
             serverUrl: appSettings.serverUrl,
             // 跟随当前书的语言，而不是设置页里那个固定值。
-            languageCode: _resolveEdgeLanguageCode(),
+            languageCode: resolveEdgeLanguageCode(),
             basicAuthUser: appSettings.basicAuthUser,
             basicAuthPassword: appSettings.basicAuthPassword,
           );

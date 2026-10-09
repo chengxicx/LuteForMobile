@@ -9,6 +9,7 @@ import 'package:song_mobile/features/settings/providers/tts_settings_provider.da
 import 'package:song_mobile/shared/providers/server_status_provider.dart';
 import '../providers/audio_player_provider.dart';
 import '../providers/current_book_provider.dart';
+import 'tts_player_provider.dart';
 
 enum SentenceTTSStatus { idle, loading, playing, error }
 
@@ -147,6 +148,13 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
     _activeService = service;
     final isPrimary = identical(service, ref.read(ttsServiceProvider));
 
+    if (isPrimary) {
+      // 点词发音用的是同一份 Edge 服务，语言也得现推一次：只在「服务创建
+      // 那一刻」定语言，会在书语言解析晚到（或曾经失败）时把日文词发去英文
+      // 语音 —— 实测就是 `/tts/en/あじ` 这类请求，服务端一律 422。
+      await ref.read(ttsServiceProvider.notifier).syncEdgeLanguage();
+    }
+
     if (service.supportsBytesOutput) {
       debugPrint('Fetching TTS audio bytes...');
       final audioBytes = await service.getAudioBytes(text);
@@ -185,6 +193,21 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
     }
     try {
       await ref.read(audioPlayerProvider.notifier).pause();
+    } catch (_) {}
+  }
+
+  /// 整页朗读在播时先暂停它。
+  ///
+  /// 两条链路共用同一个 on-device 引擎实例（flutter_tts 的默认队列模式是
+  /// QUEUE_FLUSH）：朗读念到一半被点词发音插进来，那一句会被直接冲掉，而
+  /// 引擎随后报出的完成事件又会被整页朗读当成「这句读完了」—— 高亮从此跑到
+  /// 音频前面，越走越乱（用户看到的「不是同一句」+「跳着走」）。
+  /// 发音前先把它停下来，最省事也最不意外。
+  Future<void> _pauseReadAloudIfPlaying() async {
+    try {
+      final player = ref.read(ttsPlayerProvider);
+      if (!player.isPlaying && !player.isLoading) return;
+      await ref.read(ttsPlayerProvider.notifier).pause();
     } catch (_) {}
   }
 
@@ -267,6 +290,9 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       // 点词瞬间就暂停书籍音频(位置随 pause 保存),不等网络合成:
       // 否则合成的一两秒里书还在走,发音出来时进度已经漂走。
       await _pauseBookAudioIfPlaying();
+      // 整页朗读也先停下：两个链路共用同一个 on-device 引擎实例，让它一边
+      // 念一边被点词发音插话，只会把「哪一句读完了」这件事彻底搞乱。
+      await _pauseReadAloudIfPlaying();
 
       state = state.copyWith(
         status: SentenceTTSStatus.loading,

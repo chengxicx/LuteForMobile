@@ -45,12 +45,17 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
         : '0/0';
 
     final errorMessage = state.errorMessage;
+    // 中性提示：语言没解析出来、或已切到本地引擎。它不是故障，但用户需要
+    // 知道 —— release 包里拿不到日志，界面就是唯一的出口。
+    final notice = state.notice;
 
     return PlayerCard(
       errorMessage: errorMessage == null ? null : 'Error: $errorMessage',
       onDismissError: errorMessage == null
           ? null
           : notifier.clearError,
+      notice: notice,
+      onDismissNotice: notice == null ? null : notifier.dismissNotice,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
