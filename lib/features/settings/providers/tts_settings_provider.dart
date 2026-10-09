@@ -66,6 +66,11 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
   void _loadSettingsInBackground() async {
     final prefs = await SharedPreferences.getInstance();
 
+    // 读盘是异步的；这期间 provider 可能已经被销毁（测试里 dispose 容器、
+    // 生产里退出应用）—— 那之后再碰 state 会抛
+    // "Cannot use the Ref ... after it has been disposed"。
+    if (!ref.mounted) return;
+
     final providerStr = prefs.getString(_providerKey);
     final provider = providerStr != null
         ? TTSProvider.values.firstWhere(
@@ -83,6 +88,8 @@ class TTSSettingsNotifier extends Notifier<TTSSettings> {
       _supertonicFastApiConfigKey,
     );
     final edgeTTSConfig = await _loadConfig(prefs, _edgeTTSConfigKey);
+
+    if (!ref.mounted) return;
 
     final loadedSettings = TTSSettings(
       provider: provider,

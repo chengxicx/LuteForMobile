@@ -359,7 +359,11 @@ void main() {
     final attempts = fake.spoken.where((s) => s == '」').length;
     expect(
       attempts,
-      lessThanOrEqualTo(4),
+      // 每条依次：被拒 → 原句重试一次（见 tts_player_fragment_skip_test 的
+      // 「单发的 422 先原句重试一次」）→ 仍被拒才放行下一句。循环最多重播
+      // 3 次就放行，所以上限是 3 轮 × 2 次 + 余量。要钉住的仍然只是
+      // 「不会无限打转」。
+      lessThanOrEqualTo(8),
       reason: 'an unvoiceable cue must not spin; spoke ${fake.spoken}',
     );
     expect(
