@@ -206,6 +206,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// (text_display.dart:285), so this is the normal case, not a rare race.
   int _tooltipSeq = 0;
 
+  /// Bumped on every long press that asks for a term form.  The form is built
+  /// from a server round trip, and the long-press buzz lands long before the
+  /// sheet does: pressing again inside that window queues one sheet per press,
+  /// so three long presses end in three identical cards.  Same rule as
+  /// _tooltipSeq above -- only the newest gesture gets to draw.
+  int _termFormSeq = 0;
+
   /// 实体键的焦点节点。从别的屏（设置等）回到阅读屏时要把焦点收回来 ——
   /// IndexedStack 常驻其它屏，那里的输入框（如设置页的 Server Host）会
   /// 拿走焦点且不还，实体键从此失灵直到重启 app。
@@ -1297,7 +1304,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// 2026-09-26 做书架入口时把它撤了（"拼写检查不是阅读动作"），真机上很快
   /// 被找回来：宽屏阅读页没有 rail，抽屉是 Grammar 唯一的路，而抽屉是整屏
   /// 覆盖。位置紧挨 `Aa` —— 两者都是"对正文做的事"，一起放在同一侧。
+  ///
+  /// 窄屏不渲染：底栏常驻（Reader|Books|Grammar|Review|Stats）已经有一个
+  /// Grammar tab，同一个动作不该上下各出一遍。顺带也解掉顶栏拥挤 —— 窄屏
+  /// actions 本就超宽，这一个 48dp 正好把最左边的离线云徽标挤到 leading
+  /// 汉堡上（与 _buildBooksButton 同一处阈值、同一个原因）。
   Widget _buildGrammarButton() {
+    if (MediaQuery.sizeOf(context).width < 600) {
+      return const SizedBox.shrink();
+    }
     return IconButton(
       icon: const Icon(Icons.spellcheck),
       tooltip: 'Grammar',
@@ -2299,11 +2314,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   Future<void> _openTermForm(TextItem item) async {
     final wordId = item.wordId;
     if (wordId == null) return;
+    final seq = ++_termFormSeq;
     try {
       final termForm = await ref
           .read(readerProvider.notifier)
           .fetchTermFormById(wordId);
-      if (termForm == null || !mounted) return;
+      // Superseded while we waited: a later long press already owns the sheet.
+      if (termForm == null || !mounted || seq != _termFormSeq) return;
       _showTermForm(
         termForm,
         sentence: _extractSentence(item),
