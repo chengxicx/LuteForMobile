@@ -19,6 +19,7 @@ import 'theme_selector_screen.dart';
 import 'tts_settings_section.dart';
 import 'ai_settings_section.dart';
 import 'backup_restore_card.dart';
+import 'storage_cache_section.dart';
 import 'termux_screen.dart';
 import 'text_formatting_controls.dart';
 
@@ -1313,6 +1314,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const TTSSettingsSection(),
               const SizedBox(height: 16),
               const AISettingsSection(),
+              const SizedBox(height: 16),
+              // 存储与缓存：原先缓存只能靠"登录/登出"顺带清掉，用户既看不到
+              // 占用，也没有办法强制刷新被 14 天 TTL 扣住的页面内容。
+              _buildSectionHeader(context, 'Storage'),
+              const StorageCacheSection(),
               const SizedBox(height: 16),
               _buildSectionHeader(context, 'Appearance'),
               Card(

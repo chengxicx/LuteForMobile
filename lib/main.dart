@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +8,7 @@ import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:song_mobile/app.dart';
+import 'package:song_mobile/core/cache/audio_cache_service.dart';
 import 'package:song_mobile/core/providers/initial_providers.dart';
 import 'package:song_mobile/core/network/api_service.dart';
 import 'package:song_mobile/core/network/session_manager.dart';
@@ -34,6 +37,17 @@ void main() async {
     await Hive.initFlutter(cacheDir.path);
   }
   Hive.registerAdapters();
+
+  // 音频缓存里的"历史版本 + 断点残片"回收。
+  //
+  // 服务端给音源 URL 挂了 `?v=<音频文件 mtime>`（`lute/book/service.py:
+  // media_audio_url`），换了音频就换 URL，旧版本的缓存文件再没人引用，却一直
+  // 占着 6–64MB。启动时扫一次，不等它 —— 回收是纯本地 unlink，失败也只是
+  // 白留几 MB，不能拖慢首帧。
+  //
+  // 这里**不传** knownBookIds：书架还没拉到，拿空集合当"什么书都没有"会把
+  // 用户所有离线音频删光。带书架的那次回收在设置页的 Storage 卡片里做。
+  unawaited(AudioCacheService().collectOrphans());
 
   ServerStatusManager.setConnecting();
 

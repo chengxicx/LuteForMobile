@@ -8,6 +8,9 @@
 //   5. 播放行底色（playingLineHighlight，见 theme_extensions.dart）与页面底色
 //      可区分（ΔE >= 20），且其上的文字对比度 >= 4.5 —— 它是"播到哪一行"的唯一
 //      提示，糊在底色里或看不清字都等于没做
+//   6. 设置页「Storage & Cache」卡片上的文字（text.primary / text.secondary）
+//      在卡片底色（background.surface）上对比度 >= 4.5 —— 那是用户点 Clear
+//      之前唯一要看的东西（体积数字），墨水屏的纯灰阶最容易掉到看不见
 //
 // 运行：flutter test test/palette_contrast_test.dart
 
@@ -241,4 +244,39 @@ void main() {
       });
     });
   }
+
+  // 设置页的存储卡片（lib/features/settings/widgets/storage_cache_section.dart）
+  // 把体积数字画成 text.primary、说明文字画成 text.secondary，底色是
+  // background.surface。墨水屏是纯灰阶主题，灰字压在浅底上最先糊掉，而这两个
+  // 数正是用户点 Clear 之前唯一要看的东西 —— 卡住这条下限。
+  group('设置页存储卡片的文字可读', () {
+    final schemes = <String, AppThemeColorScheme>{
+      '深色主题': darkThemePreset,
+      '浅色主题': lightThemePreset,
+      '黑白主题': blackAndWhiteThemePreset,
+    };
+
+    schemes.forEach((name, scheme) {
+      test('$name：数字与说明文字对比度 >= 4.5', () {
+        final surface = scheme.background.surface;
+        for (final entry in <String, Color>{
+          'text.primary': scheme.text.primary,
+          'text.secondary': scheme.text.secondary,
+        }.entries) {
+          final ratio = contrastRatio(entry.value, surface);
+          // ignore: avoid_print
+          print(
+            '  $name ${entry.key} = ${_hex(entry.value)} '
+            'on ${_hex(surface)} 对比度 = ${ratio.toStringAsFixed(2)}',
+          );
+          expect(
+            ratio,
+            greaterThanOrEqualTo(4.5),
+            reason: '$name 的 ${entry.key}（${_hex(entry.value)}）在卡片底色 '
+                '${_hex(surface)} 上只有 ${ratio.toStringAsFixed(2)}:1',
+          );
+        }
+      });
+    });
+  });
 }

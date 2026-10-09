@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
+import '../../../core/cache/audio_cache_layout.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import 'reader_provider.dart';
 import '../utils/audio_download_resume.dart';
@@ -881,12 +882,18 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _prefetchAudio(audioUrl, authHeaders, cacheFile);
   }
 
+  /// 缓存文件路径。
+  ///
+  /// 命名（`audiobook_<bookId>_v<version>.audio`）由
+  /// [audioCacheFileName] 统一决定，与回收逻辑（`AudioCacheService`）共用
+  /// 同一份规则 —— 名字里的版本是 `?v=`（音频文件 mtime），服务端换了音频
+  /// 就换名字，旧版本由回收逻辑负责清掉。
   Future<File> _audioCacheFile(String audioUrl) async {
     final cacheDir = await getApplicationCacheDirectory();
-    final audioDir = Directory('${cacheDir.path}/audiobooks');
+    final audioDir = Directory('${cacheDir.path}/$kAudioCacheDirName');
     await audioDir.create(recursive: true);
     return File(
-      '${audioDir.path}/audiobook_${_bookId}_${audioUrl.hashCode.abs()}.audio',
+      '${audioDir.path}/${audioCacheFileName(bookId: _bookId, audioUrl: audioUrl)}',
     );
   }
 
