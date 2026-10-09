@@ -739,16 +739,20 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// 两条都拿不到就返回 null：播放器会用设置里的回退语言码，**并在播放条上
   /// 把这件事说出来**，而不是悄悄发一串注定 422 的请求。
   String? _languageNameFor(int? langId) {
-    final resolved = ref.read(currentBookProvider).languageName?.trim();
+    final currentBook = ref.read(currentBookProvider);
+    final resolved = currentBook.languageName?.trim();
     if (resolved != null && resolved.isNotEmpty) return resolved;
-    if (langId == null) return null;
+    // 本页没带 langId（例如整页都是图片）时用当前书的 langId 兜底：否则
+    // 连书架这条路都走不到，语言白白退回设置里的兜底码。
+    final effectiveLangId = langId ?? currentBook.langId;
+    if (effectiveLangId == null) return null;
     try {
       final booksState = ref.read(booksProvider);
       for (final b in [
         ...booksState.activeBooks,
         ...booksState.archivedBooks,
       ]) {
-        if (b.langId == langId && b.language.trim().isNotEmpty) {
+        if (b.langId == effectiveLangId && b.language.trim().isNotEmpty) {
           return b.language.trim();
         }
       }

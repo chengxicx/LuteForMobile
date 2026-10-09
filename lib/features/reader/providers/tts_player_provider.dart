@@ -70,6 +70,10 @@ class TTSPlayerState {
     final action = fallbackNotice;
     if (action != null) return action;
     if (languageResolved || languageNoticeDismissed) return null;
+    // 还没开口就不提示。语言是异步解析出来的（书架到货、`getLanguageById`
+    // 返回），页面刚打开那一刻多半还没解析出来 —— 此时报「未解析」只是
+    // 噪声：用户还没点播放，也就无所谓「按回退语言朗读」。
+    if (status == TTSPlayerStatus.idle) return null;
     return '书的语言未解析，朗读按回退语言 ${languageTag ?? defaultTtsLanguageTag}';
   }
 
@@ -313,6 +317,26 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       _engineErrorSubscription?.cancel();
       _onDeviceFallback?.dispose();
       _onDeviceFallback = null;
+    });
+    // 书的语言晚到就补一次诊断（自愈）。
+    //
+    // 语言名是异步解析出来的：页面加载那一刻书架可能还没到货，`loadPage`
+    // 只能在「未解析」下建 state，而它以前要等到下一句开口才重算 —— 于是
+    // 「打开书 → 还没点播放」这段时间里，播放条一直挂着「书的语言未解析」，
+    // 与实际不符（真机上 nginx 收的已经是 /tts/ja-JP）。语言一解析出来就跟上；
+    // 正在朗读时，下一句开口前 [_applyLanguage] 会把新语言推给服务。
+    ref.listen(currentBookProvider, (_, next) {
+      final name = next.languageName?.trim();
+      if (name == null || name.isEmpty) return;
+      final language = _resolveDisplayLanguage();
+      if (language.resolved == state.languageResolved &&
+          language.tag == state.languageTag) {
+        return;
+      }
+      state = state.copyWith(
+        languageTag: language.tag,
+        languageResolved: language.resolved,
+      );
     });
     return const TTSPlayerState();
   }
@@ -709,7 +733,30 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       // 完成事件始终从本句实际使用的服务的流上收：兜底引擎不在
       // [ttsServiceProvider] 里，光订阅主服务收不到它的完成事件。
       _subscribeToService(service);
-      state = state.copyWith(status: TTSPlayerStatus.loading);
+
+      // Cached bytes belong to one service instance; anything fetched before
+      // a rebuild can carry a different voice or language than the one now
+      // selected, and must not be played.
+      if (_prefetchedOwner != null && _prefetchedOwner != service) {
+        _clearPrefetch();
+      }
+      _prefetchedOwner = service;
+
+      // Prefetched audio is looked up, not consumed: Loop replays this very
+      // sentence, and taking its bytes away would send the second pass back
+      // through the network. Entries behind the playhead are dropped when the
+      // next one is fetched.
+      //
+      // 预取命中就不亮 loading：音频已经在手机上，交给播放器是平台调用，
+      // 没有任何网络等待。原来这里在 speak 之前**无条件**设 loading，于是
+      // 每切一句按钮都会先转一圈再变回来 —— 预取省掉的等待是真的，省掉的
+      // 那段 loading 却是假的，看起来就像预取没生效。真正要等（本地兜底
+      // 引擎装配、没有预取字节要去网络取）才把它亮出来。
+      final prefetched = _prefetched[state.currentIndex];
+      if (prefetched == null) {
+        state = state.copyWith(status: TTSPlayerStatus.loading);
+      }
+
       await _applyPlaybackRate(service);
       if (epoch != _transitionEpoch) return;
       // 语言每句开口前推一次：服务是旧实例、或语言解析晚到，都能在这一刻
@@ -719,17 +766,14 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
 
       final usingFallback = !identical(service, ref.read(ttsServiceProvider));
       if (usingFallback) {
+        // 兜底引擎要重新装配（setSettings/setLanguage 会真的去切系统语音），
+        // 这一段有等待，如实亮 loading。
+        if (state.status != TTSPlayerStatus.loading) {
+          state = state.copyWith(status: TTSPlayerStatus.loading);
+        }
         await _prepareFallbackService();
         if (epoch != _transitionEpoch) return;
       }
-
-      // Cached bytes belong to one service instance; anything fetched before
-      // a rebuild can carry a different voice or language than the one now
-      // selected, and must not be played.
-      if (_prefetchedOwner != null && _prefetchedOwner != service) {
-        _clearPrefetch();
-      }
-      _prefetchedOwner = service;
 
       // 先等上一次 stop 落地再开口。引擎不保证 stop 先于紧随的 speak/play
       // 处理完，新语句可能被在途的 stop 冲掉 —— 进度心跳照走，声音却不再来。
@@ -743,11 +787,6 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         if (epoch != _transitionEpoch) return;
       }
 
-      // Prefetched audio is looked up, not consumed: Loop replays this very
-      // sentence, and taking its bytes away would send the second pass back
-      // through the network. Entries behind the playhead are dropped when the
-      // next one is fetched.
-      final prefetched = _prefetched[state.currentIndex];
       _speakStartedAt = DateTime.now();
       if (prefetched != null) {
         await service.speakBytes(prefetched);
@@ -842,25 +881,31 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// 只在标签变化时才推：`EdgeTTSService.setLanguage` 本身是本地字段赋值，
   /// 但没必要每句都改一次状态。
   Future<void> _applyLanguage(TTSService service) async {
-    if (service is! EdgeTTSService) return;
-    final notifier = ref.read(ttsServiceProvider.notifier);
     final language = _resolveDisplayLanguage();
     final tag = language.tag ?? defaultTtsLanguageTag;
-    if (_languageAppliedTo == service &&
-        _appliedLanguageTag == tag &&
-        state.languageTag == tag &&
-        state.languageResolved == language.resolved) {
-      return;
+
+    // 诊断字段（播放条上的语言提示）与服务无关，先更新。本地兜底引擎不接
+    // 受语言推送，但它念得对不对同样取决于这本书的语言有没有解析出来 ——
+    // 以前这里一开头就 `return`，于是切到 On Device 朗读时，播放条永远停在
+    // `loadPage` 那一刻的「未解析」，与实际不符。
+    if (state.languageTag != tag ||
+        state.languageResolved != language.resolved) {
+      state = state.copyWith(
+        languageTag: tag,
+        languageResolved: language.resolved,
+      );
     }
-    await notifier.syncEdgeLanguage(bookLanguageName: _bookLanguageName);
+
+    // 只有 Edge TTS 需要把语言推给服务：其余 provider 的语言由各自的
+    // setSettings 决定，在这里插一手会改变它们既有行为（on-device 的
+    // setLanguage 会真的去切系统语音，那条走 prepareOnDeviceFallback）。
+    if (service is! EdgeTTSService) return;
+    if (_languageAppliedTo == service && _appliedLanguageTag == tag) return;
+    await ref
+        .read(ttsServiceProvider.notifier)
+        .syncEdgeLanguage(bookLanguageName: _bookLanguageName);
     _languageAppliedTo = service;
     _appliedLanguageTag = tag;
-    // languageResolved 也在这里更新：解析是异步的，loadPage 时算出来的
-    // 「未解析」多半会在这一句开口前变成已解析，播放条上的提示跟着它走。
-    state = state.copyWith(
-      languageTag: tag,
-      languageResolved: language.resolved,
-    );
   }
 
   /// 记一次「服务端说这句念不出来」，返回**连续不同句**被拒的次数。
@@ -1030,7 +1075,11 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   Future<void> _replayCurrentForLoop() async {
     state = state.copyWith(
       positionInSnippet: Duration.zero,
-      status: TTSPlayerStatus.loading,
+      // 循环重播用的就是本句已经预取好的字节，同样不亮 loading
+      //（理由见 [_speakCurrent]）。
+      status: _prefetched.containsKey(state.currentIndex)
+          ? state.status
+          : TTSPlayerStatus.loading,
       clearError: true,
     );
     await _speakCurrent();
@@ -1073,7 +1122,12 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       state = state.copyWith(
         currentIndex: nextIndex,
         positionInSnippet: Duration.zero,
-        status: TTSPlayerStatus.loading,
+        // 下一句已经预取好了就不亮 loading —— 音频在本机，切句是无缝的。
+        // 这里原来无条件设 loading，于是预取命中的句子也会先转一下圈；
+        // 真正需要等的时候由 [_speakCurrent] 自己把 loading 亮出来。
+        status: _prefetched.containsKey(nextIndex)
+            ? state.status
+            : TTSPlayerStatus.loading,
       );
       unawaited(_speakCurrent());
     } else {

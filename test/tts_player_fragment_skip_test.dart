@@ -436,9 +436,19 @@ void main() {
     expect(state.languageTag, 'en');
     expect(
       state.notice,
+      isNull,
+      reason: '还没开口就不打扰：语言是异步解析的，打开书那一刻多半还没解析出来',
+    );
+
+    // 真正开口朗读时才把这件事说出来。
+    unawaited(notifier.play());
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(
+      container.read(ttsPlayerProvider).notice,
       isNotNull,
       reason: '回退语言码必须显示出来，否则线上只能靠服务端日志反推',
     );
+    await notifier.stop();
   });
 
   test('单发的 422 先原句重试一次，读回来了就不算碎片', () async {
