@@ -1,0 +1,4 @@
+# Vendored fork of audioplayers (see ../../pubspec.yaml dependency_overrides).
+# Upstream includes `package:flame_lint/analysis_options.yaml`, which is not a
+# dependency of this app; emptying the config avoids an unresolvable include and
+# keeps vendored code out of the app's lint profile.

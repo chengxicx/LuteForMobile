@@ -119,10 +119,15 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   /// 最近一次 loadAudio 的音源地址,供 play() 的重新装载兜底复用。
   String? _lastAudioUrl;
 
-  /// 最近一次 loadAudio 落到本地的缓存音频文件;音源直接走 URL(无鉴权头
-  /// 的老服务器)时为 null。影子跟读的原句裁剪播放从它取片段,免去另一套
-  /// 下载逻辑 —— 有声书的缓存本来就是离线播放的根基,复用同一份文件。
+  /// 最近一次 loadAudio 对应的本地缓存音频文件。起播不再等它 —— 缓存完整时
+  /// 直接播它（离线可播、秒开），否则带鉴权头流式起播、后台再补进缓存；补完
+  /// 之前为 null。影子跟读的原句裁剪播放从它取片段，免去另一套下载逻辑 ——
+  /// 有声书的缓存本来就是离线播放的根基，复用同一份文件。
   File? lastLocalAudioFile;
+
+  /// 已在下载/已下载过的 `${bookId}|$url`，避免同一次会话反复预取同一份音频
+  /// （并发写同一个 `.part` 文件会互相破坏）。
+  final Set<String> _prefetchingAudio = {};
 
   /// 切后台前播放到的位置，等回到前台时用来复位播放条。
   ///
@@ -402,15 +407,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       _bookmarksAuthoritative = bookmarks != null;
 
       await _audioPlayer!.stop();
-      final authHeaders = SessionManager.authHeaders();
-      if (authHeaders.isEmpty) {
-        lastLocalAudioFile = null;
-        await _audioPlayer!.setSourceUrl(audioUrl);
-      } else {
-        final audioFile = await _ensureLocalAudioFile(audioUrl, authHeaders);
-        lastLocalAudioFile = audioFile;
-        await _audioPlayer!.setSourceDeviceFile(audioFile.path);
-      }
+      await _setAudioSource(audioUrl, SessionManager.authHeaders());
 
       if (audioCurrentPos != null && audioCurrentPos > Duration.zero) {
         // 先把目标位置落进 state，再 seek。
@@ -510,13 +507,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     debugPrint('AudioPlayer: resume 无效,重新装载音源再起播 target=$target');
     try {
       await _audioPlayer!.stop();
-      final authHeaders = SessionManager.authHeaders();
-      if (authHeaders.isEmpty) {
-        await _audioPlayer!.setSourceUrl(url);
-      } else {
-        final audioFile = await _ensureLocalAudioFile(url, authHeaders);
-        await _audioPlayer!.setSourceDeviceFile(audioFile.path);
-      }
+      await _setAudioSource(url, SessionManager.authHeaders());
       // 位置为 0 时也 seek 一次,借道 seek() 的 stopped→resume 补救路径。
       await _audioPlayer!.seek(target);
       if (state.playerState != PlayerState.playing) {
@@ -724,46 +715,88 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _needsSeekBeforePlay = true;
   }
 
-  /// Returns a local copy of [audioUrl], downloading it (streaming to disk)
-  /// when the cached copy is missing or stale.
+  /// 装配音源，**不等整份下载**。
   ///
-  /// 缓存就是离线播放的根基：在线读过一遍的书，音频文件留在缓存目录里，
-  /// 之后离线也能整本听。探测大小这一步在离线时必然失败 —— 失败不能当成
-  /// 「缓存无效」，得当成「网络不可用」，信手上的文件；只有真没有缓存时
-  /// 才去下载（离线时那一下注定失败，报错与从前一致）。
-  Future<File> _ensureLocalAudioFile(
+  /// 缓存完整时直接播本地文件（离线可播、秒开）；否则带鉴权头流式起播 ——
+  /// 远端音源只有在本地 fork 过的 audioplayers 上才能带请求头（见
+  /// third_party/audioplayers），一个不带头的请求会被多用户服务器 302 到
+  /// /login。起播的同时把文件补进缓存目录：缓存是离线播放的根基，影子跟读
+  /// 的原句裁剪也从它取片段。
+  Future<void> _setAudioSource(
     String audioUrl,
     Map<String, String> authHeaders,
   ) async {
+    final cacheFile = await _audioCacheFile(audioUrl);
+    if (await _isCacheComplete(cacheFile, audioUrl, authHeaders)) {
+      lastLocalAudioFile = cacheFile;
+      await _audioPlayer!.setSourceDeviceFile(cacheFile.path);
+      return;
+    }
+
+    // 手上那份旧的完整文件也先交给影子跟读用，预取会把它更新成新版本。
+    final hasStaleCopy = await cacheFile.exists();
+    lastLocalAudioFile = hasStaleCopy ? cacheFile : null;
+    await _audioPlayer!.setSourceUrl(
+      audioUrl,
+      headers: authHeaders.isEmpty ? null : authHeaders,
+    );
+    _prefetchAudio(audioUrl, authHeaders, cacheFile);
+  }
+
+  Future<File> _audioCacheFile(String audioUrl) async {
     final cacheDir = await getApplicationCacheDirectory();
     final audioDir = Directory('${cacheDir.path}/audiobooks');
     await audioDir.create(recursive: true);
-    final cacheFile = File(
+    return File(
       '${audioDir.path}/audiobook_${_bookId}_${audioUrl.hashCode.abs()}.audio',
     );
+  }
 
+  /// 缓存文件是否与远端一致、可以直接播放。
+  ///
+  /// 探测大小这一步在离线时必然失败 —— 失败不能当成「缓存无效」，得当成
+  /// 「网络不可用」，信手上的文件。
+  Future<bool> _isCacheComplete(
+    File cacheFile,
+    String audioUrl,
+    Map<String, String> authHeaders,
+  ) async {
+    if (!await cacheFile.exists()) return false;
     // 离线（服务器已判不可达）就别再发 Range 探测了：它只会白等一个
     // connectTimeout 再失败，让离线开书平白多挂十几秒。
-    final remoteSize = ServerStatusManager.isReachable
-        ? await _probeAudioSize(audioUrl, authHeaders)
-        : null;
-    if (remoteSize != null) {
-      final localSize = await cacheFile.exists()
-          ? await cacheFile.length()
-          : -1;
-      if (localSize == remoteSize) {
-        return cacheFile;
-      }
-      await _downloadAudioToFile(audioUrl, authHeaders, cacheFile);
-      return cacheFile;
+    if (!ServerStatusManager.isReachable) {
+      debugPrint('AudioPlayer: probe skipped/unreachable, using cached copy');
+      return true;
     }
+    final remoteSize = await _probeAudioSize(audioUrl, authHeaders);
+    if (remoteSize == null) {
+      debugPrint('AudioPlayer: probe failed, using cached copy');
+      return true;
+    }
+    return await cacheFile.length() == remoteSize;
+  }
 
-    if (await cacheFile.exists()) {
-      debugPrint('AudioPlayer: probe failed/unreachable, using cached copy');
-      return cacheFile;
-    }
-    await _downloadAudioToFile(audioUrl, authHeaders, cacheFile);
-    return cacheFile;
+  /// 后台把音频补进缓存目录，补完再交给影子跟读做原句裁剪。
+  /// 失败静默：在线流式播放不受影响，下次进入这本书还会再试。
+  void _prefetchAudio(
+    String audioUrl,
+    Map<String, String> authHeaders,
+    File target,
+  ) {
+    final key = '$_bookId|$audioUrl';
+    if (!_prefetchingAudio.add(key)) return;
+    unawaited(() async {
+      try {
+        await _downloadAudioToFile(audioUrl, authHeaders, target);
+        if (key == '$_bookId|$_lastAudioUrl') {
+          lastLocalAudioFile = target;
+        }
+      } catch (e) {
+        debugPrint('AudioPlayer: 后台预取音频失败（不影响在线播放）: $e');
+      } finally {
+        _prefetchingAudio.remove(key);
+      }
+    }());
   }
 
   Future<int?> _probeAudioSize(

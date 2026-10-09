@@ -90,6 +90,19 @@ dependencies:
 # implementation and needs no NDK.
 dependency_overrides:
   path_provider_android: 2.2.17
+  # Local fork of audioplayers (see third_party/).  Upstream cannot send HTTP
+  # request headers for a remote source, so on a login-protected server an MP3
+  # had to be downloaded in full before playback could start.  The fork threads
+  # an optional `headers` map to Android's MediaPlayer.setDataSource(context,
+  # uri, headers), letting the auth cookie ride along so playback streams.
+  audioplayers:
+    path: third_party/audioplayers
+  audioplayers_platform_interface:
+    path: third_party/audioplayers_platform_interface
+  audioplayers_android:
+    path: third_party/audioplayers_android
+  audioplayers_web:
+    path: third_party/audioplayers_web
 
 dev_dependencies:
   flutter_test:
