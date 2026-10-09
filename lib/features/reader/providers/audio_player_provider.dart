@@ -9,6 +9,8 @@ import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import 'reader_provider.dart';
+import '../utils/audio_download_resume.dart';
+import '../utils/pending_seek.dart';
 import '../utils/player_save_policy.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 
@@ -129,6 +131,11 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   /// （并发写同一个 `.part` 文件会互相破坏）。
   final Set<String> _prefetchingAudio = {};
 
+  /// 正在跑的那条预取（同一时刻只留一条）与它的去重键。换书/换页时要把上
+  /// 一条掐掉：旧书的 64MB 还在后台下，新书的又要开始，两条一起抢带宽。
+  CancelToken? _prefetchCancel;
+  String? _prefetchKey;
+
   /// 切后台前播放到的位置，等回到前台时用来复位播放条。
   ///
   /// 切后台会停播（`shouldStopAudioOnLifecycleChange` 只认 `paused`），而
@@ -154,6 +161,19 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   /// 后者上报，就是全库书签被清空的原因（Leaf5C 实测：重开一次书，
   /// `BkAudioBookmarks` 从 `86.989` 变成 NULL）。
   bool _bookmarksAuthoritative = false;
+
+  /// 已发出、播放器还没报出结果的 seek：目标位置 + 出发位置 + 发出时刻。
+  /// 见 [_seekStillPending] —— 跨段判定要等它真正落地，而不是等一个固定时长。
+  Duration? _pendingSeekTarget;
+  Duration? _pendingSeekOrigin;
+  DateTime? _pendingSeekAt;
+
+  /// 正在下发给播放器的那条 seek（见 [_seekPlayer]）。同一时刻只允许一条，
+  /// 新的排在它后面 —— 两条同时在飞时先发的可能后生效，把后发的吞掉。
+  Future<void>? _seekChain;
+
+  /// 排队时最多等上一条 seek 多久。
+  static const Duration _seekChainWait = Duration(seconds: 3);
 
   /// 最近一次句尾（循环/自动暂停）处理时刻。seek 回段首时在途的旧位置
   /// 事件还会到达，600ms 内不做第二次跨越判定，避免同一边界连环触发。
@@ -259,6 +279,16 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       return;
     }
 
+    // 刚发出的 seek 还没落地之前，位置事件全是旧位置的迟到回声：既不能拿
+    // 它们做跨段判定，也不能拿它们写 state.position —— 显示会被推回旧句，
+    // 而"上一次位置"一旦被推回旧句，下一个事件看起来就跨过了边界，循环模式
+    // 据此把播放头拽回旧句（用户看到的就是"按一下下一句没切过去"）。
+    // 远程音源的 seekTo 要重新拉一段 Range 才生效，耗时秒级且不确定，
+    // 所以这里等的是"位置真的到达目标"，不是"过了 N 毫秒"。
+    if (_seekStillPending(position)) {
+      return;
+    }
+
     // A-B 复读优先于句段循环/自动暂停：用户圈了 A↔B 就听这一段，
     // 播放头到 B 回 A，句段边界在 AB 范围内不参与。
     if (state.abPhase == AbLoopPhase.looping &&
@@ -266,7 +296,8 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
         position >= state.abEnd!) {
       final target = state.abStart ?? Duration.zero;
       debugPrint('AudioPlayer: AB loop reached B($position), back to A($target)');
-      unawaited(_audioPlayer?.seek(target));
+      _markSeekIssued(target);
+      unawaited(_seekPlayer(target));
       state = state.copyWith(position: target);
       return;
     }
@@ -329,11 +360,12 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
           'loop=${state.loopMode}, autoPause=${state.autoPauseMode}',
         );
         _boundaryHandledAt = DateTime.now();
+        _markSeekIssued(segStart);
         if (state.loopMode) {
-          unawaited(_audioPlayer?.seek(segStart));
+          unawaited(_seekPlayer(segStart));
           finalPosition = segStart;
         } else if (state.autoPauseMode) {
-          unawaited(_audioPlayer?.seek(segStart));
+          unawaited(_seekPlayer(segStart));
           unawaited(_audioPlayer?.pause());
           finalPosition = segStart;
         }
@@ -341,6 +373,58 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     }
 
     state = state.copyWith(position: finalPosition);
+  }
+
+  /// 记下"刚发出一个 seek，目标是 [target]"，在播放器真的报出目标位置之前
+  /// 位置事件不参与判定（见 [_seekStillPending]）。出发位置取当前 state，
+  /// 调用方必须**先**调它、**再**把 state.position 改成目标。
+  void _markSeekIssued(Duration target) {
+    _pendingSeekTarget = target;
+    _pendingSeekOrigin = state.position;
+    _pendingSeekAt = DateTime.now();
+  }
+
+  void _clearPendingSeek() {
+    _pendingSeekTarget = null;
+    _pendingSeekOrigin = null;
+    _pendingSeekAt = null;
+  }
+
+  /// 这次 seek 是不是还没落地。
+  ///
+  /// 原来这里是"发出后 600ms 内不判定"，在本地文件上够用，在**远程音源**上
+  /// 不够：seekTo 要重新拉一段 Range 才生效，秒级且不确定，窗口一过，在途的
+  /// 旧位置事件就会被当成真实前进 —— 循环/自动暂停据此把播放头拽回旧句，
+  /// 用户按"下一句"看着就像没跳过去（切句、循环、自动暂停共用这条路径）。
+  ///
+  /// 所以改成"等到播放器报出的位置真的到达目标"（判定本身在
+  /// `utils/pending_seek.dart` 里，纯函数、有单测）：
+  ///  * 到达（含容差）→ 清除，并顺手补一次 600ms 回声屏蔽（落地后仍可能有
+  ///    旧位置的迟到事件）；
+  ///  * 播放器始终没报（seek 失败 / 音源被换掉）→ 超时后放弃等待，
+  ///    别把播放条永久冻在目标位置上。
+  bool _seekStillPending(Duration position) {
+    final target = _pendingSeekTarget;
+    final origin = _pendingSeekOrigin;
+    if (target == null || origin == null) return false;
+    final verdict = evaluatePendingSeek(
+      position: position,
+      target: target,
+      origin: origin,
+      elapsed: DateTime.now().difference(_pendingSeekAt!),
+    );
+    switch (verdict) {
+      case PendingSeekVerdict.pending:
+        return true;
+      case PendingSeekVerdict.expired:
+        debugPrint('AudioPlayer: seek 到 $target 迟迟没落地，放弃等待');
+        _clearPendingSeek();
+        return false;
+      case PendingSeekVerdict.proceed:
+        _clearPendingSeek();
+        _boundaryHandledAt = DateTime.now();
+        return false;
+    }
   }
 
   Future<void> toggleLoopMode() async {
@@ -526,21 +610,60 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     await _savePosition();
   }
 
-  Future<void> seek(Duration position) async {
-    // 显式 seek（切句/拖进度条）后 600ms 内不做句段跨越判定：seek 的回声
-    // 事件会先落回旧位置，循环模式下会被跨越检测误判成"越过句尾"，
-    // 把播放头拽回旧句重播 —— 用户看到的就是"按一下下一句没切过去"。
-    // 见 _handlePositionChanged 的跨越检测与 _boundaryHandledAt。
-    _boundaryHandledAt = DateTime.now();
-    await _audioPlayer!.seek(position);
-    // 同上：暂停态的 seek 不保证推位置事件，而下面立刻就要 `_savePosition()`。
+  /// 跳到 [position]。
+  ///
+  /// [autoplay] 为 true 时，播放器当前哪怕是 paused 也要起播 —— 逐句精听
+  /// （自动暂停开着）里按"上一句/下一句"必须让目标句立刻开口，这是网页播放
+  /// 器的行为（media-player-base.js 的 `ytSeekToCue(target, autoplay)`，
+  /// youtube-player.js 传 `jumpCueAutoplay: "autopause"`）。app 侧原来只认
+  /// `stopped`，而自动暂停停在句首时播放器是 `paused`，于是按了只挪播放头、
+  /// 不出声 —— 用户看到的就是"前后不能跳句子"（2026-10-10 手机实测复现）。
+  Future<void> seek(Duration position, {bool autoplay = false}) async {
+    // 目标位置先落进 state，再动播放器：远程音源的 seekTo 要重新拉一段
+    // Range 才生效，期间位置事件还是旧值，不先写就是"按了没反应"。
+    // 顺序要紧 —— _markSeekIssued 拿当前 state.position 当"出发位置"，
+    // 必须排在写 state 之前。
+    _markSeekIssued(position);
+    state = state.copyWith(position: position);
+    await _seekPlayer(position);
+    // 暂停态的 seek 不保证推位置事件，而下面立刻就要 `_savePosition()`。
     // 不显式写 state 的话，拖到开头会保存旧位置、拖到别处会保存 0。
+    // （上面已写一次，这里补一次是给 await 期间到达的迟到事件兜底。）
     state = state.copyWith(position: position);
     if (state.playerState == PlayerState.stopped) {
-      await Future.delayed(Duration(milliseconds: 50));
+      await Future.delayed(const Duration(milliseconds: 50));
+      await _audioPlayer!.resume();
+    } else if (autoplay && state.playerState != PlayerState.playing) {
       await _audioPlayer!.resume();
     }
     await _savePosition();
+  }
+
+  /// 把一次 seek 指令下发到播放器，**串在 [_seekChain] 后面**。
+  ///
+  /// 为什么要排队：远程音源上两个 seek 同时在飞时，先发的那个可能**后**生效，
+  /// 把后发的吞掉。2026-10-10 手机实测：循环模式播到句尾、自动回句首的那次
+  /// seek 还在飞时按"下一句"，播放头最后停在句首 —— 用户按了等于没按
+  /// （[seek] 已经把目标写进 state，[PendingSeekVerdict] 也会等到它落地，
+  /// 但播放器根本没往那儿走）。
+  ///
+  /// 等待有上限（[_seekChainWait]）：播放器偶尔不回报 seek 完成，不能因此
+  /// 把后面所有的跳句永久堵死。
+  Future<void> _seekPlayer(Duration target) async {
+    final previous = _seekChain;
+    final gate = Completer<void>();
+    _seekChain = gate.future;
+    if (previous != null) {
+      await previous.timeout(_seekChainWait, onTimeout: () {});
+    }
+    try {
+      await _audioPlayer!.seek(target);
+    } catch (e) {
+      // 单个 seek 失败不该冒泡成未捕获异常（调用方多是 unawaited）。
+      debugPrint('AudioPlayer: seek $target 失败: $e');
+    } finally {
+      if (!gate.isCompleted) gate.complete();
+    }
   }
 
   Future<void> setPlaybackSpeed(double speed) async {
@@ -597,7 +720,8 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
         }
         state = state.copyWith(abPhase: AbLoopPhase.looping, abEnd: end);
         // 立即回 A 开始复读这一段。
-        unawaited(_audioPlayer?.seek(start));
+        _markSeekIssued(start);
+        unawaited(_seekPlayer(start));
         state = state.copyWith(position: start);
       case AbLoopPhase.looping:
         state = state.copyWith(
@@ -622,7 +746,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
     if (previousBoundaries.isNotEmpty) {
       final nearest = previousBoundaries.reduce((a, b) => a > b ? a : b);
-      seek(nearest);
+      _jumpToSegment(nearest);
     }
   }
 
@@ -636,8 +760,15 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
     if (nextBoundaries.isNotEmpty) {
       final nearest = nextBoundaries.reduce((a, b) => a < b ? a : b);
-      seek(nearest);
+      _jumpToSegment(nearest);
     }
+  }
+
+  /// 跳句（上一句/下一句、实体键切句）后的播放状态与网页播放器对齐：
+  /// 自动暂停开着就起播目标句（`jumpCueAutoplay: "autopause"` —— 逐句精听
+  /// 时跳过去不发声等于没跳），关着就保持原状（暂停仍是暂停，方便先翻着看）。
+  void _jumpToSegment(Duration target) {
+    unawaited(seek(target, autoplay: state.autoPauseMode));
   }
 
   bool isAtBookmark() {
@@ -666,6 +797,13 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _needsSeekBeforePlay = false;
     _bookmarksAuthoritative = false;
     _boundaryHandledAt = null;
+    _clearPendingSeek();
+    // 上一页的 seek 队列不再有意义：留着只会让新页面的第一次 seek 白等
+    // 几秒（见 _seekPlayer 的排队）。
+    _seekChain = null;
+    // 换书/换页/离开阅读页时把在跑的预取掐掉：半截文件留在 `.part` 里，
+    // 下次进来（或下一次 loadAudio）从那里续传，不用白下已下过的部分。
+    _cancelPrefetch();
     lastLoadSignature = null;
     _lastAudioUrl = null;
     lastLocalAudioFile = null;
@@ -777,7 +915,11 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   }
 
   /// 后台把音频补进缓存目录，补完再交给影子跟读做原句裁剪。
-  /// 失败静默：在线流式播放不受影响，下次进入这本书还会再试。
+  ///
+  /// 中断不再等于白下：[_downloadAudioToFile] 会从 `.part` 已有的字节续传，
+  /// 这里再补几次重试，让**一次** loadAudio 就把文件补完，而不是干等下一次
+  /// 进这本书（2026-10-10 diag.log：64MB 下到 52MB 被掐，下一次 loadAudio
+  /// 又从 0 下了一遍，白扔 50 多 MB）。失败静默：在线流式播放不受影响。
   void _prefetchAudio(
     String audioUrl,
     Map<String, String> authHeaders,
@@ -785,18 +927,66 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   ) {
     final key = '$_bookId|$audioUrl';
     if (!_prefetchingAudio.add(key)) return;
+    // 同一时刻只跑一条：换书/换页时把上一条掐掉，别让旧书的几十 MB
+    // 还在后台跟新书的抢带宽。
+    _cancelPrefetch();
+    final token = CancelToken();
+    _prefetchCancel = token;
+    _prefetchKey = key;
     unawaited(() async {
       try {
-        await _downloadAudioToFile(audioUrl, authHeaders, target);
-        if (key == '$_bookId|$_lastAudioUrl') {
-          lastLocalAudioFile = target;
+        for (var attempt = 1; ; attempt++) {
+          try {
+            await _downloadAudioToFile(
+              audioUrl,
+              authHeaders,
+              target,
+              cancelToken: token,
+            );
+            if (key == '$_bookId|$_lastAudioUrl') {
+              lastLocalAudioFile = target;
+            }
+            return;
+          } catch (e) {
+            // 被主动掐掉（换书/换页）不是失败，别重试也别刷日志。
+            if (token.isCancelled) return;
+            if (attempt >= _prefetchMaxAttempts) rethrow;
+            debugPrint(
+              'AudioPlayer: 预取中断（第 $attempt 次），'
+              '${_prefetchRetryDelay.inSeconds}s 后从已下字节续传: $e',
+            );
+            await Future<void>.delayed(_prefetchRetryDelay);
+            if (token.isCancelled) return;
+          }
         }
       } catch (e) {
         debugPrint('AudioPlayer: 后台预取音频失败（不影响在线播放）: $e');
       } finally {
-        _prefetchingAudio.remove(key);
+        // 只有这条还是"当前那条"时才清键：被掐掉的那条收尾时，新的那条
+        // 可能已经占用了同一个键，清掉它等于让去重失效。
+        if (identical(_prefetchCancel, token)) {
+          _prefetchingAudio.remove(key);
+          _prefetchCancel = null;
+          _prefetchKey = null;
+        }
       }
     }());
+  }
+
+  /// 预取的最大尝试次数与两次尝试之间的间隔（从已下字节续传，代价很小）。
+  static const int _prefetchMaxAttempts = 3;
+  static const Duration _prefetchRetryDelay = Duration(seconds: 3);
+
+  /// 掐掉在跑的预取（换书、换页、离开阅读页）。
+  void _cancelPrefetch() {
+    final token = _prefetchCancel;
+    final key = _prefetchKey;
+    _prefetchCancel = null;
+    _prefetchKey = null;
+    // 同步摘掉去重键：紧接着的同名预取不能被上一次的 finally 抢跑，否则新的
+    // 那份会被当成"已经在下了"直接跳过，缓存就永远补不上了。
+    if (key != null) _prefetchingAudio.remove(key);
+    token?.cancel();
   }
 
   Future<int?> _probeAudioSize(
@@ -827,21 +1017,37 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     }
   }
 
+  /// 把音频下到 [target]，**断点续传**。
+  ///
+  /// 服务端的 `/useraudio/stream/<id>` 支持 Range（`_send_audio_range_aware`），
+  /// 所以中断后从 `${target.path}.part` 已有的字节接着下，而不是删掉重来：
+  /// 2026-10-10 的 diag.log 里一本 64MB 的有声书下到 `bs=52826112` 被掐，
+  /// 下一次 loadAudio 又从 0 下了一遍（`bs=64231987`），白扔 50 多 MB。
+  ///
+  /// 续传只在服务端**确实按我们的起点回了 206** 时才追加（判定见
+  /// [resumeWriteOffset]）；回 200（不支持 Range、或 `?v=` 换了文件）就从头
+  /// 重写 —— 否则会把整份内容接在半截文件后面，得到一个长度对、内容坏的缓存。
   Future<void> _downloadAudioToFile(
     String url,
     Map<String, String> authHeaders,
     File target, {
     bool retriedAfterLogin = false,
+    CancelToken? cancelToken,
   }) async {
     final tmp = File('${target.path}.part');
+    final existing = await tmp.exists() ? await tmp.length() : 0;
     IOSink? sink;
     try {
       final response = await _audioDio.get<ResponseBody>(
         url,
         options: Options(
-          headers: authHeaders,
+          headers: {
+            ...authHeaders,
+            if (existing > 0) 'Range': 'bytes=$existing-',
+          },
           responseType: ResponseType.stream,
         ),
+        cancelToken: cancelToken,
       );
       final status = response.statusCode ?? 0;
       if (status >= 300 && status < 400) {
@@ -852,26 +1058,50 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
             SessionManager.authHeaders(),
             target,
             retriedAfterLogin: true,
+            cancelToken: cancelToken,
           );
           return;
         }
         throw const ServerLoginRequiredException();
       }
-      sink = tmp.openWrite();
+      final offset = resumeWriteOffset(
+        existing: existing,
+        status: status,
+        contentRange: response.headers.value('content-range'),
+      );
+      debugPrint(
+        'AudioPlayer: 下载音频 $url status=$status '
+        '已有=$existing 起点=$offset',
+      );
+      sink = tmp.openWrite(mode: offset > 0 ? FileMode.append : FileMode.write);
       await sink.addStream(response.data!.stream);
       await sink.flush();
       await sink.close();
       sink = null;
+      // 下完再对一次长度：续传的起点是"我们手上有什么"，服务端可能已经换了
+      // 文件，长度对不上说明这份是拼出来的，不能留。
+      final total =
+          contentRangeTotal(response.headers.value('content-range')) ??
+          _intHeader(response.headers.value('content-length'));
+      final actual = await tmp.length();
+      if (total != null && actual != total) {
+        await tmp.delete();
+        throw StateError('音频下载长度不符: $actual != $total');
+      }
       await tmp.rename(target.path);
     } catch (_) {
+      // **不删** `.part`：它就是下次续传的起点。半截文件不会被当成缓存用
+      // （`_isCacheComplete` 只认最终文件名，且长度要对上远端）。
+      // 关掉 sink 是为了把已写入的部分刷到磁盘，别让下一次续传从头开始。
       try {
-        sink ??= tmp.openWrite();
-        await sink.close();
+        await sink?.close();
       } catch (_) {}
-      if (await tmp.exists()) await tmp.delete();
       rethrow;
     }
   }
+
+  int? _intHeader(String? value) =>
+      value == null ? null : int.tryParse(value.trim());
 
   Future<void> stop() async {
     _stopSafely();
