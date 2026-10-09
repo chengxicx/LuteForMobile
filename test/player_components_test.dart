@@ -103,6 +103,61 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // MP3 与 TTS 两条播放条的辅助行共用 PlayerAuxRow:同一个功能必须永远在
+  // 同一个槽位,不然切一次播放器就得重新找键(2026-10-10 用户反馈)。
+  // ---------------------------------------------------------------------------
+
+  test('formatPlayerRate:整数不带小数点,非整数保留必要位数', () {
+    expect(formatPlayerRate(1.0), '1x', reason: 'MP3 原先显示 1.0x，TTS 显示 1x');
+    expect(formatPlayerRate(1.5), '1.5x');
+    expect(formatPlayerRate(0.6), '0.6x');
+    expect(formatPlayerRate(0.75), '0.75x');
+    expect(formatPlayerRate(2.0), '2x');
+  });
+
+  testWidgets('PlayerAuxRow 按固定槽位顺序排列', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        PlayerAuxRow(
+          rate: const Text('RATE'),
+          loop: const Text('LOOP'),
+          autoPause: const Text('AUTO'),
+          ab: const Text('AB'),
+          shadowing: const Text('MIC'),
+          modeSwitch: const Text('SWITCH'),
+        ),
+      ),
+    );
+
+    double x(String label) => tester.getTopLeft(find.text(label)).dx;
+    expect(x('RATE'), lessThan(x('LOOP')));
+    expect(x('LOOP'), lessThan(x('AUTO')));
+    expect(x('AUTO'), lessThan(x('AB')));
+    expect(x('AB'), lessThan(x('MIC')));
+    expect(x('MIC'), lessThan(x('SWITCH')), reason: '切换键固定在最后');
+  });
+
+  testWidgets('PlayerAuxRow 缺的槽位不占位,其余顺序不变', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        PlayerAuxRow(
+          rate: const Text('RATE'),
+          loop: const Text('LOOP'),
+          autoPause: const Text('AUTO'),
+          shadowing: const Text('MIC'),
+          modeSwitch: const Text('SWITCH'),
+        ),
+      ),
+    );
+
+    expect(find.text('AB'), findsNothing, reason: 'TTS 条没有 AB 复读');
+    double x(String label) => tester.getTopLeft(find.text(label)).dx;
+    expect(x('RATE'), lessThan(x('LOOP')));
+    expect(x('AUTO'), lessThan(x('MIC')));
+    expect(x('MIC'), lessThan(x('SWITCH')));
+  });
+
+  // ---------------------------------------------------------------------------
   // 墨水屏（Leaf 5C / Kaleido 3）:播放条"看不清"的回归防线。
   // 见 lib/shared/theme/player_palette.dart 顶部对 5 条成因的说明。
   // ---------------------------------------------------------------------------

@@ -13,7 +13,9 @@ import 'player/player_timeline.dart';
 /// 有声书(MP3)的卡片式播放条。
 ///
 /// 布局:时间行(两端对齐)+ 时间轴 / 主控行(上一句、播放、下一句)/
-/// 辅助行(循环、自动暂停、AB 复读、倍速、影子跟读、TTS 切换)。
+/// 辅助行(倍速、循环、自动暂停、AB 复读、影子跟读、TTS 切换)。
+/// 主控行与辅助行的槽位顺序与 TTS 播放条**完全一致** —— 辅助行由
+/// [PlayerAuxRow] 统一排布,两个播放器里同一个功能永远在同一个位置。
 class AudioPlayerWidget extends ConsumerStatefulWidget {
   final String audioUrl;
   final int bookId;
@@ -160,63 +162,62 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
   ) {
     final notifier = ref.read(audioPlayerProvider.notifier);
 
-    // FittedBox:窄屏(小屏/分屏)上整行等比缩小,不裁切也不换行。
-    return FittedBox(
-      fit: BoxFit.scaleDown,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 循环用 loop 图标，与 AB 键的 repeat 系区分（两个 repeat 并排难分辨）。
-          PlayerIconButton(
-            icon: Icons.loop,
-            active: state.loopMode,
-            tooltip: state.loopMode ? 'Loop sentence on' : 'Loop sentence off',
-            onPressed: notifier.toggleLoopMode,
-          ),
-          PlayerIconButton(
-            icon: state.autoPauseMode
-                ? Icons.pause_circle
-                : Icons.pause_circle_outline,
-            active: state.autoPauseMode,
-            tooltip: state.autoPauseMode
-                ? 'Auto-pause at each sentence: on'
-                : 'Auto-pause at each sentence: off',
-            onPressed: notifier.toggleAutoPauseMode,
-          ),
-          // AB 复读：文字三态，一眼可辨 ——
-          // 熄灭 "AB"(无底) → 标 A "A"(点亮实心圆) → 循环中 "AB"(点亮实心圆)。
-          PlayerIconButton(
-            label: state.abPhase == AbLoopPhase.aMarked ? 'A' : 'AB',
-            active: state.abPhase != AbLoopPhase.off,
-            tooltip: switch (state.abPhase) {
-              AbLoopPhase.off => 'AB repeat: tap to mark A',
-              AbLoopPhase.aMarked => 'AB repeat: A marked, tap to mark B',
-              AbLoopPhase.looping => 'AB repeat on: tap to cancel',
-            },
-            onPressed: notifier.toggleAbLoop,
-          ),
-          PlayerRateStepper(
-            label: '${state.playbackSpeed.toStringAsFixed(1)}x',
-            onDecrease: () => _stepSpeed(-1),
-            onIncrease: () => _stepSpeed(1),
-            onReset: () => notifier.setPlaybackSpeed(1.0),
-          ),
-          if (widget.onShadowing != null)
-            PlayerIconButton(
+    // 槽位顺序由 PlayerAuxRow 固定，与 TTS 播放条完全一致：
+    // 倍速 → 循环 → 自动暂停 → AB → 跟读 → 切换播放器。
+    return PlayerAuxRow(
+      rate: PlayerRateStepper(
+        label: formatPlayerRate(state.playbackSpeed),
+        onDecrease: () => _stepSpeed(-1),
+        onIncrease: () => _stepSpeed(1),
+        onReset: () => notifier.setPlaybackSpeed(1.0),
+      ),
+      // 循环用 loop 图标，与 AB 键的 repeat 系区分（两个 repeat 并排难分辨）；
+      // 图标不随开关变（换图标是 TTS 条原先的做法），开没开由 active 的
+      // 实心圆底表达，两条播放条同一套。
+      loop: PlayerIconButton(
+        icon: Icons.loop,
+        active: state.loopMode,
+        tooltip: state.loopMode ? 'Loop sentence on' : 'Loop sentence off',
+        onPressed: notifier.toggleLoopMode,
+      ),
+      autoPause: PlayerIconButton(
+        icon: state.autoPauseMode
+            ? Icons.pause_circle
+            : Icons.pause_circle_outline,
+        active: state.autoPauseMode,
+        tooltip: state.autoPauseMode
+            ? 'Auto-pause at each sentence: on'
+            : 'Auto-pause at each sentence: off',
+        onPressed: notifier.toggleAutoPauseMode,
+      ),
+      // AB 复读：文字三态，一眼可辨 ——
+      // 熄灭 "AB"(无底) → 标 A "A"(点亮实心圆) → 循环中 "AB"(点亮实心圆)。
+      ab: PlayerIconButton(
+        label: state.abPhase == AbLoopPhase.aMarked ? 'A' : 'AB',
+        active: state.abPhase != AbLoopPhase.off,
+        tooltip: switch (state.abPhase) {
+          AbLoopPhase.off => 'AB repeat: tap to mark A',
+          AbLoopPhase.aMarked => 'AB repeat: A marked, tap to mark B',
+          AbLoopPhase.looping => 'AB repeat on: tap to cancel',
+        },
+        onPressed: notifier.toggleAbLoop,
+      ),
+      shadowing: widget.onShadowing == null
+          ? null
+          : PlayerIconButton(
               icon: Icons.mic,
               tooltip: 'Shadowing: record yourself reading this sentence',
               onPressed: widget.onShadowing,
             ),
-          if (ttsProvider != TTSProvider.none)
-            PlayerIconButton(
+      modeSwitch: ttsProvider == TTSProvider.none
+          ? null
+          : PlayerIconButton(
               icon: Icons.record_voice_over,
               tooltip: 'Switch to TTS read-aloud',
               onPressed: () => ref
                   .read(playerModeProvider.notifier)
                   .setMode(PlayerMode.tts),
             ),
-        ],
-      ),
     );
   }
 

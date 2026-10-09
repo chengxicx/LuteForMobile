@@ -15,7 +15,9 @@ import 'player/player_timeline.dart';
 ///
 /// The aux row carries the − / + rate control (tap the number to reset), the
 /// Loop / Auto-pause toggles, and — for books that have uploaded audio — the
-/// switch back to the MP3 player.  Loop repeats the sentence being read;
+/// switch back to the MP3 player.  Its slot order is shared with the MP3
+/// [AudioPlayerWidget] via [PlayerAuxRow]: rate → loop → auto-pause → AB →
+/// shadowing → player switch.  Loop repeats the sentence being read;
 /// auto-pause stops at the end of each one.  Loop wins when both are on.
 class TTSPlayerWidget extends ConsumerStatefulWidget {
   /// 带音频的书才显示"切回 MP3"的按钮(纯文本书没有 MP3 可切)。
@@ -106,60 +108,50 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
   Widget _buildAuxControls(BuildContext context, TTSPlayerState state) {
     final notifier = ref.read(ttsPlayerProvider.notifier);
 
-    // FittedBox:窄屏上整行等比缩小,不裁切也不换行。
-    return FittedBox(
-      fit: BoxFit.scaleDown,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          PlayerRateStepper(
-            label: _formatRate(state.playbackRate),
-            onDecrease: () =>
-                notifier.nudgePlaybackRate(-TTSPlayerNotifier.playbackRateStep),
-            onIncrease: () =>
-                notifier.nudgePlaybackRate(TTSPlayerNotifier.playbackRateStep),
-            onReset: notifier.resetPlaybackRate,
-          ),
-          PlayerIconButton(
-            icon: state.loopMode ? Icons.repeat_on : Icons.repeat,
-            active: state.loopMode,
-            tooltip: state.loopMode
-                ? 'Loop current sentence: on'
-                : 'Loop current sentence: off',
-            onPressed: notifier.toggleLoopMode,
-          ),
-          PlayerIconButton(
-            icon: state.autoPauseMode
-                ? Icons.pause_circle
-                : Icons.pause_circle_outline,
-            active: state.autoPauseMode,
-            tooltip: state.autoPauseMode
-                ? 'Auto-pause at each sentence: on'
-                : 'Auto-pause at each sentence: off',
-            onPressed: notifier.toggleAutoPauseMode,
-          ),
-          if (widget.showMp3Toggle)
-            PlayerIconButton(
-              icon: Icons.music_note,
-              tooltip: 'Switch to MP3 audio',
-              onPressed: () => ref
-                  .read(playerModeProvider.notifier)
-                  .setMode(PlayerMode.mp3),
-            ),
-          if (widget.onShadowing != null)
-            PlayerIconButton(
+    // 槽位顺序由 PlayerAuxRow 固定，与 MP3 播放条完全一致：
+    // 倍速 → 循环 → 自动暂停 → AB(无) → 跟读 → 切换播放器。
+    return PlayerAuxRow(
+      rate: PlayerRateStepper(
+        label: formatPlayerRate(state.playbackRate),
+        onDecrease: () =>
+            notifier.nudgePlaybackRate(-TTSPlayerNotifier.playbackRateStep),
+        onIncrease: () =>
+            notifier.nudgePlaybackRate(TTSPlayerNotifier.playbackRateStep),
+        onReset: notifier.resetPlaybackRate,
+      ),
+      // 与 MP3 条同一个 loop 图标；开关不换图标，靠 active 的实心圆底表达。
+      loop: PlayerIconButton(
+        icon: Icons.loop,
+        active: state.loopMode,
+        tooltip: state.loopMode ? 'Loop sentence on' : 'Loop sentence off',
+        onPressed: notifier.toggleLoopMode,
+      ),
+      autoPause: PlayerIconButton(
+        icon: state.autoPauseMode
+            ? Icons.pause_circle
+            : Icons.pause_circle_outline,
+        active: state.autoPauseMode,
+        tooltip: state.autoPauseMode
+            ? 'Auto-pause at each sentence: on'
+            : 'Auto-pause at each sentence: off',
+        onPressed: notifier.toggleAutoPauseMode,
+      ),
+      shadowing: widget.onShadowing == null
+          ? null
+          : PlayerIconButton(
               icon: Icons.mic,
               tooltip: 'Shadowing: record yourself reading this sentence',
               onPressed: widget.onShadowing,
             ),
-        ],
-      ),
+      modeSwitch: widget.showMp3Toggle
+          ? PlayerIconButton(
+              icon: Icons.music_note,
+              tooltip: 'Switch to MP3 audio',
+              onPressed: () =>
+                  ref.read(playerModeProvider.notifier).setMode(PlayerMode.mp3),
+            )
+          : null,
     );
-  }
-
-  String _formatRate(double rate) {
-    final text = rate.toStringAsFixed(2).replaceAll(RegExp(r'\.?0+$'), '');
-    return '${text.isEmpty ? '1' : text}x';
   }
 
   /// Maps an overall timeline position back to the sentence index that it

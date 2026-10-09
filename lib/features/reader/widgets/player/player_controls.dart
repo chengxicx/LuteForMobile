@@ -136,6 +136,85 @@ class PlayerPlayButton extends StatelessWidget {
   }
 }
 
+/// 倍速标签的统一格式:整数不带小数点(`1x`),非整数保留必要位数(`0.75x`)。
+///
+/// MP3 的离散档位与 TTS 的连续语速共用这一个格式函数 —— 两条播放条上
+/// 同一个速度必须长得一模一样(MP3 原先固定一位小数,1.0 显示成 `1.0x`,
+/// TTS 显示成 `1x`)。
+String formatPlayerRate(double rate) {
+  final text = rate.toStringAsFixed(2).replaceAll(RegExp(r'\.?0+$'), '');
+  return '${text.isEmpty ? '1' : text}x';
+}
+
+/// 播放条辅助行的**统一布局**:倍速 → 循环 → 自动暂停 → AB → 影子跟读 →
+/// 切换播放器。MP3 与 TTS 两条播放条都走这里,槽位顺序全项目只有这一份。
+///
+/// 存在的理由:两边各自拼 Row 时,同一个功能会慢慢漂到不同位置(倍速在
+/// MP3 是第 4 个、在 TTS 是第 1 个;"切回 MP3" 在 TTS 里插在跟读之前),
+/// 用户切一次播放器就得重新找键。功能有无用 null 表达,顺序不能由调用方改。
+///
+/// [modeSwitch] 前画一道分隔线:它是"换一个播放器",与上面那排播放设置
+/// 不是一类,在两条播放条上都占同一个末尾槽位。
+///
+/// FittedBox:窄屏(小屏/分屏)上整行等比缩小,不裁切也不换行。
+class PlayerAuxRow extends StatelessWidget {
+  /// 倍速步进器([PlayerRateStepper])。
+  final Widget? rate;
+
+  /// 循环当前句。
+  final Widget? loop;
+
+  /// 逐句自动暂停。
+  final Widget? autoPause;
+
+  /// AB 复读(只有 MP3 条有)。
+  final Widget? ab;
+
+  /// 影子跟读(无句子的页面为 null)。
+  final Widget? shadowing;
+
+  /// 切换播放器(MP3 ⇄ TTS);书里没有另一种音源时为 null。
+  final Widget? modeSwitch;
+
+  const PlayerAuxRow({
+    super.key,
+    this.rate,
+    this.loop,
+    this.autoPause,
+    this.ab,
+    this.shadowing,
+    this.modeSwitch,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.playerPalette;
+
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ?rate,
+          ?loop,
+          ?autoPause,
+          ?ab,
+          ?shadowing,
+          if (modeSwitch != null) ...[
+            Container(
+              width: 1,
+              height: palette.iconSize,
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              color: palette.muted,
+            ),
+            modeSwitch!,
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// − 值 + 的速度步进器,点中间数字恢复默认。MP3 与 TTS 条共用,
 /// 数值含义由调用方决定(MP3 是离散档位,TTS 是连续语速)。
 class PlayerRateStepper extends StatelessWidget {
