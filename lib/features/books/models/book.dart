@@ -150,10 +150,57 @@ class Book {
     return _formatRelativeTime(lastRead!);
   }
 
+  /// 「刚刚打开」时刻的 lastRead 占位值，格式与服务端 json 完全一致。
+  ///
+  /// 服务端书单的 LastOpenedDate 是 SQLite 里的原始字符串：naive UTC、
+  /// 空格分隔、6 位微秒（实测 `2026-10-10 18:08:05.055979`，SQLAlchemy 行
+  /// 直接落进 json，不经过 Flask 的 datetime 序列化）。本地预排序
+  /// （books_provider 的 reorderAfterOpened）用它充当 lastRead，直到下次
+  /// 网络同步被服务端真值覆盖。
+  ///
+  /// 刻意保持逐字符同形：卡片上的相对时间靠 `DateTime.parse` 解析，两种
+  /// 形状解析行为不同（带 `T`/`Z` 的 ISO 会被当成 UTC，无时区标记的会按
+  /// 本地时区解析），同列卡片出现两种口径会互相打架。数值本身不参与本地
+  /// 排序（插入位置是算好的）。
+  static String lastReadStampNow() => lastReadStamp(DateTime.now().toUtc());
+
+  /// [lastReadStampNow] 的可注入形式，供测试断言格式。
+  static String lastReadStamp(DateTime utcNow) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    // 微秒取整段亚秒（Dart 把毫秒/微秒分开存，microsecond 只是微秒位）。
+    final subSecond = utcNow.microsecondsSinceEpoch % 1000000;
+    return '${utcNow.year.toString().padLeft(4, '0')}-${two(utcNow.month)}-'
+        '${two(utcNow.day)} ${two(utcNow.hour)}:${two(utcNow.minute)}:'
+        '${two(utcNow.second)}.${subSecond.toString().padLeft(6, '0')}';
+  }
+
+  /// 服务端日期串的统一解析口径。
+  ///
+  /// LastOpenedDate 是 SQLite 的 naive UTC 串（无时区标记，如
+  /// `2026-10-10 18:08:05.055979`）。`DateTime.parse` 会把无标记的串按
+  /// **本地时区**装进来，UTC+8 下卡片显示的「N hours ago」因此整体偏差
+  /// 8 小时（2026-10-11 实测：刚读完显示 "8 hours ago"）。这里按服务端
+  /// 约定把无标记串重解释为 UTC；带时区标记的串（isUtc=true）Dart 已
+  /// 归一化，原样使用。
+  static DateTime _parseServerDate(String dateStr) {
+    final parsed = DateTime.parse(dateStr);
+    if (parsed.isUtc) return parsed;
+    return DateTime.utc(
+      parsed.year,
+      parsed.month,
+      parsed.day,
+      parsed.hour,
+      parsed.minute,
+      parsed.second,
+      parsed.millisecond,
+      parsed.microsecond,
+    );
+  }
+
   String? get formattedLastReadExact {
     if (lastRead == null || lastRead!.isEmpty) return null;
     try {
-      final date = DateTime.parse(lastRead!).toLocal();
+      final date = _parseServerDate(lastRead!).toLocal();
       return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} '
           '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}:${date.second.toString().padLeft(2, '0')}';
     } catch (e) {
@@ -164,7 +211,7 @@ class Book {
   String _formatRelativeTime(String dateStr) {
     try {
       final now = DateTime.now();
-      final date = DateTime.parse(dateStr).toLocal();
+      final date = _parseServerDate(dateStr);
       final difference = now.difference(date);
 
       if (difference.inSeconds < 60) {
