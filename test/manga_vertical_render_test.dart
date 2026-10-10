@@ -179,6 +179,16 @@ void main() {
     expect(find.text('い'), findsNothing);
   });
 
+  testWidgets('揭示框里的裸词用纸面墨色，不跟随深色主题的浅色文字', (tester) async {
+    // 底板永远是不透明白（mokuro 纸面），主题（测试里回落到深色 preset）
+    // 给 status-text 新词配的浅紫在白底上等于隐身——曾收到「选中的气泡
+    // 看不清字」。裸词（status0、98/99、无 wordId）必须固定深墨色。
+    await tester.pumpWidget(_host(_page(), revealAll: true));
+
+    final bare = tester.widget<Text>(find.text('ち')).style?.color;
+    expect(bare, const Color(0xFF1C1B1F));
+  });
+
   testWidgets('点画面空白处收起；换点另一个框时只显示新的框', (tester) async {
     await tester.pumpWidget(_host(_page()));
     await _reveal(tester, 0);

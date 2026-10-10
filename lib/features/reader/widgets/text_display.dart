@@ -75,6 +75,10 @@ class TextDisplay extends StatefulWidget {
   /// One tappable word.  [displayOverride] replaces only the rendered
   /// string (manga's vertical columns render one character per tap cell);
   /// taps still report the full [item], so lookups keep the whole word.
+  /// [slabTextColor] is the ink for words sitting bare on an opaque light
+  /// backdrop the caller paints behind the whole block (the manga view's
+  /// always-white reveal slab); without it those words keep their theme
+  /// colors, which a dark theme tunes for a dark page.
   static Widget buildInteractiveWord(
     BuildContext context,
     TextItem item, {
@@ -99,6 +103,7 @@ class TextDisplay extends StatefulWidget {
     Set<int> highlightedSentenceIds = const {},
     bool isSelected = false,
     String? displayOverride,
+    Color? slabTextColor,
   }) {
     Color? textColor;
     Color? backgroundColor;
@@ -180,7 +185,14 @@ class TextDisplay extends StatefulWidget {
           ? selectionTextColor
           : isReadingSentence
           ? context.playingLineText
-          : textColor ?? Theme.of(context).textTheme.bodyLarge?.color,
+          // 漫画揭示框的底板永远是不透明白（mokuro 纸面），深色主题的浅色
+          // 文字落上去等于隐身：凡是自己没有色块垫底的词（status-text、
+          // 98/99、无 wordId 的纯文本）一律用调用方给的"纸面墨色"。
+          // 带色块的词保持主题配对（色块本身不透明，配字对比度有保证），
+          // 正在朗读/选中的块同理——文字对的是自己的块，不是底板。
+          : (slabTextColor != null && backgroundColor == null
+                ? slabTextColor
+                : textColor ?? Theme.of(context).textTheme.bodyLarge?.color),
       fontWeight: statusBold ? FontWeight.w700 : fontWeight,
       fontSize: textSize,
       height: lineSpacing,

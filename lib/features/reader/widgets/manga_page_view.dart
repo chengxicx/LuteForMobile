@@ -258,6 +258,10 @@ class _MangaPageViewState extends State<MangaPageView> {
         fontFamily: widget.fontFamily,
         fontWeight: widget.fontWeight,
         isItalic: widget.isItalic,
+        // 揭示框底板永远是不透明白（下面的白色 slab），不是主题的页面底色：
+        // 深色主题的浅色文字（正文色、status-text 的新词紫、98/99）落在上
+        // 面会隐身，裸词一律换成纸面墨色；带色块的词保持主题的色块配字。
+        slabTextColor: const Color(0xFF1C1B1F),
         widgetKey: ValueKey(
           'manga-${item.paragraphId}-${item.order}-${item.wordId}'
           '${charIndex == null ? '' : '-c$charIndex'}',
