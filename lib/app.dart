@@ -325,6 +325,15 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
 
     ref.read(booksProvider.notifier).setCurrentBook(bookId);
 
+    // Reader 打开书时把「最新阅读」排序预先落到书架（置顶 + 写缓存）：
+    // 否则这个变化要等下次进 Books 页的网络同步才出现，刚读的书会当着
+    // 用户的面跳到顶部。Book Set 成员书藏在聚合行后面，要带上 Book 对象
+    // 才能按 tag 找到对应聚合行预排。见 BooksNotifier.notifyBookOpened。
+    ref.read(booksProvider.notifier).notifyBookOpened(
+      bookId,
+      openedBook: resolved,
+    );
+
     // The reader is a bottom-bar destination now, so the highlight comes from
     // the route rather than from a screen index.  navigateToScreen('reader')
     // runs right after this listener, but keeping the route honest here means

@@ -151,7 +151,7 @@ class BooksNotifier extends Notifier<BooksState> {
     _isLoadingFromNetwork = false;
     _isBackgroundRefreshing = false;
 
-    // 服务端恢复可达时自愈：上一次加载要是被「断网短路」跳过过，现在补一次。
+    // 服务端恢复可达时自愈：上一次加载确实是因为断网被短路掉过，现在补一次。
     // 没有这个监听，用户出了地铁只能看着一个 Offline 页，而且他不会想到
     // 需要下拉刷新一下。（build 可能重跑，onDispose 会先摘掉旧监听。）
     ServerStatusManager.addListener(_reachabilityListener);
@@ -177,7 +177,12 @@ class BooksNotifier extends Notifier<BooksState> {
       }
     }
 
-    return const BooksState();
+    // 重建（依赖的 settings 变了，比如 reader 打开书时的 updateCurrentBook）
+    // 不能返回空 state：那会把书架清空，下一次进书架只能靠缓存恢复，
+    // notifyBookOpened 这类「打开书瞬间」的后台调用读到的也是空列表而空转
+    // —— 2026-10-11 手机实测因此失效。Riverpod 重建沿用同一个 notifier
+    // 实例，stateOrNull 给出重建前的状态；首次 build 尚未初始化 → 从空开始。
+    return stateOrNull ?? const BooksState();
   }
 
   /// 服务端从不可达恢复可达时的自愈入口。
@@ -432,6 +437,141 @@ class BooksNotifier extends Notifier<BooksState> {
     if (bookId != null && bookId != state.currentBookId) {
       state = state.copyWith(currentBookId: bookId);
     }
+  }
+
+  /// Reader 打开了一本书：把「最新阅读」排序的变化**预先**应用到书架。
+  ///
+  /// 服务端在 `/read/start_reading` 时把 text.start_date 更新为现在，书单
+  /// 默认按 LastOpenedDate 降序返回（lute/book/datatables.py 的默认排序）。
+  /// 这意味着刚读的书在**下一次**书架网络同步时必然跳到顶部——如果不在
+  /// 读的时候先本地落好位，用户从阅读页切回 Books 时就会眼看着列表重排：
+  /// 先渲染缓存旧序，同步回来再跳成新序。
+  ///
+  /// 这里做的是服务端排序结果的本地预演：书插到「已打开」组最前（从未
+  /// 打开过的书仍排其上，对应服务端 `LastOpenedDate is null desc`）、
+  /// lastRead 打上与服务端同格式的时间戳（[Book.lastReadStampNow]），
+  /// 然后写回缓存。下次进书架：缓存恢复即新序，同步回来的顺序与之一致，
+  /// 列表纹丝不动。
+  ///
+  /// Book Set 聚合行把成员书藏在列表之外（扁平分支拿不到它们），所以开
+  /// 的若是成员书，按 [openedBook] 的 tag 找到对应聚合行预排——聚合行的
+  /// LastOpenedDate 取成员书最大值，成员书一读它就跳顶，用户的书架顶部
+  /// 恰恰全是聚合行（2026-10-11 手机实测）。
+  ///
+  /// 搜索态不预演：此时 activeBooks 是搜索结果而非全量书单，重排会污染它。
+  void notifyBookOpened(int bookId, {Book? openedBook}) {
+    if (state.searchQuery.isNotEmpty) return;
+
+    final stamp = Book.lastReadStampNow();
+    var active = reorderAfterOpened(state.activeBooks, bookId, stamp);
+    final archived = reorderAfterOpened(state.archivedBooks, bookId, stamp);
+
+    // 书不在顶层列表（聚合行成员书）：按 tag 匹配聚合行。普通书若在列表里
+    // 就不可能同时属于聚合行（服务端对配置成 Book Set 的 tag 关闭扁平返回）。
+    if (identical(active, state.activeBooks) && openedBook != null) {
+      active = reorderSeriesAfterOpened(
+        state.activeBooks,
+        {
+          if (openedBook.tags != null) ...openedBook.tags!,
+          if (openedBook.seriesTag != null) openedBook.seriesTag!,
+        },
+        stamp,
+        langId: openedBook.langId,
+      );
+    }
+
+    // 返回同一实例 = 没有变化（书不在列表里/聚合行/已在目标位置），
+    // 不要为没有视觉影响的重排白白刷一次状态和缓存。
+    if (identical(active, state.activeBooks) &&
+        identical(archived, state.archivedBooks)) {
+      return;
+    }
+
+    state = state.copyWith(activeBooks: active, archivedBooks: archived);
+
+    // 缓存写失败只影响下次进书架的第一帧（恢复出旧序，同步回来照旧跳一次），
+    // 不影响本次显示，所以后台重试与否都无关紧要，记条日志即可。
+    () async {
+      try {
+        await _repository.saveBooksToCache(
+          activeBooks: active,
+          archivedBooks: archived,
+        );
+      } catch (e) {
+        ApiLogger.logError('notifyBookOpened', e);
+      }
+    }();
+  }
+
+  /// [notifyBookOpened] 的纯函数实现：把刚打开的书重排到服务端下次会
+  /// 返回的位置，返回 [books] 实例本身表示无需变化。
+  ///
+  /// 服务端默认排序是「从未打开过的书排最前，其余按最后打开时间降序」
+  /// （datatables.py 把 LastOpenedDate 的排序键替换成
+  /// `LastOpenedDate is null desc, LastOpenedDate`）。刚打开的书是
+  /// 「已打开」组里最新的，所以插入点是第一个 lastRead 非空的条目。
+  @visibleForTesting
+  static List<Book> reorderAfterOpened(
+    List<Book> books,
+    int bookId,
+    String stamp,
+  ) {
+    final index = books.indexWhere((b) => b.id == bookId);
+    if (index == -1) return books;
+    final book = books[index];
+    // 聚合行的 id 全为 0（BkID NULL 的容错值），真书不可能 <= 0；
+    // 两者都不是「被打开的那本」。
+    if (book.isSeries || book.id <= 0) return books;
+
+    return _insertAtOpenedPosition(books, index, book, stamp);
+  }
+
+  /// [reorderAfterOpened] 的聚合行版本：刚打开的是某 Book Set 的成员书，
+  /// 按 tag 找到对应聚合行重排。服务端对同一 tag 按语言各出一行，优先匹配
+  /// [langId] 相同的那行。
+  @visibleForTesting
+  static List<Book> reorderSeriesAfterOpened(
+    List<Book> books,
+    Set<String> seriesTags,
+    String stamp, {
+    int? langId,
+  }) {
+    if (seriesTags.isEmpty) return books;
+    bool matches(Book b) =>
+        b.isSeries &&
+        b.seriesTag != null &&
+        b.seriesTag!.isNotEmpty &&
+        seriesTags.contains(b.seriesTag);
+    var index = books.indexWhere(
+      (b) => matches(b) && langId != null && b.langId == langId,
+    );
+    if (index == -1) {
+      index = books.indexWhere(matches);
+    }
+    if (index == -1) return books;
+
+    return _insertAtOpenedPosition(books, index, books[index], stamp);
+  }
+
+  /// 把 [books] 里 [index] 处的书摘出来、打上 [stamp]，再插回「已打开」组
+  /// 最前（[reorderAfterOpened] 的注释说明了这个位置的依据）。
+  ///
+  /// 已在目标位置且本来就有 lastRead 的书原样返回同一实例——lastRead 为
+  /// null 的书即使位置凑巧相同也要补上时间戳，否则它会一直显示 "Never"
+  /// 直到下次同步。
+  static List<Book> _insertAtOpenedPosition(
+    List<Book> books,
+    int index,
+    Book book,
+    String stamp,
+  ) {
+    final rest = List<Book>.from(books)..removeAt(index);
+    final insertAt = rest.indexWhere((b) => b.lastRead != null);
+    final target = insertAt == -1 ? rest.length : insertAt;
+    if (book.lastRead != null && index == target) return books;
+
+    return List<Book>.from(rest)
+      ..insert(target, book.copyWith(lastRead: stamp));
   }
 
   Future<void> refreshExpiredBooks({bool forceRefreshAll = false}) async {
