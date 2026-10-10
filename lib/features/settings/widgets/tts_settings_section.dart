@@ -6,6 +6,7 @@ import 'package:song_mobile/core/providers/tts_provider.dart';
 import 'package:song_mobile/features/settings/models/tts_settings.dart';
 import 'package:song_mobile/features/settings/providers/tts_settings_provider.dart';
 import 'package:song_mobile/features/settings/widgets/kokoro_voice_chips.dart';
+import 'package:song_mobile/features/settings/widgets/edge_voice_picker.dart';
 import 'package:song_mobile/features/settings/widgets/on_device_voice_selector.dart';
 import 'package:song_mobile/shared/theme/theme_extensions.dart';
 import 'package:song_mobile/shared/utils/tts_language_mapper.dart';
@@ -977,6 +978,33 @@ class _EdgeTTSSettingsState extends ConsumerState<_EdgeTTSSettings> {
           'is only used when that language is unknown. The server picks the '
           'voice for the language via its edge-tts endpoint '
           '(GET /tts/<lang>/<text>).',
+          style: TextStyle(
+            color: context.appColorScheme.text.secondary,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'Voice',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 8),
+        EdgeVoicePicker(
+          languageTag: widget.config?.languageCode,
+          currentVoice: widget.config?.voice,
+          onVoiceChanged: (voice) {
+            final config = widget.config;
+            if (config == null) return;
+            ref.read(ttsSettingsProvider.notifier).updateEdgeTTSConfig(
+                  config.copyWith(voice: voice ?? ''),
+                );
+          },
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Reading follows the language of the book you have open; the picker '
+          'above is filtered by the fallback code and custom names always '
+          'win. The server falls back to its default voice for unknown names.',
           style: TextStyle(
             color: context.appColorScheme.text.secondary,
             fontSize: 12,

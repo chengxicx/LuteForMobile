@@ -147,14 +147,16 @@ String formatPlayerRate(double rate) {
 }
 
 /// 播放条辅助行的**统一布局**:倍速 → 循环 → 自动暂停 → AB → 影子跟读 →
-/// 切换播放器。MP3 与 TTS 两条播放条都走这里,槽位顺序全项目只有这一份。
+/// 分隔线 → 切换播放器 → 音色。MP3 与 TTS 两条播放条都走这里,槽位顺序
+/// 全项目只有这一份。
 ///
 /// 存在的理由:两边各自拼 Row 时,同一个功能会慢慢漂到不同位置(倍速在
 /// MP3 是第 4 个、在 TTS 是第 1 个;"切回 MP3" 在 TTS 里插在跟读之前),
 /// 用户切一次播放器就得重新找键。功能有无用 null 表达,顺序不能由调用方改。
 ///
-/// [modeSwitch] 前画一道分隔线:它是"换一个播放器",与上面那排播放设置
-/// 不是一类,在两条播放条上都占同一个末尾槽位。
+/// [modeSwitch] 前画一道分隔线:分隔线右侧是"换音源/换音色"一类,与上面
+/// 那排播放设置不同类。分隔线右侧两个槽都是 TTS 条专属(MP3 条两者皆 null,
+/// 分隔线不画)。
 ///
 /// FittedBox:窄屏(小屏/分屏)上整行等比缩小,不裁切也不换行。
 class PlayerAuxRow extends StatelessWidget {
@@ -176,6 +178,9 @@ class PlayerAuxRow extends StatelessWidget {
   /// 切换播放器(MP3 ⇄ TTS);书里没有另一种音源时为 null。
   final Widget? modeSwitch;
 
+  /// 音色选择(只有 Edge TTS 的 TTS 条有)。
+  final Widget? voice;
+
   const PlayerAuxRow({
     super.key,
     this.rate,
@@ -184,6 +189,7 @@ class PlayerAuxRow extends StatelessWidget {
     this.ab,
     this.shadowing,
     this.modeSwitch,
+    this.voice,
   });
 
   @override
@@ -200,14 +206,15 @@ class PlayerAuxRow extends StatelessWidget {
           ?autoPause,
           ?ab,
           ?shadowing,
-          if (modeSwitch != null) ...[
+          if (modeSwitch != null || voice != null) ...[
             Container(
               width: 1,
               height: palette.iconSize,
               margin: const EdgeInsets.symmetric(horizontal: 4),
               color: palette.muted,
             ),
-            modeSwitch!,
+            ?modeSwitch,
+            ?voice,
           ],
         ],
       ),

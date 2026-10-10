@@ -650,6 +650,24 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     );
   }
 
+  /// 音色等服务配置变化后调用：正在朗读/加载就重读当前句，让变化立刻可听。
+  ///
+  /// 服务的语言/语速推送都按实例记忆（[_languageAppliedTo] / [_rateAppliedTo]），
+  /// 服务因设置变更重建后这些缓存天然失效；这里显式清一遍只是把「新服务还没
+  /// 收过配置」这件事说死。等待服务重建完成再重读，避免重读撞上旧实例。
+  Future<void> restartAfterServiceChange() async {
+    _languageAppliedTo = null;
+    _appliedLanguageTag = null;
+    _rateAppliedTo = null;
+    _appliedRate = null;
+    try {
+      await ref.read(ttsServiceProvider.notifier).ensureServiceReady();
+    } catch (_) {}
+    if (state.isPlaying || state.isLoading) {
+      await _restartCurrent();
+    }
+  }
+
   Future<void> next() async {
     if (!state.canGoNext) return;
     _positionTimer?.cancel();

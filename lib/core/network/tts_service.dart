@@ -7,6 +7,7 @@ import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:song_mobile/core/network/session_manager.dart';
 import 'package:song_mobile/features/settings/models/tts_settings.dart';
+import 'package:song_mobile/shared/utils/edge_tts_voices.dart';
 
 /// Normalizes text about to be synthesized -- once, at the TTS entry points,
 /// so every provider sees the same string.
@@ -1025,6 +1026,11 @@ class EdgeTTSService implements TTSService {
   /// 之后每次请求都是 200 + 空响应体，朗读永久失败。
   String _languageCode;
 
+  /// 朗读音色（edge-tts voice 名，如 `ja-JP-KeitaNeural`）。null/空 = 服务端
+  /// 按语言选默认音色。请求以 `?voice=` 追加；服务端对名字做同语言校验，
+  /// 非法值会被忽略回落默认 —— 客户端因此不需要为陈旧的配置值做特殊处理。
+  final String? voice;
+
   final String basicAuthUser;
   final String basicAuthPassword;
 
@@ -1035,6 +1041,7 @@ class EdgeTTSService implements TTSService {
   EdgeTTSService({
     required this.serverUrl,
     String languageCode = 'en',
+    this.voice,
     this.basicAuthUser = '',
     this.basicAuthPassword = '',
   }) : _languageCode = languageCode {
@@ -1094,7 +1101,11 @@ class EdgeTTSService implements TTSService {
 
   Future<Uint8List> _fetchAudio(String text) async {
     final encodedText = Uri.encodeComponent(text);
-    final url = '$serverUrl/tts/$_languageCode/$encodedText';
+    var url = '$serverUrl/tts/$_languageCode/$encodedText';
+    final voiceName = voice?.trim() ?? '';
+    if (voiceName.isNotEmpty) {
+      url = '$url?voice=${Uri.encodeComponent(voiceName)}';
+    }
     try {
       final response = await _dio.get<List<int>>(
         url,
@@ -1188,7 +1199,14 @@ class EdgeTTSService implements TTSService {
 
   @override
   Future<List<TTSVoice>> getAvailableVoices() async {
-    // The server picks the voice automatically based on the language code.
+    // Curated same-language voices; the server still validates whatever is
+    // requested and falls back to its default on anything it won't voice.
+    final curated = edgeVoicesForLanguage(_languageCode);
+    if (curated.isNotEmpty) {
+      return curated
+          .map((v) => TTSVoice(name: v.name, locale: _languageCode))
+          .toList();
+    }
     return [TTSVoice(name: 'Server voice', locale: _languageCode)];
   }
 

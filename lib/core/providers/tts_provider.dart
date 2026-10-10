@@ -116,6 +116,12 @@ class TTSNotifier extends Notifier<TTSService> {
     }
   }
 
+  /// Edge TTS 音色的归一化：空白视为「服务端默认」，不拼进 URL。
+  String? _normalizedEdgeVoice(String? voice) {
+    final trimmed = voice?.trim() ?? '';
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
   TTSService _createService() {
     try {
       final settings = ref.read(ttsSettingsProvider);
@@ -163,6 +169,9 @@ class TTSNotifier extends Notifier<TTSService> {
             serverUrl: appSettings.serverUrl,
             // 跟随当前书的语言，而不是设置页里那个固定值。
             languageCode: resolveEdgeLanguageCode(),
+            // 音色随设置页 / 播放条齿轮选择；设置一变服务整体重建，
+            // 预取缓存按实例归属自动失效，不存在串音。
+            voice: _normalizedEdgeVoice(config?.voice),
             basicAuthUser: appSettings.basicAuthUser,
             basicAuthPassword: appSettings.basicAuthPassword,
           );

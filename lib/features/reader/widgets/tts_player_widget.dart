@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../features/settings/models/tts_settings.dart';
+import '../../../features/settings/providers/tts_settings_provider.dart';
 import '../providers/player_mode_provider.dart';
 import '../providers/tts_player_provider.dart';
 import 'player/player_card.dart';
 import 'player/player_controls.dart';
 import 'player/player_timeline.dart';
+import 'voice_picker_sheet.dart';
 
 /// Full TTS read-aloud player bar (timeline + controls) for text books.
 ///
@@ -41,6 +44,11 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
   Widget build(BuildContext context) {
     final state = ref.watch(ttsPlayerProvider);
     final notifier = ref.read(ttsPlayerProvider.notifier);
+    // 音色是 Edge TTS 专属设置（其余引擎在设置页各有入口），引擎不是它
+    // 就不画齿轮键。
+    final isEdgeTts = ref.watch(
+      ttsSettingsProvider.select((s) => s.provider == TTSProvider.edgeTTS),
+    );
 
     final sentenceLabel = state.hasSnippets
         ? '${state.currentIndex.clamp(0, state.snippets.length - 1) + 1}/${state.snippets.length}'
@@ -71,7 +79,7 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
             },
           ),
           _buildMainControls(context, state),
-          _buildAuxControls(context, state),
+          _buildAuxControls(context, state, isEdgeTts),
         ],
       ),
     );
@@ -105,7 +113,11 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
     );
   }
 
-  Widget _buildAuxControls(BuildContext context, TTSPlayerState state) {
+  Widget _buildAuxControls(
+    BuildContext context,
+    TTSPlayerState state,
+    bool isEdgeTts,
+  ) {
     final notifier = ref.read(ttsPlayerProvider.notifier);
 
     // 槽位顺序由 PlayerAuxRow 固定，与 MP3 播放条完全一致：
@@ -149,6 +161,15 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
               tooltip: 'Switch to MP3 audio',
               onPressed: () =>
                   ref.read(playerModeProvider.notifier).setMode(PlayerMode.mp3),
+            )
+          : null,
+      // 分隔线右侧、最末位：与"切换播放器"同属换音源一类。弹底部面板
+      // 选音色，点选即写回设置并重读当前句（见 voice_picker_sheet）。
+      voice: isEdgeTts
+          ? PlayerIconButton(
+              icon: Icons.settings,
+              tooltip: 'Voice',
+              onPressed: () => showVoicePickerSheet(context),
             )
           : null,
     );
