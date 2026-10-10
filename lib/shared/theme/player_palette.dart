@@ -45,6 +45,14 @@ class PlayerPalette {
   /// 次要文字（时间标签、倍速数字）。
   final Color muted;
 
+  /// 禁用控件（置灰的不可用按钮）。
+  ///
+  /// 与 [muted] 分开各有一份：muted 的语义是"次要但可读"（彩色主题下
+  /// 85% 透明度、墨水屏下就是墨色），拿来做禁用态两套主题都不合格 ——
+  /// 彩色主题 85% 白 vs 100% 白几乎看不出差别，墨水屏干脆同色
+  /// （2026-10-11 手机实测：切换键置灰后用户"没看出不能按"）。
+  final Color disabled;
+
   /// 激活态颜色（彩色主题：琥珀；墨水屏：实心块上的反色）。
   final Color active;
 
@@ -100,6 +108,7 @@ class PlayerPalette {
     required this.cardShadow,
     required this.icon,
     required this.muted,
+    required this.disabled,
     required this.active,
     required this.activeFill,
     required this.playSurface,
@@ -139,6 +148,9 @@ class PlayerPalette {
         cardShadow: null,
         icon: ink,
         muted: ink,
+        // 实心中灰（墨与纸的插值）：灰阶下「半亮的键」是经典禁用语言，
+        // 不能用透明度（灰阶下会整档消失）。
+        disabled: Color.lerp(ink, surface, 0.55)!,
         // 反色：黑圆底上写白图标。
         active: surface,
         activeFill: ink,
@@ -182,6 +194,8 @@ class PlayerPalette {
       ],
       icon: icon,
       muted: icon.withValues(alpha: 0.85),
+      // 45%：明显暗于可用的 100% 白，又不至于在彩底上彻底看不见。
+      disabled: icon.withValues(alpha: 0.45),
       active: bookmark,
       activeFill: null,
       playSurface: icon.withValues(alpha: 0.14),

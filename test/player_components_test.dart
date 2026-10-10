@@ -157,6 +157,135 @@ void main() {
     expect(x('MIC'), lessThan(x('SWITCH')));
   });
 
+  testWidgets('PlayerAuxRow 的 modeSwitch 传禁用键也照样渲染', (tester) async {
+    // 2026-10-11 反馈:无 MP3 书的 TTS 条结尾缺一截,和 MP3 条长得不一样。
+    // 契约改为「切换键恒渲染,不可用置灰」—— 结构恒同,短一截就是回归。
+    await tester.pumpWidget(
+      _host(
+        PlayerAuxRow(
+          rate: const Text('RATE'),
+          shadowing: const Text('MIC'),
+          modeSwitch: PlayerIconButton(
+            icon: Icons.music_note,
+            onPressed: null,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.music_note), findsOneWidget);
+  });
+
+  testWidgets('PlayerIconButton 禁用时按 palette.disabled 明显置灰', (tester) async {
+    Color? disabled;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Builder(
+              builder: (context) {
+                disabled ??= context.playerPalette.disabled;
+                return PlayerIconButton(icon: Icons.music_note, onPressed: null);
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final iconContext = tester.element(find.byIcon(Icons.music_note));
+    expect(IconTheme.of(iconContext).color, disabled);
+  });
+
+  testWidgets('PlayerIconButton 可用时保持 palette.icon', (tester) async {
+    Color? icon;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Builder(
+              builder: (context) {
+                icon ??= context.playerPalette.icon;
+                return PlayerIconButton(icon: Icons.music_note, onPressed: () {});
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final iconContext = tester.element(find.byIcon(Icons.music_note));
+    expect(IconTheme.of(iconContext).color, icon);
+  });
+
+  testWidgets('PlayerIconButton 禁用默认只置灰,开 slashWhenDisabled 才有斜线', (
+    tester,
+  ) async {
+    // 2026-10-11 用户反馈:主控行即使不可按也不要斜线 —— 斜线只表示
+    // "功能在此不存在"(切换到不存在的音源),边界上的前后句只是暂时到头。
+    bool hasSlash() =>
+        tester
+            .widgetList(
+              find.byWidgetPredicate(
+                (w) =>
+                    w is CustomPaint &&
+                    w.painter.runtimeType.toString() == '_DisabledSlashPainter',
+              ),
+            )
+            .isNotEmpty;
+
+    await tester.pumpWidget(
+      _host(PlayerIconButton(icon: Icons.music_note, onPressed: null)),
+    );
+    expect(hasSlash(), isFalse, reason: '主控键禁用只置灰,不画斜线');
+
+    await tester.pumpWidget(
+      _host(PlayerIconButton(icon: Icons.music_note, onPressed: () {})),
+    );
+    expect(hasSlash(), isFalse, reason: '可用键不能有斜线');
+
+    await tester.pumpWidget(
+      _host(
+        PlayerIconButton(
+          icon: Icons.music_note,
+          onPressed: null,
+          slashWhenDisabled: true,
+        ),
+      ),
+    );
+    expect(hasSlash(), isTrue, reason: '切换键这类"功能不存在"的禁用键画斜线');
+  });
+
+  testWidgets('disabled 色与可用图标色两套主题下都可辨', (tester) async {
+    // 2026-10-11 手机实测:muted(彩色 85% 白 / eInk 同墨色)做禁用态,
+    // 用户"没看出不能按"。这里守住 disabled 与 icon 的可辨性。
+    // 彩色主题的 disabled 带透明度,差异要合成到卡面上才看得见,所以
+    // 两个颜色都先 alphaBlend 到 card 上再比。
+    double channelDistance(Color a, Color b) =>
+        ((a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs()) * 255;
+
+    for (final eInk in [false, true]) {
+      PlayerPalette? palette;
+      await _capture(tester, eInk: eInk, read: (c) => palette = c.playerPalette);
+      final p = palette!;
+
+      expect(
+        channelDistance(Color.alphaBlend(p.disabled, p.card),
+            Color.alphaBlend(p.icon, p.card)),
+        greaterThanOrEqualTo(60),
+        reason: 'eInk=$eInk 禁用色必须明显暗于可用图标色',
+      );
+      if (eInk) {
+        expect((p.disabled.a * 255).round(), 255, reason: '灰阶下半透明会整档消失');
+        expect(
+          channelDistance(p.disabled, p.card),
+          greaterThanOrEqualTo(60),
+          reason: 'eInk 禁用色也不能糊进卡面',
+        );
+      }
+    }
+  });
+
   // ---------------------------------------------------------------------------
   // 墨水屏（Leaf 5C / Kaleido 3）:播放条"看不清"的回归防线。
   // 见 lib/shared/theme/player_palette.dart 顶部对 5 条成因的说明。
@@ -174,6 +303,7 @@ void main() {
       'cardBorder': p.cardBorder,
       'icon': p.icon,
       'muted': p.muted,
+      'disabled': p.disabled,
       'active': p.active,
       'activeFill': p.activeFill!,
       'playSurface': p.playSurface,

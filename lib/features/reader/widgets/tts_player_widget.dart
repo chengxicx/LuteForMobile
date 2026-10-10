@@ -17,9 +17,9 @@ import 'voice_picker_sheet.dart';
 /// via the configured TTS service.
 ///
 /// The aux row carries the − / + rate control (tap the number to reset), the
-/// Loop / Auto-pause toggles, and — for books that have uploaded audio — the
-/// switch back to the MP3 player.  Its slot order is shared with the MP3
-/// [AudioPlayerWidget] via [PlayerAuxRow]: rate → loop → auto-pause → AB →
+/// Loop / Auto-pause toggles, and the switch back to the MP3 player (grayed
+/// out on books without uploaded audio).  Its slot order is shared with the
+/// MP3 [AudioPlayerWidget] via [PlayerAuxRow]: rate → loop → auto-pause → AB →
 /// shadowing → player switch.  Loop repeats the sentence being read;
 /// auto-pause stops at the end of each one.  Loop wins when both are on.
 class TTSPlayerWidget extends ConsumerStatefulWidget {
@@ -121,7 +121,7 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
     final notifier = ref.read(ttsPlayerProvider.notifier);
 
     // 槽位顺序由 PlayerAuxRow 固定，与 MP3 播放条完全一致：
-    // 倍速 → 循环 → 自动暂停 → AB(无) → 跟读 → 切换播放器。
+    // 倍速 → 循环 → 自动暂停 → 音色(占 MP3 条 AB 的槽位) → 跟读 → 切换播放器。
     return PlayerAuxRow(
       rate: PlayerRateStepper(
         label: formatPlayerRate(state.playbackRate),
@@ -155,14 +155,18 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
               tooltip: 'Shadowing: record yourself reading this sentence',
               onPressed: widget.onShadowing,
             ),
-      modeSwitch: widget.showMp3Toggle
-          ? PlayerIconButton(
-              icon: Icons.music_note,
-              tooltip: 'Switch to MP3 audio',
-              onPressed: () =>
-                  ref.read(playerModeProvider.notifier).setMode(PlayerMode.mp3),
-            )
-          : null,
+      // 恒渲染;书里没有 MP3 时置灰禁用,保持与 MP3 条结构一致。
+      modeSwitch: PlayerIconButton(
+        icon: Icons.music_note,
+        tooltip: widget.showMp3Toggle
+            ? 'Switch to MP3 audio'
+            : 'This book has no MP3 audio',
+        onPressed: widget.showMp3Toggle
+            ? () =>
+                  ref.read(playerModeProvider.notifier).setMode(PlayerMode.mp3)
+            : null,
+        slashWhenDisabled: true,
+      ),
       // 分隔线右侧、最末位：与"切换播放器"同属换音源一类。弹底部面板
       // 选音色，点选即写回设置并重读当前句（见 voice_picker_sheet）。
       voice: isEdgeTts

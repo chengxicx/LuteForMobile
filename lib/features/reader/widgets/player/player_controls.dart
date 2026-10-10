@@ -29,6 +29,12 @@ class PlayerIconButton extends StatelessWidget {
   /// AB 复读这类"状态靠字母本身表达"的键，文字比 repeat 系图标可辨得多。
   final String? label;
 
+  /// 禁用时是否在图标上叠斜线。只给"功能在此不存在"的键用（如没有 MP3 的
+  /// 书上的切换 MP3 键 —— 斜线 = 这个功能本身没有）；主控行的前后句在边界
+  /// 上只是"暂时到头"，置灰就够了，斜线反而显得两个箭头都坏了
+  /// （2026-10-11 用户反馈：主控即使不可按也不要斜线）。
+  final bool slashWhenDisabled;
+
   const PlayerIconButton({
     super.key,
     this.icon,
@@ -38,6 +44,7 @@ class PlayerIconButton extends StatelessWidget {
     this.iconSize,
     this.large = false,
     this.label,
+    this.slashWhenDisabled = false,
   }) : assert(
          icon != null || label != null,
          'PlayerIconButton needs an icon or a label',
@@ -49,8 +56,14 @@ class PlayerIconButton extends StatelessWidget {
     final fill = active ? palette.activeFill : null;
     final effectiveIconSize =
         iconSize ?? (large ? palette.largeIconSize : palette.iconSize);
+    final isEnabled = onPressed != null;
 
-    final contentColor = active ? palette.active : palette.icon;
+    // 禁用态显式给 palette.disabled:muted 的语义是"次要但可读"（彩色主题
+    // 85% 白、墨水屏同墨色），拿来做禁用态两套主题都看不出"不能按"——
+    // 2026-10-11 手机实测后拆出独立的 disabled 色。
+    final contentColor = !isEnabled
+        ? palette.disabled
+        : (active ? palette.active : palette.icon);
     // Text 不读 IconTheme（Icon 才读），颜色必须显式给：active 态是黑圆底上的
     // 反色字，漏了颜色就是黑底黑字、整个按钮看起来是空心圆。
     final button = IconButton(
@@ -64,10 +77,17 @@ class PlayerIconButton extends StatelessWidget {
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             )
+          : !isEnabled && slashWhenDisabled
+          // 禁用 = 置灰 + 斜线,双信号,只用于"功能在此不存在"的键。
+          // 斜线是现成的设计语言(Material 的 mic_off / music_off 就是
+          // "图标+斜线",🚫 同源),靠形状不靠深浅,墨水屏灰阶下尤其可靠;
+          // 没有现成 _off 字形的图标(切换键等)用统一画法补一道。
+          ? _DisabledSlashedIcon(icon: icon!, size: effectiveIconSize)
           : Icon(icon!),
       onPressed: onPressed,
       // 墨水屏下 active 色是"实心块上的反色"，与 fill 成对由 palette 给出。
       color: active ? palette.active : palette.icon,
+      disabledColor: palette.disabled,
       iconSize: effectiveIconSize,
       padding: const EdgeInsets.all(4),
       visualDensity: VisualDensity.compact,
@@ -80,6 +100,62 @@ class PlayerIconButton extends StatelessWidget {
       child: button,
     );
   }
+}
+
+/// 禁用态的图标:原图标叠一道左上→右下的斜线(与 Material *_off 字形同向)。
+/// 颜色沿用 IconTheme(即 palette.disabled),斜线同色 —— 形状是主信号,
+/// 深浅只是辅助。
+class _DisabledSlashedIcon extends StatelessWidget {
+  final IconData icon;
+  final double size;
+
+  const _DisabledSlashedIcon({required this.icon, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    // IconButton 自己包了 IconTheme,禁用时是 disabledColor(即 palette.disabled)。
+    final color = IconTheme.of(context).color!;
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        children: [
+          Positioned.fill(child: Icon(icon, size: size, color: color)),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(painter: _DisabledSlashPainter(color: color)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 从图标框内缩 12% 的左上角画到右下角,线宽约图标 1/10 —— 比例随
+/// [PlayerIconButton.iconSize] 缩放,大小键的斜线视觉粗细一致。
+class _DisabledSlashPainter extends CustomPainter {
+  final Color color;
+
+  _DisabledSlashPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final inset = size.shortestSide * 0.12;
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = size.shortestSide * 0.1
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+      Offset(inset, inset),
+      Offset(size.width - inset, size.height - inset),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_DisabledSlashPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 /// 主播放键:圆形底 + 大图标,是整条播放条视觉的重心。
@@ -160,7 +236,10 @@ String formatPlayerRate(double rate) {
 /// 切换键位置漂移,MP3 条上音色键又整个消失)。
 ///
 /// [modeSwitch] 前画一道分隔线:它是"换一个音源",与上面那排播放设置
-/// 不是一类。书里只有一种音源时 modeSwitch 与分隔线都不画。
+/// 不是一类。**恒渲染**(含分隔线):没有另一种音源时调用方传禁用键,
+/// 按钮置灰 —— 两根播放条的结构因此完全一致,不会因为书的音源不同而
+/// 短一截(2026-10-11 反馈:无 MP3 书的 TTS 条结尾缺一截,和 MP3 条
+/// 长得不一样;不能按的按钮应该灰色,而不是消失)。
 ///
 /// FittedBox:窄屏(小屏/分屏)上整行等比缩小,不裁切也不换行。
 class PlayerAuxRow extends StatelessWidget {

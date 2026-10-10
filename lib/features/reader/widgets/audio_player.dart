@@ -209,15 +209,19 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
               tooltip: 'Shadowing: record yourself reading this sentence',
               onPressed: widget.onShadowing,
             ),
-      modeSwitch: ttsProvider == TTSProvider.none
-          ? null
-          : PlayerIconButton(
-              icon: Icons.record_voice_over,
-              tooltip: 'Switch to TTS read-aloud',
-              onPressed: () => ref
+      // 恒渲染;TTS 引擎没配置时置灰禁用,保持与 TTS 条结构一致。
+      modeSwitch: PlayerIconButton(
+        icon: Icons.record_voice_over,
+        tooltip: ttsProvider == TTSProvider.none
+            ? 'TTS read-aloud is not configured'
+            : 'Switch to TTS read-aloud',
+        onPressed: ttsProvider == TTSProvider.none
+            ? null
+            : () => ref
                   .read(playerModeProvider.notifier)
                   .setMode(PlayerMode.tts),
-            ),
+        slashWhenDisabled: true,
+      ),
     );
   }
 
