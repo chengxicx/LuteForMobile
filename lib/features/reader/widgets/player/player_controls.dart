@@ -146,17 +146,21 @@ String formatPlayerRate(double rate) {
   return '${text.isEmpty ? '1' : text}x';
 }
 
-/// 播放条辅助行的**统一布局**:倍速 → 循环 → 自动暂停 → AB → 影子跟读 →
-/// 分隔线 → 切换播放器 → 音色。MP3 与 TTS 两条播放条都走这里,槽位顺序
-/// 全项目只有这一份。
+/// 播放条辅助行的**统一布局**:倍速 → 循环 → 自动暂停 → AB/音色 → 影子跟读 →
+/// 分隔线 → 切换播放器。MP3 与 TTS 两条播放条都走这里,槽位顺序全项目
+/// 只有这一份。
 ///
 /// 存在的理由:两边各自拼 Row 时,同一个功能会慢慢漂到不同位置(倍速在
 /// MP3 是第 4 个、在 TTS 是第 1 个;"切回 MP3" 在 TTS 里插在跟读之前),
 /// 用户切一次播放器就得重新找键。功能有无用 null 表达,顺序不能由调用方改。
 ///
-/// [modeSwitch] 前画一道分隔线:分隔线右侧是"换音源/换音色"一类,与上面
-/// 那排播放设置不同类。分隔线右侧两个槽都是 TTS 条专属(MP3 条两者皆 null,
-/// 分隔线不画)。
+/// 第 4 槽是"该播放器的专属功能":MP3 条是 AB 复读,TTS 条(Edge 引擎)是
+/// 音色齿轮 —— 两条互相错开同一个槽位,切换播放器后其余键位完全镜像,
+/// 唯一变化的就是这一个键(2026-10-10 Leaf 5C 反馈:音色放分隔线右侧会让
+/// 切换键位置漂移,MP3 条上音色键又整个消失)。
+///
+/// [modeSwitch] 前画一道分隔线:它是"换一个音源",与上面那排播放设置
+/// 不是一类。书里只有一种音源时 modeSwitch 与分隔线都不画。
 ///
 /// FittedBox:窄屏(小屏/分屏)上整行等比缩小,不裁切也不换行。
 class PlayerAuxRow extends StatelessWidget {
@@ -172,14 +176,14 @@ class PlayerAuxRow extends StatelessWidget {
   /// AB 复读(只有 MP3 条有)。
   final Widget? ab;
 
+  /// 音色选择(只有 Edge TTS 的 TTS 条有,占 MP3 条 AB 的槽位)。
+  final Widget? voice;
+
   /// 影子跟读(无句子的页面为 null)。
   final Widget? shadowing;
 
   /// 切换播放器(MP3 ⇄ TTS);书里没有另一种音源时为 null。
   final Widget? modeSwitch;
-
-  /// 音色选择(只有 Edge TTS 的 TTS 条有)。
-  final Widget? voice;
 
   const PlayerAuxRow({
     super.key,
@@ -187,9 +191,9 @@ class PlayerAuxRow extends StatelessWidget {
     this.loop,
     this.autoPause,
     this.ab,
+    this.voice,
     this.shadowing,
     this.modeSwitch,
-    this.voice,
   });
 
   @override
@@ -205,16 +209,16 @@ class PlayerAuxRow extends StatelessWidget {
           ?loop,
           ?autoPause,
           ?ab,
+          ?voice,
           ?shadowing,
-          if (modeSwitch != null || voice != null) ...[
+          if (modeSwitch != null) ...[
             Container(
               width: 1,
               height: palette.iconSize,
               margin: const EdgeInsets.symmetric(horizontal: 4),
               color: palette.muted,
             ),
-            ?modeSwitch,
-            ?voice,
+            modeSwitch!,
           ],
         ],
       ),
