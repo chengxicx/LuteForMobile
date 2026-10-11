@@ -2161,7 +2161,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 .buildLocalTooltipFallback(item);
       if (seq != _tooltipSeq) return;
       if (tooltip != null && mounted) {
-        final langId = item.langId;
         // 本地词典（阶段3a）：SQLite 毫秒级查询，弹出前一次带入（卡片单帧
         // 绘制，墨水屏不重绘）。查询链：原文 → 读音 → 去敬语前缀。
         String? dictGloss;
@@ -2173,7 +2172,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           dictGloss = null;
         }
         if (seq != _tooltipSeq) return;
-        if (tooltip != null && mounted) {
+        // 这里不再重复判 tooltip：上面的 if 已经把它提升成非空，再写一次
+        // 会被判为恒真。但 mounted 必须再查一遍——中间隔了一次 await，
+        // widget 可能已经 dispose，此时 show 卡片会炸。
+        if (mounted) {
           final langId = item.langId;
           // An annotated reading (romanization) outranks the surface form for
           // TTS -- the engine pronounces the reading the user wrote down.

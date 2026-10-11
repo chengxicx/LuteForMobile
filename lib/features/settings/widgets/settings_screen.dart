@@ -1650,7 +1650,7 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
         }
         return;
       }
-      final ok = await ref
+      final result = await ref
           .read(dictRepositoryProvider)
           .importMdx(path, onProgress: (processed) {
         if (mounted) setState(() => _processed = processed);
@@ -1658,7 +1658,15 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       if (!mounted) return;
       setState(() {
         _importing = false;
-        if (!ok) _error = '解析失败：加密词典或不支持的格式';
+        _error = switch (result.status) {
+          ImportStatus.ok => '',
+          // 解析器的报错本身就写清了原因（哪种编码、是不是 regcode 加密），
+          // 直接透出来，比笼统一句"格式不支持"有用。
+          ImportStatus.unsupported => '这本词典暂不支持：${result.message}',
+          ImportStatus.corrupt => '文件读不出来：${result.message}',
+          ImportStatus.empty => result.message,
+          ImportStatus.ioError => '导入失败：${result.message}',
+        };
       });
       await _refreshInstalled();
     } catch (e) {
@@ -1679,10 +1687,12 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       subtitle = '下载中 ${_percent < 0 ? '' : '$_percent%'}…';
     } else if (_importing) {
       subtitle = '解析中… 已处理 $_processed 条';
+    } else if (_error.isNotEmpty) {
+      // 必须排在 installed 前面：已经装好一本词典时再导一本失败的，若先走
+      // installed 分支，副标题会照旧显示"已就绪"，用户以为这次也成功了。
+      subtitle = _error;
     } else if (installed) {
       subtitle = '已就绪 · 词卡释义离线可用';
-    } else if (_error.isNotEmpty) {
-      subtitle = _error;
     } else {
       subtitle = '下载已转换的词典，或在设备上导入 .mdx 文件';
     }

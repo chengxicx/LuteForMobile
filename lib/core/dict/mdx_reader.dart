@@ -3,11 +3,23 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'lzo1x.dart';
+import 'mdx_crypto.dart';
+
+/// 文件本身是 MDX，但用到了本解析器还不支持的特性（GBK 编码、v3 记录区、
+/// regcode 加密…）。与「文件损坏」区分开：导入失败时前者能告诉用户
+/// "换一本"，后者只能告诉用户"这个文件坏了"。
+class MdxUnsupportedException extends FormatException {
+  const MdxUnsupportedException(super.message);
+}
 
 /// 纯 Dart 的 MDX 词典解析器（移植自 mdict_utils 的 readmdict.py，GPL 部分
 /// 算法参考、代码重写）。支持：MDX v1.2 / v2.0 / v3.0，Encoding = UTF-8 或
-/// UTF-16，块压缩 = 无 / zlib / LZO1X。**不支持加密词典**（Encrypted=1/2、
-/// 带 regcode/UUID 的密钥加密）——mdict.org 的免费词典绝大多数不加密。
+/// UTF-16，块压缩 = 无 / zlib / LZO1X，头部 `Encrypted="2"`（key block info
+/// 的异或混淆，密钥可由 adler32 推出，不需要密码——现实中大多数 MDX 2.0
+/// 都是这一档）。
+///
+/// **不支持** `Encrypted="1"`：那是 MdxBuilder 用 regcode 做的真加密，密钥
+/// 只有制作者有；免费词典几乎不用，也不该靠猜密码硬碰。
 ///
 /// 用法：`MdxReader(path)` 打开文件，`entries()` 流式产出（key, 定义原文）。
 /// key 与定义都可能是 MDX 内部的 HTML 片段（key 常带链接包装），展示前
@@ -22,7 +34,12 @@ class MdxReader {
   final Uint8List _bytes;
 
   late final double version;
-  late final String encoding;
+
+  /// 实际使用的编码。**不能是 `late final`**：_readHeader 里要赋值多次
+  /// （GBK/GB2312 → GB18030 归一化、v3 强制 UTF-8），写成 final 会在
+  /// 第二次赋值时抛 LateInitializationError——那是个跟"编码不支持"
+  /// 毫无关系的报错，很难查。
+  late String encoding;
   int _numberWidth = 8;
   bool _utf16 = false;
   int _encrypt = 0;
@@ -49,13 +66,39 @@ class MdxReader {
   }
 
   Uint8List _decodeBlock(Uint8List block, int decompressedSize) {
+    if (block.length < 8) {
+      throw const FormatException('MDX: 数据块头部不足 8 字节');
+    }
     final info = _le32(block, 0);
     final compression = info & 0xf;
     final encryption = (info >> 4) & 0xf;
+    final encryptionSize = (info >> 8) & 0xff;
+
+    var data = Uint8List.sublistView(block, 8);
     if (encryption != 0) {
-      throw const FormatException('MDX: 加密词典暂不支持（Encrypted）');
+      if (encryption != 1) {
+        // method 2 是 Salsa20/8。它和 `Encrypted=1` 是同一套 regcode 机制，
+        // 没用户密钥就无法进行；免费词典里不会出现。
+        throw MdxUnsupportedException(
+          'MDX: 不支持的块加密方式 $encryption（需要 regcode）',
+        );
+      }
+      if (encryptionSize > data.length) {
+        throw const FormatException('MDX: 加密长度超出数据块');
+      }
+      // 无用户密钥时，块密钥只由本块 adler32 派生
+      //（readmdict：`encrypted_key = ripemd128(block[4:8])`）。
+      final key = blockKeyFromAdler32(Uint8List.sublistView(block, 4, 8));
+      final head = fastDecrypt(
+        Uint8List.sublistView(data, 0, encryptionSize),
+        key,
+      );
+      data = Uint8List.fromList([
+        ...head,
+        ...Uint8List.sublistView(data, encryptionSize),
+      ]);
     }
-    final data = Uint8List.sublistView(block, 8);
+
     switch (compression) {
       case 0:
         return data;
@@ -64,13 +107,25 @@ class MdxReader {
       case 2:
         return _zlibDecode(data);
       default:
-        throw FormatException('MDX: 未知压缩方式 $compression');
+        throw MdxUnsupportedException('MDX: 未知压缩方式 $compression');
     }
   }
 
   // —— Header ——
   void _readHeader() {
+    // 头部长度的合理性先卡住：拿一个 JPEG/PDF 当 .mdx 导入时，前 4 字节
+    // 会解出一个天文数字，若不判就会在 sublistView 上抛 RangeError——
+    // 那是个"越界"错误，看不出是文件选错了。
+    if (_bytes.length < 16) {
+      throw const FormatException('MDX: 文件过小，不是 MDX 词典');
+    }
     final headerLen = _be(_bytes, 0, 4);
+    if (headerLen <= 0 || 4 + headerLen + 4 > _bytes.length) {
+      throw FormatException(
+        'MDX: 头部长度 $headerLen 超出文件大小（${_bytes.length} 字节），'
+        '不是 MDX 词典',
+      );
+    }
     var headerBytes = Uint8List.sublistView(_bytes, 4, 4 + headerLen);
     // 头部 XML 后固定 4 字节 adler32（v1.2 和 v2.0 都写，见
     // writemdict._write_header 末尾那条无条件的 b"<L"）；这里不校验，
@@ -90,6 +145,13 @@ class MdxReader {
     }
     final headerText = String.fromCharCodes(units);
 
+    // MDX 头部恒为 `<?xml ...?><Dictionary ...>`（writemdict 与 MdxBuilder
+    // 都这样写，实测 14 本不同来源的词典无一例外）。少了这个标签说明
+    // 选错了文件——比后面 zlib 报"数据损坏"有用得多。
+    if (!headerText.contains('<Dictionary')) {
+      throw const FormatException('MDX: 头部缺少 <Dictionary> 标签，不是 MDX 词典');
+    }
+
     final tags = <String, String>{};
     final regex = RegExp('([A-Za-z0-9_]+)="([^"]*)"', dotAll: true);
     for (final m in regex.allMatches(headerText)) {
@@ -104,14 +166,26 @@ class MdxReader {
     encoding = (tags['Encoding'] ?? 'utf-8').toUpperCase();
     if (encoding == 'GBK' || encoding == 'GB2312') encoding = 'GB18030';
     if (encoding != 'UTF-8' && encoding != 'UTF-16' && encoding != 'UTF-16LE') {
-      throw FormatException('MDX: 暂不支持编码 $encoding（仅 UTF-8 / UTF-16）');
+      throw MdxUnsupportedException(
+        'MDX: 暂不支持编码 $encoding（仅 UTF-8 / UTF-16）',
+      );
     }
     _utf16 = encoding.startsWith('UTF-16');
 
     final encrypted = tags['Encrypted'] ?? 'No';
-    _encrypt = encrypted == 'No' ? 0 : int.tryParse(encrypted) ?? 0;
-    if (_encrypt != 0) {
-      throw FormatException('MDX: 加密词典暂不支持（Encrypted=$_encrypt）');
+    // readmdict 的语义：缺省或 'No' → 0，'Yes' → 1，其余按十进制数字解析。
+    _encrypt = switch (encrypted) {
+      'No' => 0,
+      'Yes' => 1,
+      _ => int.tryParse(encrypted) ?? 0,
+    };
+    if (_encrypt & 1 != 0) {
+      // bit0 = 真加密：key 区开头 5 个数字、以及带 encryption_method 的块
+      // 都要用 regcode 派生出的密钥解。没有那个密钥就无法继续，明确拒绝。
+      throw MdxUnsupportedException(
+        'MDX: 该词典用 regcode 加密（Encrypted=$_encrypt），'
+        '需要制作者提供的密钥，暂不支持',
+      );
     }
 
     version = double.parse(tags['GeneratedByEngineVersion'] ?? '2.0');
@@ -153,7 +227,27 @@ class MdxReader {
     final list = <(int, int)>[];
     if (version >= 2) {
       // zlib 压缩；首 4 字节 02 00 00 00，再 4 字节 adler，再 zlib 数据
-      final decompressed = _zlibDecode(Uint8List.sublistView(info, 8));
+      if (info.length < 8) {
+        throw const FormatException('MDX: key block info 不足 8 字节');
+      }
+      // v2 的这段前缀恒为 02 00 00 00（compression=2, encryption=0）。
+      // 它也是偏移错误的探针：key 区起点错了这里第一个就炸。
+      assert(
+        info[0] == 2 && info[1] == 0 && info[2] == 0 && info[3] == 0,
+        'key block info 前缀应为 02 00 00 00，实际 '
+        '${info.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}',
+      );
+      var payload = Uint8List.sublistView(info, 8);
+      if (_encrypt & 0x02 != 0) {
+        // Encrypted=2：这段索引表被异或混淆过，密钥由它自己的 adler32 推出，
+        // 不需要任何密码。MdxBuilder 里「允许导出文本」默认不勾，所以现实中
+        // 大多数 MDX 2.0 都落在这条分支上。
+        payload = fastDecrypt(
+          payload,
+          encryptedKeyBlockInfoKey(Uint8List.sublistView(info, 4, 8)),
+        );
+      }
+      final decompressed = _zlibDecode(payload);
       // 解压长度必须等于 key 区头部声明的值。这条断言正是冲着"少跳
       // 4 字节"那类偏移错误来的：偏移错了这里立刻炸，而不是等到记录区
       // 切分时才出现莫名其妙的结果。
@@ -241,11 +335,11 @@ class MdxReader {
     // adler32 的第 1 个字节开始读，_decodeKeyBlockInfo 里跳掉的 8 字节
     // 前缀对不上，zlib 直接抛 "incorrect header check" —— 报错位置离
     // 真正的偏移错误很远，别被带偏。
+    //
+    // （`Encrypted=1` 时这 5 个数字本身还要先 Salsa20 解一遍；那档在
+    // _readHeader 里就已经拒绝了，这里不必再判。）
     final numBytes = version >= 2 ? 8 * 5 + 4 : 4 * 4;
     final block = Uint8List.sublistView(_bytes, offset, offset + numBytes);
-    if (_encrypt & 1 != 0) {
-      throw const FormatException('MDX: 加密词典暂不支持');
-    }
 
     var pos = 0;
     final numKeyBlocks = _readNumber(block, pos);
@@ -349,7 +443,7 @@ class MdxReader {
     var keyIndex = 0;
     if (version >= 3) {
       // v3 的记录区同样走块扫描：从 record 区起点（key data 之后继续扫）
-      throw const FormatException('MDX: v3 记录区暂不支持');
+      throw const MdxUnsupportedException('MDX: v3 记录区暂不支持');
     }
 
     var pos = _recordBlockOffset;

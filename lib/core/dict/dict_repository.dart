@@ -9,6 +9,54 @@ import 'package:sqflite/sqflite.dart';
 
 import 'mdx_reader.dart';
 
+/// 导入结果。比 `bool` 多带一条给用户看的理由——导入失败的原因差别很大
+/// （"这本词典需要密码" vs "这个文件坏了" vs "选错了文件"），只回一个
+/// false 会让三种情况显示同一句没用的提示。
+class ImportResult {
+  const ImportResult.ok(this.entries)
+      : status = ImportStatus.ok,
+        message = '';
+  const ImportResult.unsupported(String this.message)
+      : status = ImportStatus.unsupported,
+        entries = 0;
+  const ImportResult.corrupt(String this.message)
+      : status = ImportStatus.corrupt,
+        entries = 0;
+  const ImportResult.empty()
+      : status = ImportStatus.empty,
+        entries = 0,
+        message = '这个文件里没有解析出任何词条';
+  const ImportResult.ioError(String this.message)
+      : status = ImportStatus.ioError,
+        entries = 0;
+
+  final ImportStatus status;
+
+  /// 已写入的词条数（仅 [ImportStatus.ok] 时有意义）。
+  final int entries;
+
+  /// 面向用户的失败原因；成功时为空串。
+  final String message;
+
+  bool get ok => status == ImportStatus.ok;
+}
+
+enum ImportStatus {
+  ok,
+
+  /// 文件是 MDX，但用了本解析器不支持的特性（GBK、v3 记录区、regcode 加密…）。
+  unsupported,
+
+  /// 文件损坏、被截断，或根本不是 MDX。
+  corrupt,
+
+  /// 解析通了但一条词条都没有（空词典/词头全为空）。
+  empty,
+
+  /// 读写失败（磁盘满、文件被删、数据库打不开…）。
+  ioError,
+}
+
 /// 本地词典（阶段 3）：SQLite 两表结构（terms/entries），来源两种——
 ///  1. 从任意 URL 下载**已转换**的词典库（服务器可把 MDX 转好，见
 ///     lute-v3 tools/mdx_to_sqlite.py）；
@@ -100,18 +148,22 @@ class DictRepository {
 
   /// 在设备上导入 .mdx：解析 → 去重转换 → 写临时库 → 原子改名激活。
   /// [onProgress] 收到已处理的词条数（总量解析前未知）。
-  Future<bool> importMdx(
+  ///
+  /// 任何失败都先删掉半截的 `import.tmp` 再返回，绝不留下一个能被打开的
+  /// 残缺库——否则下次 lookup 会打开它并给出乱七八糟的结果。
+  Future<ImportResult> importMdx(
     String mdxPath, {
     void Function(int processed)? onProgress,
   }) async {
     File? tmp;
+    Database? db;
     try {
       final reader = MdxReader.fromFile(mdxPath);
 
       final dir = await _dictDir();
       tmp = File(p.join(dir.path, 'import.tmp'));
       if (tmp.existsSync()) tmp.deleteSync();
-      final db = await openDatabase(tmp.path);
+      db = await openDatabase(tmp.path);
       await db.execute('CREATE TABLE entries(eid INTEGER PRIMARY KEY, def TEXT)');
       await db.execute('CREATE TABLE terms(word TEXT NOT NULL, eid INTEGER NOT NULL)');
       await db.execute('CREATE INDEX idx_terms ON terms(word)');
@@ -126,7 +178,7 @@ class DictRepository {
 
       Future<void> flush() async {
         if (batchE.isNotEmpty) {
-          await db.writeEntryBatch(batchE, batchT);
+          await db!.writeEntryBatch(batchE, batchT);
           batchE.clear();
           batchT.clear();
         }
@@ -155,22 +207,43 @@ class DictRepository {
       }
       await flush();
       await db.close();
+      db = null;
 
       if (entries == 0) {
         if (tmp.existsSync()) tmp.deleteSync();
-        return false;
+        return const ImportResult.empty();
       }
       final active = await _activeFile();
       if (active.existsSync()) active.deleteSync();
       tmp.renameSync(active.path);
       _invalidate();
-      return true;
+      return ImportResult.ok(entries);
+    } on MdxUnsupportedException catch (e) {
+      // 必须排在 FormatException 前面——它就是这个类的子类。
+      await _discard(db, tmp);
+      return ImportResult.unsupported(e.message);
+    } on FormatException catch (e) {
+      // 含 zlib/LZO 的"数据坏了"、头部校验不过、以及选错文件。
+      await _discard(db, tmp);
+      return ImportResult.corrupt(e.message);
+    } on RangeError catch (e) {
+      // 文件被截断时常见：偏移读到了文件尾之外。
+      await _discard(db, tmp);
+      return ImportResult.corrupt('MDX: 文件被截断或长度字段不一致（$e）');
     } catch (e) {
-      try {
-        if (tmp != null && tmp.existsSync()) tmp.deleteSync();
-      } catch (_) {}
-      return false;
+      await _discard(db, tmp);
+      return ImportResult.ioError('$e');
     }
+  }
+
+  /// 失败收尾：关掉可能还开着的临时库，删掉半截文件。
+  Future<void> _discard(Database? db, File? tmp) async {
+    try {
+      if (db != null) await db.close();
+    } catch (_) {}
+    try {
+      if (tmp != null && tmp.existsSync()) tmp.deleteSync();
+    } catch (_) {}
   }
 
   /// 按候选词链查询释义（已剥 HTML 的纯文本，带换行）。查不到返回 null。
