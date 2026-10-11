@@ -392,12 +392,18 @@ class MdxReader {
           recordStart - offset,
           recordEnd - offset,
         );
-        final definition = _utf16
+        var definition = _utf16
             ? String.fromCharCodes([
                 for (var j = 0; j + 1 < textBytes.length; j += 2)
                   textBytes[j] | (textBytes[j + 1] << 8),
               ])
             : utf8.decode(textBytes, allowMalformed: true);
+        // 切片一路切到下一条记录的开头，会把终止本条的 NUL 分隔符一起吞进来
+        // —— 真实文件每条记录都以 NUL 结尾（writemdict / MdxBuilder 都会写），
+        // key 侧的 _splitKeyBlock 是显式跳过它的。Dart 的 trim() 不去 \u0000，
+        // 留着就会跟着释义一路进到词卡。mdict-utils 在 MDX._treat_record_data
+        // 里做同样的剥离（.strip('\x00')）。
+        definition = definition.replaceAll(RegExp(r'^\u0000+|\u0000+$'), '');
         yield MapEntry(keyList[keyIndex - 1].value, definition);
       }
       offset += block.length;
