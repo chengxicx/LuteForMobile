@@ -225,36 +225,53 @@ class _TooltipContent extends ConsumerWidget {
               ],
               // 发音入口就是单词旁的喇叭：紧凑文字按钮挤在卡片底部容易误点，
               // 改成无文字图标贴着单词。Flexible 保证长词换行时喇叭不被挤出卡片。
-              // 行取满卡片宽（IntrinsicWidth 定下的最宽子项宽度），Dict 角标
-              // 用 Spacer 钉在右上角——词典跳转入口独占一角，不挤底部按钮行。
+              //
+              // 2026-10-12 修正四字词折行：以前 Dict 角标用 Spacer（flex=1）
+              // 钉右侧，与单词的 Flexible 凑成两个 flex 单位 —— IntrinsicWidth
+              // 会把行宽算成「无 flex 子项宽 + 2×单词宽」，而实际布局里剩余
+              // 宽度对半分给单词和空隙，四字日语词（15px×4=60px）分到 ~56px
+              // 不够一行就折行。现在把喇叭收进单词的 min 内层行、外层
+              // spaceBetween：行宽按单词一行的自然宽收敛，Dict 仍贴右缘；
+              // 卡片被更宽的释义撑开时 Dict 照样靠右、喇叭贴着单词不漂移。
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Flexible(
-                    child: Text(
-                      termTooltip.term,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        fontSize: eink ? 15 : null,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            termTooltip.term,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: eink ? 15 : null,
+                                ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (onSpeak != null)
+                          IconButton(
+                            onPressed: onSpeak,
+                            tooltip: 'Pronounce',
+                            icon: const Icon(Icons.volume_up),
+                            iconSize: 20,
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.all(6),
+                            constraints: const BoxConstraints(
+                              minWidth: 36,
+                              minHeight: 36,
+                            ),
+                            color: context.appColorScheme.material3.primary,
+                          ),
+                      ],
                     ),
                   ),
-                  if (onSpeak != null)
-                    IconButton(
-                      onPressed: onSpeak,
-                      tooltip: 'Pronounce',
-                      icon: const Icon(Icons.volume_up),
-                      iconSize: 20,
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      color: context.appColorScheme.material3.primary,
-                    ),
-                  if (onDictLookup != null) ...[
-                    const Spacer(),
-                    _DictCornerButton(onPressed: onDictLookup!),
-                  ],
+                  if (onDictLookup != null) _DictCornerButton(onPressed: onDictLookup!),
                 ],
               ),
               if (termTooltip.romanization != null) ...[

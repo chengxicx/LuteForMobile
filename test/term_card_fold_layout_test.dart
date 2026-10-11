@@ -219,6 +219,35 @@ void main() {
         TermTooltipClass.close();
       });
     });
+
+    group('四字词不折行（2026-10-12 反馈）', () {
+      testWidgets('带喇叭 + Dict 角标：单词保持一行', (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        late final BuildContext hostContext;
+        await tester.pumpWidget(_tooltipHost(
+          onContext: (context) => hostContext = context,
+        ));
+        TermTooltipClass.show(
+          hostContext,
+          TermTooltip(term: '四字熟語', translation: '由四个汉字组成的熟语。', status: '1'),
+          const Rect.fromLTWH(200, 400, 60, 30),
+          onSpeak: () {},
+          onDictLookup: () {},
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+
+        final termSize = tester.getSize(find.text('四字熟語'));
+        // Ahem 字体 titleSmall(14, height≈1.43) 单行 ≈20。旧实现的 Spacer
+        // （flex=1）和单词的 Flexible 对半分剩余宽，四字词（56px）分到
+        // ~56px 差一点就折成两行（≈40）。
+        expect(termSize.height, lessThan(25.0),
+            reason: '四字词在词卡标题行必须保持一行');
+
+        TermTooltipClass.close();
+      });
+    });
   });
 }
 

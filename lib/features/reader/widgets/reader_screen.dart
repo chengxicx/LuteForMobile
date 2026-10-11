@@ -2162,12 +2162,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       if (seq != _tooltipSeq) return;
       if (tooltip != null && mounted) {
         // 本地词典（阶段3a）：SQLite 毫秒级查询，弹出前一次带入（卡片单帧
-        // 绘制，墨水屏不重绘）。查询链：原文 → 读音 → 去敬语前缀。
+        // 绘制，墨水屏不重绘）。按当前书的语言查对应词典库；该语言没装
+        // 专属词典时回落到旧版共享库。查询链：原文 → 读音 → 去敬语前缀。
         String? dictGloss;
         try {
           dictGloss = await ref
               .read(dictRepositoryProvider)
-              .lookupWithReading(tooltip.term, tooltip.romanization);
+              .lookupWithReading(
+                tooltip.term,
+                tooltip.romanization,
+                langId: item.langId,
+              );
         } catch (_) {
           dictGloss = null;
         }
