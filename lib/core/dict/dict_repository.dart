@@ -58,38 +58,39 @@ enum ImportStatus {
 }
 
 /// 本地词典（阶段 3）：SQLite 两表结构（terms/entries），来源两种——
-///  1. 从任意 URL 下载**已转换**的词典库（服务器可把 MDX 转好，见
-///     lute-v3 tools/mdx_to_sqlite.py）；
+///  1. 从服务器词典池选一本下载（GET /dict/status 列表 → 静态地址下载，
+///     见 ServerDictionary.urlFor）；
 ///  2. 在设备上直接**导入 .mdx 文件**（纯 Dart MDX 解析器，本地转换）。
 ///
-/// 激活库固定为 support/dict/active.db：下载/导入都写成临时文件再原子
-/// 改名覆盖，旧版直接下载到 ja_zh_shogakukan_v2.db 的文件按 legacy 兼容
-/// （lookup 优先 active，legacy 兜底）。
+/// 词典按语言分库：激活库固定为 support/dict/`active_<langId>.db`，下载/导入
+/// 都必须带 langId，写成临时文件再原子改名覆盖对应语言的库。查询也按 langId
+/// 路由——读日语书查日语库，读韩语书查韩语库，互不干扰。
+///
+/// 兼容旧版单词典时代：用户升级前装好的 active.db（及更早的
+/// ja_zh_shogakukan_v2.db）不迁移（仓库层无法知道它是哪门语言），而是作为
+/// **查询回落**：某语言没有自己的 `active_<langId>.db` 时回落到旧库。行为与
+/// 升级前完全一致；一旦给该语言下载/导入了专属词典，即优先生效。
 ///
 /// 查询链：词条原文 → 读音 → 去掉开头的敬语前缀（お/ご）。词典键多数是
 /// 假名读音（日汉词典典型结构），活用形还原（楽しかっ→たのしい）待做。
 class DictRepository {
   DictRepository();
 
-  /// 激活词典库（下载与导入都落到这里）。
-  static const String _activeName = 'active.db';
+  /// 各语言的激活词典库（下载与导入都落到这里）。
+  static String activeFileName(int langId) => 'active_$langId.db';
 
-  /// 旧版直接下载的文件名（兼容：存在即当词典用）。
+  /// 旧版单词典时代的激活库（兼容：查询回落用）。
+  static const String _legacySharedName = 'active.db';
+
+  /// 更早版本直接下载的文件名（兼容：查询回落用）。
   static const String _legacyName = 'ja_zh_shogakukan_v2.db';
-
-  /// 默认的已转换词典地址（设置里可改）。
-  static String urlOnServer(String serverUrl) {
-    final normalized = serverUrl.endsWith('/')
-        ? serverUrl.substring(0, serverUrl.length - 1)
-        : serverUrl;
-    return '$normalized/static/dict/ja_zh_shogakukan_v2.db';
-  }
 
   final Dio _dio = Dio();
 
   Database? _db;
-  Future<Database>? _opening;
   String? _openedPath;
+  Future<Database>? _opening;
+  String? _openingPath;
 
   Future<Directory> _dictDir() async {
     final dir = await getApplicationSupportDirectory();
@@ -98,22 +99,46 @@ class DictRepository {
     return dictDir;
   }
 
-  Future<File> _activeFile() async =>
-      File(p.join((await _dictDir()).path, _activeName));
+  Future<File> _activeFile(int langId) async =>
+      File(p.join((await _dictDir()).path, activeFileName(langId)));
 
   Future<File?> _legacyFile() async {
     final file = File(p.join((await _dictDir()).path, _legacyName));
     return file.existsSync() ? file : null;
   }
 
-  /// 词典是否已就绪（active 或 legacy 任一存在）。
-  Future<bool> isInstalled() async =>
-      (await _activeFile()).existsSync() || (await _legacyFile()) != null;
+  /// 某语言的专属词典是否已就绪（严格判定：只看 `active_<langId>.db`，
+  /// 不含旧版回落库——否则装了日语词典后所有语言都显示"已就绪"，
+  /// 用户分不清哪门语言有自己的词典）。
+  Future<bool> isInstalled(int langId) async =>
+      (await _activeFile(langId)).existsSync();
 
-  /// 从 URL 下载已转换的词典库。写成临时文件再原子改名覆盖激活库；
-  /// 失败清掉半截文件。
+  /// 是否存在旧版单词典时代的库（查询回落的数据源）。
+  Future<bool> hasLegacyDict() async {
+    final dir = await _dictDir();
+    if (File(p.join(dir.path, _legacySharedName)).existsSync()) return true;
+    return (await _legacyFile()) != null;
+  }
+
+  /// 已安装专属词典的语言列表（扫 dict 目录里的 `active_<langId>.db`）。
+  Future<List<int>> installedLangIds() async {
+    final dir = await _dictDir();
+    final reg = RegExp(r'^active_(\d+)\.db$');
+    final ids = <int>[];
+    for (final entity in dir.listSync()) {
+      if (entity is! File) continue;
+      final m = reg.firstMatch(p.basename(entity.path));
+      if (m != null) ids.add(int.parse(m.group(1)!));
+    }
+    ids.sort();
+    return ids;
+  }
+
+  /// 从 URL 下载已转换的词典库，落到 [langId] 语言的激活库。
+  /// 写成临时文件再原子改名覆盖；失败清掉半截文件。
   Future<bool> download(
     String url, {
+    required int langId,
     void Function(int received, int total)? onProgress,
   }) async {
     File? tmp;
@@ -133,7 +158,7 @@ class DictRepository {
         if (tmp.existsSync()) tmp.deleteSync();
         return false;
       }
-      final active = await _activeFile();
+      final active = await _activeFile(langId);
       if (active.existsSync()) active.deleteSync();
       tmp.renameSync(active.path);
       _invalidate();
@@ -147,12 +172,14 @@ class DictRepository {
   }
 
   /// 在设备上导入 .mdx：解析 → 去重转换 → 写临时库 → 原子改名激活。
-  /// [onProgress] 收到已处理的词条数（总量解析前未知）。
+  /// 落到 [langId] 语言的激活库。[onProgress] 收到已处理的词条数
+  /// （总量解析前未知）。
   ///
   /// 任何失败都先删掉半截的 `import.tmp` 再返回，绝不留下一个能被打开的
   /// 残缺库——否则下次 lookup 会打开它并给出乱七八糟的结果。
   Future<ImportResult> importMdx(
     String mdxPath, {
+    required int langId,
     void Function(int processed)? onProgress,
   }) async {
     File? tmp;
@@ -213,7 +240,7 @@ class DictRepository {
         if (tmp.existsSync()) tmp.deleteSync();
         return const ImportResult.empty();
       }
-      final active = await _activeFile();
+      final active = await _activeFile(langId);
       if (active.existsSync()) active.deleteSync();
       tmp.renameSync(active.path);
       _invalidate();
@@ -247,11 +274,20 @@ class DictRepository {
   }
 
   /// 按候选词链查询释义（已剥 HTML 的纯文本，带换行）。查不到返回 null。
-  Future<String?> lookupWithReading(String term, String? reading) async {
+  ///
+  /// [langId] 决定查哪个语言的词典库；没有语言专属词典时回落到旧版
+  /// 单典故时代的库（见类注释）。langId 为 null（正文缺语言信息）时
+  /// 无法路由，直接返回 null。
+  Future<String?> lookupWithReading(
+    String term,
+    String? reading, {
+    int? langId,
+  }) async {
+    if (langId == null) return null;
     final candidates = lookupCandidates(term, reading);
     if (candidates.isEmpty) return null;
     try {
-      final db = await _open();
+      final db = await _openFor(langId);
       for (final word in candidates) {
         final rows = await db.query(
           'terms',
@@ -278,35 +314,50 @@ class DictRepository {
     }
   }
 
-  Future<Database> _open() {
+  /// 解析 [langId] 应使用的词典文件：语言专属库 → 旧版共享库 → 更早的
+  /// legacy 库。都没有则返回 null（词典未安装）。
+  Future<File?> _resolveDictFile(int langId) async {
+    final perLang = await _activeFile(langId);
+    if (perLang.existsSync()) return perLang;
+    final dir = await _dictDir();
+    final shared = File(p.join(dir.path, _legacySharedName));
+    if (shared.existsSync()) return shared;
+    return _legacyFile();
+  }
+
+  /// 单槽打开缓存：阅读一次只查一本书的语言，同路径复用连接，跨语言
+  /// 切换（阅读中不会发生）时重开一次。
+  Future<Database> _openFor(int langId) async {
+    final file = await _resolveDictFile(langId);
+    if (file == null) throw const FileSystemException('词典未下载');
     final existing = _db;
-    if (existing != null && _openedPath == existing.path) {
+    if (existing != null && _openedPath == file.path) {
       return Future.value(existing);
     }
-    return _opening ??= () async {
-      try {
-        final active = await _activeFile();
-        File file;
-        if (active.existsSync()) {
-          file = active;
-        } else {
-          final legacy = await _legacyFile();
-          if (legacy == null) throw const FileSystemException('词典未下载');
-          file = legacy;
-        }
-        final db = await openDatabase(file.path, readOnly: true);
-        _db = db;
-        _openedPath = file.path;
-        return db;
-      } catch (e) {
-        _opening = null;
-        rethrow;
-      }
-    }();
+    if (_opening != null && _openingPath == file.path) {
+      return _opening!;
+    }
+    final opening = _openFile(file);
+    _opening = opening;
+    _openingPath = file.path;
+    return opening;
+  }
+
+  Future<Database> _openFile(File file) async {
+    try {
+      final db = await openDatabase(file.path, readOnly: true);
+      _db = db;
+      _openedPath = file.path;
+      return db;
+    } catch (e) {
+      _opening = null;
+      rethrow;
+    }
   }
 
   void _invalidate() {
     _opening = null;
+    _openingPath = null;
     if (_db != null) {
       try {
         _db!.close();

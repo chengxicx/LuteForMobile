@@ -1234,6 +1234,27 @@ class ApiService {
     }
   }
 
+  /// GET /dict/status —— 服务器词典池列表（设置页"本地词典"卡片用）。
+  /// 解析（ServerDictionary.parseStatusResponse）归调用方。
+  ///
+  /// 需要登录态（多用户模式下受会话保护）；池内 .db 文件本身的静态下载
+  /// 不需要。任何失败——服务器没配、没登录、服务端没有这个端点——都
+  /// 返回 null，调用方降级到"列表不可用"并保留本地导入入口。
+  Future<Map<String, dynamic>?> getDictStatus() async {
+    try {
+      final response = await _dio.get<String>(
+        '/dict/status',
+        options: Options(extra: _noQueue),
+      );
+      final data = response.data;
+      if (data == null || data.isEmpty) return null;
+      final json = jsonDecode(data);
+      return json is Map<String, dynamic> ? json : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   Future<Response<String>> fetchAllTerms({
     int start = 0,
     int length = 1000,
