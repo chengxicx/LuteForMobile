@@ -14,15 +14,23 @@
 //   6. 翻页：点画面右 1/3 下一页、左 1/3 上一页、中间不翻；框被钉住时
 //      第一下点击只收起；横向快滑翻页；放大状态下平移到横向边界后
 //      再快滑才翻页（边界内快滑仍是平移）；
-//   7. 适应全屏（fitToScreen）：整页缩放进视口、水平居中留白，1x 不裁边。
+//   7. 适应全屏（fitToScreen）：整页缩放进视口、水平居中留白，1x 不裁边；
+//   8. 双击同一个词（竖排可跨字格）折进 onDoubleTap 快速变状态；三击开关
+//      打开时第三下折进 onTripleTap，间隔超过窗口仍是两次单击；
+//   9. 词卡开着时，点画面空白处或另一个框都要把词卡关掉（翻页关卡在
+//      reader_screen 的 _turnPage，这里测不到）。
 //
 // 运行：flutter test test/manga_vertical_render_test.dart
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:song_mobile/features/reader/models/manga_page.dart';
+import 'package:song_mobile/features/reader/models/term_tooltip.dart';
 import 'package:song_mobile/features/reader/models/text_item.dart';
 import 'package:song_mobile/features/reader/widgets/manga_page_view.dart';
+import 'package:song_mobile/features/reader/widgets/term_tooltip.dart';
 
 TextItem _item(String text, {int order = 0}) => TextItem(
       text: text,
@@ -69,23 +77,46 @@ MangaPageData _page() => MangaPageData(
 Widget _host(
   MangaPageData page, {
   void Function(TextItem)? onTap,
+  void Function(TextItem)? onDoubleTap,
+  void Function(TextItem)? onTripleTap,
+  bool enableTripleTap = false,
+  int doubleTapTimeout = 300,
   void Function(bool forward)? onTurnPage,
   bool revealAll = false,
   bool fitToScreen = false,
   double height = 700,
+  void Function(BuildContext)? onContext,
 }) {
+  final view = MangaPageView(
+    manga: page,
+    imageUrl: 'https://example.test/001.jpg',
+    revealAll: revealAll,
+    fitToScreen: fitToScreen,
+    onTurnPage: onTurnPage,
+    onTap: onTap == null ? null : (item, _) => onTap(item),
+    onDoubleTap: onDoubleTap,
+    onTripleTap: onTripleTap,
+    enableTripleTap: enableTripleTap,
+    doubleTapTimeout: doubleTapTimeout,
+  );
+  if (onContext == null) {
+    return MaterialApp(
+      home: Scaffold(
+        body: SizedBox(width: 400, height: height, child: view),
+      ),
+    );
+  }
+  // 让测试拿到 Overlay 所在的 BuildContext（弹词卡用）。
   return MaterialApp(
     home: Scaffold(
       body: SizedBox(
         width: 400,
         height: height,
-        child: MangaPageView(
-          manga: page,
-          imageUrl: 'https://example.test/001.jpg',
-          revealAll: revealAll,
-          fitToScreen: fitToScreen,
-          onTurnPage: onTurnPage,
-          onTap: onTap == null ? null : (item, _) => onTap(item),
+        child: Builder(
+          builder: (context) {
+            onContext(context);
+            return view;
+          },
         ),
       ),
     ),
@@ -171,6 +202,86 @@ void main() {
     expect(tapped, ['待ったー']);
   });
 
+  testWidgets('双击同一个词触发 onDoubleTap（快速变状态），单击照旧', (tester) async {
+    final tapped = <String>[];
+    final doubled = <String>[];
+    await tester.pumpWidget(
+      _host(
+        _page(),
+        onTap: (item) => tapped.add(item.text),
+        onDoubleTap: (item) => doubled.add(item.text),
+      ),
+    );
+    await _reveal(tester, 0);
+
+    // 双击：第一下立刻回调 onTap，第二下折进 onDoubleTap。
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    expect(doubled, ['待ったー']);
+    expect(tapped, ['待ったー']);
+
+    // 间隔超过窗口的两下是两次单击，不算双击。
+    await tester.tap(find.text('待'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    expect(doubled, ['待ったー']);
+    expect(tapped, ['待ったー', '待ったー', '待ったー']);
+  });
+
+  testWidgets('竖排双击跨同一词的两个字格，仍算双击整词', (tester) async {
+    final doubled = <String>[];
+    await tester.pumpWidget(
+      _host(_page(), onDoubleTap: (item) => doubled.add(item.text)),
+    );
+    await _reveal(tester, 0);
+
+    // 「待ったー」拆成三个字格，点不同的格、同一个 TextItem。
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    await tester.tap(find.text('た'));
+    await tester.pump();
+    expect(doubled, ['待ったー']);
+  });
+
+  testWidgets('enableTripleTap：第二下等一个窗口，第三下折进 onTripleTap', (tester) async {
+    final doubled = <String>[];
+    final tripled = <String>[];
+    await tester.pumpWidget(
+      _host(
+        _page(),
+        onDoubleTap: (item) => doubled.add(item.text),
+        onTripleTap: (item) => tripled.add(item.text),
+        enableTripleTap: true,
+      ),
+    );
+    await _reveal(tester, 0);
+
+    // 两下之后不立刻变状态：三击开关打开时多等一个窗口。
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    expect(doubled, isEmpty);
+
+    // 没有第三下：窗口过后补发双击。
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(doubled, ['待ったー']);
+    expect(tripled, isEmpty);
+
+    // 三下：第三下折进 onTripleTap，双击不再补发。
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    await tester.tap(find.text('待'));
+    await tester.pump();
+    expect(tripled, ['待ったー']);
+    expect(doubled, ['待ったー']);
+  });
+
   testWidgets('横排块不受影响，仍按整词渲染', (tester) async {
     await tester.pumpWidget(_host(_page(), revealAll: true));
 
@@ -203,6 +314,51 @@ void main() {
     await tester.tapAt(const Offset(350, 500));
     await tester.pump();
     expect(find.text('いいのですか'), findsNothing);
+  });
+
+  testWidgets('词卡开着时点画面空白处 / 点另一个框，词卡都要关掉', (tester) async {
+    // 词卡是根 Overlay 上的浮层，mokuro 画面里"其他区域"占了大半屏：
+    // 不关的话它会一直浮在画面（乃至翻页后的新页）上，直到 10 秒自动消失。
+    // 词卡内容是 riverpod Consumer：套 ProviderScope + mock prefs（同
+    // term_card_fold_layout_test）。show() 会往 Overlay 插 entry，等首帧后再弹。
+    SharedPreferences.setMockInitialValues({});
+    late final BuildContext hostContext;
+    await tester.pumpWidget(
+      ProviderScope(child: _host(_page(), onContext: (c) => hostContext = c)),
+    );
+    TermTooltipClass.show(
+      hostContext,
+      TermTooltip(term: '言う', status: '1'),
+      const Rect.fromLTWH(100, 100, 50, 30),
+      onSentenceTranslation: () {}, // 不传回调时 Sentence 按钮不渲染
+    );
+    await tester.pump(); // 测量 entry + postFrame 换定位 entry
+    await tester.pump(); // 定位 entry
+    await tester.pump(const Duration(milliseconds: 150)); // 弹出动画收尾
+    expect(find.text('Sentence'), findsOneWidget);
+
+    // 点画面空白处：词卡消失。
+    await tester.tapAt(const Offset(350, 500));
+    await tester.pump();
+    expect(find.text('Sentence'), findsNothing);
+
+    // 再点一个隐藏的文字框（揭示它）：词卡同样不出现/不残留。
+    TermTooltipClass.show(
+      hostContext,
+      TermTooltip(term: '言う', status: '1'),
+      const Rect.fromLTWH(100, 100, 50, 30),
+      onSentenceTranslation: () {},
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.text('Sentence'), findsOneWidget);
+    await _reveal(tester, 1);
+    expect(find.text('Sentence'), findsNothing);
+
+    // 词卡的 10 秒自动关闭 Timer 会让 flutter_test 的 pending-timer 检查报错，
+    // 测试体内先关掉（同 term_card_fold_layout_test 的做法）。
+    TermTooltipClass.close();
   });
 
   testWidgets('点按分区翻页：右 1/3 下一页、左 1/3 上一页、中间不翻', (tester) async {

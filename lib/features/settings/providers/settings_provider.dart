@@ -615,6 +615,11 @@ class TermFormSettings {
   final bool autoAddAITranslations;
   final bool autoFetchAITranslationsForStatus0;
 
+  /// 词卡右上角 Dict 按钮的行为：false = 复制单词到剪贴板（配合欧路
+  /// "悬浮窗取词"，点它的浮动图标弹释义，不离开本 App）；true = 深链
+  /// eudic://dict/<词> 全屏跳欧路。欧路没装/拉不起时一律退回复制。
+  final bool dictButtonJumpMode;
+
   const TermFormSettings({
     this.showRomanization = true,
     this.showTags = false,
@@ -625,6 +630,7 @@ class TermFormSettings {
     this.wordGlowEnabled = true,
     this.autoAddAITranslations = false,
     this.autoFetchAITranslationsForStatus0 = true,
+    this.dictButtonJumpMode = false,
   });
 
   TermFormSettings copyWith({
@@ -637,6 +643,7 @@ class TermFormSettings {
     bool? wordGlowEnabled,
     bool? autoAddAITranslations,
     bool? autoFetchAITranslationsForStatus0,
+    bool? dictButtonJumpMode,
   }) {
     return TermFormSettings(
       showRomanization: showRomanization ?? this.showRomanization,
@@ -652,6 +659,7 @@ class TermFormSettings {
       autoFetchAITranslationsForStatus0:
           autoFetchAITranslationsForStatus0 ??
           this.autoFetchAITranslationsForStatus0,
+      dictButtonJumpMode: dictButtonJumpMode ?? this.dictButtonJumpMode,
     );
   }
 
@@ -668,7 +676,8 @@ class TermFormSettings {
         other.wordGlowEnabled == wordGlowEnabled &&
         other.autoAddAITranslations == autoAddAITranslations &&
         other.autoFetchAITranslationsForStatus0 ==
-            autoFetchAITranslationsForStatus0;
+            autoFetchAITranslationsForStatus0 &&
+        other.dictButtonJumpMode == dictButtonJumpMode;
   }
 
   @override
@@ -681,7 +690,8 @@ class TermFormSettings {
       showParentsInDictionary.hashCode ^
       wordGlowEnabled.hashCode ^
       autoAddAITranslations.hashCode ^
-      autoFetchAITranslationsForStatus0.hashCode;
+      autoFetchAITranslationsForStatus0.hashCode ^
+      dictButtonJumpMode.hashCode;
 
   static const TermFormSettings defaultSettings = TermFormSettings();
 }
@@ -698,6 +708,7 @@ class TermFormSettingsNotifier extends Notifier<TermFormSettings> {
   static const String _keyAutoAddAITranslations = 'auto_add_ai_translations';
   static const String _keyAutoFetchAITranslationsForStatus0 =
       'auto_fetch_ai_translations_for_status0';
+  static const String _keyDictButtonJumpMode = 'dict_button_jump_mode';
   bool _isInitialized = false;
 
   @override
@@ -723,6 +734,7 @@ class TermFormSettingsNotifier extends Notifier<TermFormSettings> {
         prefs.getBool(_keyAutoAddAITranslations) ?? false;
     final autoFetchAITranslationsForStatus0 =
         prefs.getBool(_keyAutoFetchAITranslationsForStatus0) ?? true;
+    final dictButtonJumpMode = prefs.getBool(_keyDictButtonJumpMode) ?? false;
 
     final loadedSettings = TermFormSettings(
       showRomanization: showRomanization,
@@ -734,6 +746,7 @@ class TermFormSettingsNotifier extends Notifier<TermFormSettings> {
       wordGlowEnabled: wordGlowEnabled,
       autoAddAITranslations: autoAddAITranslations,
       autoFetchAITranslationsForStatus0: autoFetchAITranslationsForStatus0,
+      dictButtonJumpMode: dictButtonJumpMode,
     );
     if (state != loadedSettings) {
       state = loadedSettings;
@@ -766,6 +779,13 @@ class TermFormSettingsNotifier extends Notifier<TermFormSettings> {
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyShowTooltipImages, show);
+  }
+
+  Future<void> updateDictButtonJumpMode(bool jump) async {
+    state = state.copyWith(dictButtonJumpMode: jump);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyDictButtonJumpMode, jump);
   }
 
   Future<void> updateAutoSave(bool autoSave) async {

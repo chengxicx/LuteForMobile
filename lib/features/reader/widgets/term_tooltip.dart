@@ -42,6 +42,14 @@ class _AnimatedTermTooltip extends StatefulWidget {
   /// the button.
   final VoidCallback? onGrammar;
 
+  /// Hand the term to a dictionary app (Eudic floating window / deep link).
+  /// Null hides the corner button.
+  final VoidCallback? onDictLookup;
+
+  /// 本地词典（阶段3a）查到的释义纯文本。弹出前由 _handleTap 查好一次带入，
+  /// 卡片只画这一帧——墨水屏上打开的卡片不重绘。Null 隐藏释义段。
+  final String? dictGloss;
+
   /// False greys the Grammar button out: the page pre-analysis covered this
   /// sentence and matched nothing, so tapping would only reach a guaranteed
   /// empty page.  The card is static once shown, so the state never flips
@@ -55,6 +63,8 @@ class _AnimatedTermTooltip extends StatefulWidget {
     this.onSpeak,
     this.onSentenceTranslation,
     this.onGrammar,
+    this.onDictLookup,
+    this.dictGloss,
     this.grammarEnabled = true,
   });
 
@@ -102,6 +112,8 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
       onSpeak: widget.onSpeak,
       onSentenceTranslation: widget.onSentenceTranslation,
       onGrammar: widget.onGrammar,
+      onDictLookup: widget.onDictLookup,
+      dictGloss: widget.dictGloss,
       grammarEnabled: widget.grammarEnabled,
     );
 
@@ -133,6 +145,8 @@ class _TooltipContent extends ConsumerWidget {
   final VoidCallback? onSpeak;
   final VoidCallback? onSentenceTranslation;
   final VoidCallback? onGrammar;
+  final VoidCallback? onDictLookup;
+  final String? dictGloss;
   final bool grammarEnabled;
 
   const _TooltipContent({
@@ -140,6 +154,8 @@ class _TooltipContent extends ConsumerWidget {
     this.onSpeak,
     this.onSentenceTranslation,
     this.onGrammar,
+    this.onDictLookup,
+    this.dictGloss,
     this.grammarEnabled = true,
   });
 
@@ -209,8 +225,9 @@ class _TooltipContent extends ConsumerWidget {
               ],
               // 发音入口就是单词旁的喇叭：紧凑文字按钮挤在卡片底部容易误点，
               // 改成无文字图标贴着单词。Flexible 保证长词换行时喇叭不被挤出卡片。
+              // 行取满卡片宽（IntrinsicWidth 定下的最宽子项宽度），Dict 角标
+              // 用 Spacer 钉在右上角——词典跳转入口独占一角，不挤底部按钮行。
               Row(
-                mainAxisSize: MainAxisSize.min,
                 children: [
                   Flexible(
                     child: Text(
@@ -234,6 +251,10 @@ class _TooltipContent extends ConsumerWidget {
                       constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                       color: context.appColorScheme.material3.primary,
                     ),
+                  if (onDictLookup != null) ...[
+                    const Spacer(),
+                    _DictCornerButton(onPressed: onDictLookup!),
+                  ],
                 ],
               ),
               if (termTooltip.romanization != null) ...[
@@ -268,6 +289,29 @@ class _TooltipContent extends ConsumerWidget {
                       ),
                   maxLines: eink ? 5 : 3,
                   overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              // 本地词典释义（阶段3a）：微底色块与正文区分，弹出前查好
+              // 一次带入，卡片单帧绘制。eink 全不透明、行数放宽。
+              if (dictGloss != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: context.appColorScheme.background.surfaceVariant
+                        .withValues(alpha: eink ? 1.0 : 0.6),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    dictGloss!,
+                    style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                          color: Theme.of(context).colorScheme.onSurface
+                              .withValues(alpha: eink ? 1.0 : 0.8),
+                        ),
+                    maxLines: eink ? 12 : 8,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
               if (termTooltip.parents.isNotEmpty) ...[
@@ -391,6 +435,36 @@ class _TooltipActionButton extends StatelessWidget {
   }
 }
 
+/// 词卡右上角的词典角标（变体 D）：32dp 紧凑胶囊，比底部按钮行小一号，
+/// 独占一角不挤 Sentence/Grammar。点击把词交给词典应用——复制给欧路的
+/// 悬浮窗取词，或深链跳转（见 reader_screen 的 _handleDictLookup）。
+class _DictCornerButton extends StatelessWidget {
+  final VoidCallback onPressed;
+
+  const _DictCornerButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final eink = context.eInk;
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: context.appColorScheme.material3.primary,
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        side: BorderSide(
+          color: context.appColorScheme.border.outline,
+          width: eink ? 1.5 : 1,
+        ),
+        textStyle: const TextStyle(fontSize: 12),
+      ),
+      icon: const Icon(Icons.menu_book, size: 15),
+      label: const Text('Dict'),
+    );
+  }
+}
+
 String _resolveImageUrl(String imageUrl, String serverUrl) {
   final trimmed = imageUrl.trim();
   final uri = Uri.tryParse(trimmed);
@@ -420,6 +494,8 @@ class TermTooltipClass {
     VoidCallback? onSpeak,
     VoidCallback? onSentenceTranslation,
     VoidCallback? onGrammar,
+    VoidCallback? onDictLookup,
+    String? dictGloss,
     bool grammarEnabled = true,
   }) {
     close();
@@ -441,6 +517,8 @@ class TermTooltipClass {
           onSpeak: onSpeak,
           onSentenceTranslation: onSentenceTranslation,
           onGrammar: onGrammar,
+          onDictLookup: onDictLookup,
+          dictGloss: dictGloss,
           grammarEnabled: grammarEnabled,
         ),
       ),
@@ -490,6 +568,8 @@ class TermTooltipClass {
               onSpeak: onSpeak,
               onSentenceTranslation: onSentenceTranslation,
               onGrammar: onGrammar,
+              onDictLookup: onDictLookup,
+              dictGloss: dictGloss,
               grammarEnabled: grammarEnabled,
             ),
           ),

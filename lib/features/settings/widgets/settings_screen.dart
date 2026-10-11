@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/cache/providers/cache_manager_provider.dart';
 import '../../../core/logger/widget_logger.dart';
@@ -8,6 +9,7 @@ import '../../../shared/widgets/app_bar_leading.dart';
 import '../../../shared/widgets/key_diagnostics_dialog.dart';
 import '../providers/tts_settings_provider.dart';
 import '../../../core/network/session_manager.dart';
+import '../../../core/dict/dict_repository.dart';
 import '../providers/settings_provider.dart';
 import '../../books/providers/books_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
@@ -1273,12 +1275,55 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               ),
                             ],
                           ),
+                          const SizedBox(height: 24),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Dictionary button jumps to Eudic',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Off: copy the word (tap the Eudic floating ball to look it up). On: open Eudic full screen',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.6),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.8,
+                                child: Switch(
+                                  value: ref
+                                      .watch(termFormSettingsProvider)
+                                      .dictButtonJumpMode,
+                                  onChanged: (value) {
+                                    ref
+                                        .read(termFormSettingsProvider.notifier)
+                                        .updateDictButtonJumpMode(value);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
                   ],
                 ),
               ),
+              const SizedBox(height: 16),
+              const _DictDownloadCard(),
               const SizedBox(height: 16),
               Card(
                 elevation: 2,
@@ -1514,5 +1559,198 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       case ThemeType.blackAndWhite:
         return 'Optimized for black and white screens';
     }
+  }
+}
+
+/// 本地词典（阶段 3）：两个来源——
+///  1. URL 下载：服务器已转换好的词典库（默认地址预填，可改任意链接）；
+///  2. 本地导入：设备上的 .mdx 文件，用内置解析器本地转成查询库。
+/// 下载/导入都原子覆盖激活词典，词卡释义随之离线可用。
+class _DictDownloadCard extends ConsumerStatefulWidget {
+  const _DictDownloadCard();
+
+  @override
+  ConsumerState<_DictDownloadCard> createState() => _DictDownloadCardState();
+}
+
+class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
+  static const _importTag = 'mdx';
+  bool? _installed;
+  bool _busy = false;
+  bool _importing = false;
+  int _percent = -1;
+  int _processed = 0;
+  String _error = '';
+  late final TextEditingController _urlController;
+
+  @override
+  void initState() {
+    super.initState();
+    _urlController = TextEditingController(
+      text: DictRepository.urlOnServer(
+        ref.read(settingsProvider).serverUrl,
+      ),
+    );
+    _refreshInstalled();
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshInstalled() async {
+    final ok = await ref.read(dictRepositoryProvider).isInstalled();
+    if (mounted) setState(() => _installed = ok);
+  }
+
+  Future<void> _download() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _percent = 0;
+      _error = '';
+    });
+    final ok = await ref
+        .read(dictRepositoryProvider)
+        .download(url, onProgress: (received, total) {
+      if (total > 0 && mounted) {
+        setState(() => _percent = received * 100 ~/ total);
+      }
+    });
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _percent = -1;
+      if (!ok) _error = '下载失败：链接不可用或非本 App 词典格式';
+    });
+    await _refreshInstalled();
+  }
+
+  Future<void> _importMdx() async {
+    setState(() {
+      _importing = true;
+      _processed = 0;
+      _error = '';
+    });
+    try {
+      final picked = await FilePicker.pickFiles(
+        type: FileType.any,
+        withData: false,
+      );
+      final path = picked?.files.single.path;
+      if (path == null || !path.toLowerCase().endsWith('.mdx')) {
+        if (mounted) {
+          setState(() {
+            _importing = false;
+            _error = '请选择 .mdx 文件';
+          });
+        }
+        return;
+      }
+      final ok = await ref
+          .read(dictRepositoryProvider)
+          .importMdx(path, onProgress: (processed) {
+        if (mounted) setState(() => _processed = processed);
+      });
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        if (!ok) _error = '解析失败：加密词典或不支持的格式';
+      });
+      await _refreshInstalled();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _importing = false;
+          _error = '导入失败';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final installed = _installed == true;
+    final String subtitle;
+    if (_busy) {
+      subtitle = '下载中 ${_percent < 0 ? '' : '$_percent%'}…';
+    } else if (_importing) {
+      subtitle = '解析中… 已处理 $_processed 条';
+    } else if (installed) {
+      subtitle = '已就绪 · 词卡释义离线可用';
+    } else if (_error.isNotEmpty) {
+      subtitle = _error;
+    } else {
+      subtitle = '下载已转换的词典，或在设备上导入 .mdx 文件';
+    }
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Local dictionary (本地词典)',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.6),
+              ),
+            ),
+            if (_busy && _percent >= 0) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: _percent / 100),
+            ],
+            if (_importing) ...[
+              const SizedBox(height: 8),
+              const LinearProgressIndicator(),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _urlController,
+                    enabled: !_busy && !_importing,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      labelText: '词典库链接（.db）',
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: _busy || _importing ? null : _download,
+                  icon: Icon(
+                    Icons.download,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  tooltip: '从链接下载',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _busy || _importing ? null : _importMdx,
+              icon: const Icon(Icons.upload_file, size: 16),
+              label: const Text('导入 .mdx 文件'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

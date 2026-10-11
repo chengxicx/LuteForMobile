@@ -180,6 +180,45 @@ void main() {
 
       TermTooltipClass.close();
     });
+
+    group('右上角 Dict 角标（词典跳转入口，阶段1）', () {
+      Future<void> pumpCard(WidgetTester tester, {required bool withDict}) async {
+        SharedPreferences.setMockInitialValues({});
+        late final BuildContext hostContext;
+        await tester.pumpWidget(_tooltipHost(
+          onContext: (context) => hostContext = context,
+        ));
+        TermTooltipClass.show(
+          hostContext,
+          TermTooltip(term: '紅葉', translation: '秋天的树叶', status: '1'),
+          const Rect.fromLTWH(200, 400, 60, 30),
+          onSpeak: () {},
+          onSentenceTranslation: withDict ? () {} : null,
+          onDictLookup: withDict ? () {} : null,
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+      }
+
+      testWidgets('给了 onDictLookup：Dict 角标出现，按钮行不受挤', (tester) async {
+        await pumpCard(tester, withDict: true);
+
+        expect(find.text('Dict'), findsOneWidget);
+        // 角标在第一行右侧（术语行内），Sentence 仍在底部按钮行。
+        expect(find.text('Sentence'), findsOneWidget);
+
+        TermTooltipClass.close();
+      });
+
+      testWidgets('没给 onDictLookup：Dict 角标不出现', (tester) async {
+        await pumpCard(tester, withDict: false);
+
+        expect(find.text('Dict'), findsNothing);
+
+        TermTooltipClass.close();
+      });
+    });
   });
 }
 

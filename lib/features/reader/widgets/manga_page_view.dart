@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -6,6 +7,7 @@ import '../../../shared/theme/theme_extensions.dart';
 import '../models/manga_page.dart';
 import '../models/text_item.dart';
 import 'page_turn_flick_listener.dart';
+import 'term_tooltip.dart';
 import 'text_display.dart';
 
 /// Renders one Mokuro manga page: the page image with the OCR text
@@ -48,6 +50,14 @@ class MangaPageView extends StatefulWidget {
   final void Function(TextItem)? onDoubleTap;
   final void Function(TextItem)? onLongPress;
   final void Function(TextItem)? onTripleTap;
+
+  /// Whether a third tap inside the next window upgrades the double tap
+  /// into [onTripleTap] (mark known) -- the reader's triple-tap setting,
+  /// same switch the text page passes to TextDisplay.
+  final bool enableTripleTap;
+
+  /// Width of the tap-disambiguation windows, in milliseconds.
+  final int doubleTapTimeout;
   final String fontFamily;
   final FontWeight fontWeight;
   final bool isItalic;
@@ -64,6 +74,8 @@ class MangaPageView extends StatefulWidget {
     this.onDoubleTap,
     this.onLongPress,
     this.onTripleTap,
+    this.enableTripleTap = false,
+    this.doubleTapTimeout = 300,
     this.fontFamily = 'Roboto',
     this.fontWeight = FontWeight.normal,
     this.isItalic = false,
@@ -78,10 +90,25 @@ class _MangaPageViewState extends State<MangaPageView> {
   /// `.hovered` block.  Tapping the page image again unpins it.
   int? _pinnedBlock;
 
+  /// Single/double/triple-tap disambiguation, mirroring
+  /// _TextDisplayState._handleTap in text_display.dart.  The words here
+  /// are built through the static TextDisplay.buildInteractiveWord, whose
+  /// GestureDetector fires `onTap` on every press -- the timer machine
+  /// that folds a quick second press into [widget.onDoubleTap] (the quick
+  /// status cycle) and a third into [widget.onTripleTap] lives in the
+  /// TextDisplay *state*, which the static builder bypasses.  Without a
+  /// machine here, a manga double tap just reopens the term card and the
+  /// status never changes.
+  Timer? _singleTapTimer;
+  Timer? _tripleTapTimer;
+  TextItem? _lastTappedItem;
+
   final TransformationController _transformation = TransformationController();
 
   @override
   void dispose() {
+    _singleTapTimer?.cancel();
+    _tripleTapTimer?.cancel();
     _transformation.dispose();
     super.dispose();
   }
@@ -89,8 +116,18 @@ class _MangaPageViewState extends State<MangaPageView> {
   @override
   void didUpdateWidget(covariant MangaPageView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Page turn: the pinned box belonged to the previous page.
-    if (!identical(widget.manga, oldWidget.manga)) _pinnedBlock = null;
+    // Page turn: the pinned box belonged to the previous page, and a tap
+    // window still open is watching an item of that page too.  A status
+    // patch (double tap, term form save) also hands us a fresh
+    // MangaPageData object, but it is the *same* page -- the pinned box
+    // must survive it, so key the reset on the image, not the identity.
+    if (widget.manga.imagePath != oldWidget.manga.imagePath ||
+        widget.manga.pageNum != oldWidget.manga.pageNum) {
+      _pinnedBlock = null;
+      _singleTapTimer?.cancel();
+      _tripleTapTimer?.cancel();
+      _lastTappedItem = null;
+    }
     // Eye off hides everything, including a pinned box.
     if (!widget.revealAll && oldWidget.revealAll) _pinnedBlock = null;
     // Switching display mode resizes the page; a transform tuned for the
@@ -100,10 +137,13 @@ class _MangaPageViewState extends State<MangaPageView> {
     }
   }
 
-  /// A tap on the art (outside every box): unpin first, then page-turn
-  /// tap zones.  While zoomed in the visible area may sit inside any
-  /// zone and taps are for reading, so zones are skipped.
+  /// A tap on the art (outside every box): dismiss the term card first --
+  /// the card lives in the root overlay, so without this it floats over
+  /// the art (and over the next page) until its 10 s auto-dismiss -- then
+  /// unpin / page-turn tap zones.  While zoomed in the visible area may
+  /// sit inside any zone and taps are for reading, so zones are skipped.
   void _handleTapOnArt(Offset local, double pageWidth) {
+    TermTooltipClass.close();
     if (_pinnedBlock != null) {
       setState(() => _pinnedBlock = null);
       return;
@@ -116,6 +156,60 @@ class _MangaPageViewState extends State<MangaPageView> {
     } else if (dx <= 1 / 3) {
       widget.onTurnPage!(false);
     }
+  }
+
+  /// A tap on a word cell, same machine as _TextDisplayState._handleTap:
+  /// the first press fires [widget.onTap] at once (the term card must not
+  /// wait for the window to close), a second press on the same word
+  /// inside the window becomes [widget.onDoubleTap] (quick status cycle),
+  /// and with triple tap enabled the decision waits one more window for a
+  /// possible third press.  Vertical cells call this once per character of
+  /// the word -- they share the [TextItem], so a double tap straddling two
+  /// cells still folds into one [widget.onDoubleTap].
+  void _handleWordTap(TextItem item, BuildContext context) {
+    if (_lastTappedItem == item &&
+        _tripleTapTimer != null &&
+        _tripleTapTimer!.isActive) {
+      _singleTapTimer?.cancel();
+      _tripleTapTimer?.cancel();
+      widget.onTripleTap?.call(item);
+      TermTooltipClass.close();
+      _tripleTapTimer = null;
+      _singleTapTimer = null;
+    } else if (_lastTappedItem == item &&
+        _singleTapTimer != null &&
+        _singleTapTimer!.isActive) {
+      _singleTapTimer?.cancel();
+      TermTooltipClass.close();
+
+      if (widget.enableTripleTap) {
+        _tripleTapTimer = Timer(
+          Duration(milliseconds: widget.doubleTapTimeout),
+          () {
+            _tripleTapTimer = null;
+            widget.onDoubleTap?.call(item);
+            _singleTapTimer = null;
+          },
+        );
+      } else {
+        widget.onDoubleTap?.call(item);
+        _singleTapTimer = null;
+      }
+    } else {
+      _tripleTapTimer?.cancel();
+      _tripleTapTimer = null;
+
+      _singleTapTimer?.cancel();
+      widget.onTap?.call(item, context);
+
+      _singleTapTimer = Timer(
+        Duration(milliseconds: widget.doubleTapTimeout),
+        () {
+          _singleTapTimer = null;
+        },
+      );
+    }
+    _lastTappedItem = item;
   }
 
   @override
@@ -266,7 +360,7 @@ class _MangaPageViewState extends State<MangaPageView> {
           'manga-${item.paragraphId}-${item.order}-${item.wordId}'
           '${charIndex == null ? '' : '-c$charIndex'}',
         ),
-        onTap: widget.onTap,
+        onTap: (item, context) => _handleWordTap(item, context),
         onDoubleTap: widget.onDoubleTap,
         onLongPress: widget.onLongPress,
         onTripleTap: widget.onTripleTap,
@@ -356,6 +450,8 @@ class _MangaPageViewState extends State<MangaPageView> {
         key: ValueKey('manga-block-$index'),
         behavior: HitTestBehavior.opaque,
         onTap: () {
+          // Tapping another box is a gesture away from the term card too.
+          TermTooltipClass.close();
           if (_pinnedBlock == index) return;
           setState(() => _pinnedBlock = index);
         },

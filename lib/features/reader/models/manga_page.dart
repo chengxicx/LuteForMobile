@@ -24,6 +24,16 @@ class MangaBlock {
     this.fontSizeCqw = 0,
     this.lineItems = const [],
   });
+
+  MangaBlock copyWith({List<List<TextItem>>? lineItems}) => MangaBlock(
+        left: left,
+        top: top,
+        width: width,
+        height: height,
+        vertical: vertical,
+        fontSizeCqw: fontSizeCqw,
+        lineItems: lineItems ?? this.lineItems,
+      );
 }
 
 /// Parsed data for one manga (Mokuro) page: the page image plus the
@@ -43,4 +53,12 @@ class MangaPageData {
     required this.pageNum,
     this.blocks = const [],
   });
+
+  MangaPageData copyWith({List<MangaBlock>? blocks}) => MangaPageData(
+        imagePath: imagePath,
+        imgWidth: imgWidth,
+        imgHeight: imgHeight,
+        pageNum: pageNum,
+        blocks: blocks ?? this.blocks,
+      );
 }

@@ -5,7 +5,10 @@ import 'package:meta/meta.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
+import '../models/manga_page.dart';
 import '../models/page_data.dart';
+import '../models/paragraph.dart';
+import '../models/pdf_page.dart';
 import '../models/text_item.dart';
 import '../models/term_tooltip.dart';
 import '../models/term_form.dart';
@@ -1184,23 +1187,70 @@ class ReaderNotifier extends Notifier<ReaderState> {
       return;
     }
 
-    bool found = false;
-    final updatedParagraphs = currentPageData.paragraphs.map((paragraph) {
-      final updatedItems = paragraph.textItems.map((item) {
-        if (item.wordId == termId) {
-          found = true;
-          final updated = item.copyWith(statusClass: 'status$status');
-          return updated;
+    // A term can live in three places depending on the page type: the
+    // text page's paragraphs, the manga overlay's blocks, or the PDF
+    // overlay's word boxes.  Patch whichever holds it -- updating only
+    // paragraphs on a manga/PDF page left `found` false and the state
+    // untouched, so a double-tap status cycle never repainted.
+    var found = false;
+    var updatedPage = currentPageData;
+
+    final paragraphs = _patchPageParagraphs(currentPageData, termId, status);
+    if (!identical(paragraphs, currentPageData.paragraphs)) {
+      found = true;
+      updatedPage = updatedPage.copyWith(paragraphs: paragraphs);
+    }
+
+    final mangaPage = currentPageData.mangaPage;
+    if (mangaPage != null) {
+      List<MangaBlock>? changedBlocks;
+      for (var i = 0; i < mangaPage.blocks.length; i++) {
+        final block = mangaPage.blocks[i];
+        List<List<TextItem>>? changedLines;
+        for (var j = 0; j < block.lineItems.length; j++) {
+          final line = _patchItems(block.lineItems[j], termId, status);
+          if (identical(line, block.lineItems[j])) {
+            changedLines?.add(line);
+            continue;
+          }
+          changedLines ??= block.lineItems.sublist(0, j);
+          changedLines.add(line);
         }
-        return item;
-      }).toList();
-      return paragraph.copyWith(textItems: updatedItems);
-    }).toList();
+        if (changedLines == null) continue;
+        found = true;
+        changedBlocks ??= mangaPage.blocks.sublist(0, i);
+        changedBlocks.add(block.copyWith(lineItems: changedLines));
+      }
+      if (changedBlocks != null) {
+        updatedPage = updatedPage.copyWith(
+          paragraphs: paragraphs,
+          mangaPage: mangaPage.copyWith(blocks: changedBlocks),
+        );
+      }
+    }
+
+    final pdfPage = currentPageData.pdfPage;
+    if (pdfPage != null) {
+      List<PdfWord>? changedWords;
+      for (var i = 0; i < pdfPage.words.length; i++) {
+        final items = _patchItems(pdfPage.words[i].items, termId, status);
+        if (identical(items, pdfPage.words[i].items)) {
+          changedWords?.add(pdfPage.words[i]);
+          continue;
+        }
+        changedWords ??= pdfPage.words.sublist(0, i);
+        changedWords.add(pdfPage.words[i].copyWith(items: items));
+      }
+      if (changedWords != null) {
+        updatedPage = updatedPage.copyWith(
+          paragraphs: paragraphs,
+          pdfPage: pdfPage.copyWith(words: changedWords),
+        );
+      }
+    }
 
     if (found) {
-      state = state.copyWith(
-        pageData: currentPageData.copyWith(paragraphs: updatedParagraphs),
-      );
+      state = state.copyWith(pageData: updatedPage);
 
       ref
           .read(sentenceReaderProvider.notifier)
@@ -1214,6 +1264,43 @@ class ReaderNotifier extends Notifier<ReaderState> {
         ApiLogger.logError('invalidateTooltipCache', e);
       }
     }
+  }
+
+  /// [page.paragraphs] with every [termId] item re-stamped to [status];
+  /// the same instance when nothing changed.
+  List<Paragraph> _patchPageParagraphs(
+    PageData page,
+    int termId,
+    String status,
+  ) {
+    List<Paragraph>? result;
+    for (var i = 0; i < page.paragraphs.length; i++) {
+      final paragraph = page.paragraphs[i];
+      final items = _patchItems(paragraph.textItems, termId, status);
+      if (identical(items, paragraph.textItems)) {
+        result?.add(paragraph);
+        continue;
+      }
+      result ??= page.paragraphs.sublist(0, i);
+      result.add(paragraph.copyWith(textItems: items));
+    }
+    return result ?? page.paragraphs;
+  }
+
+  /// [items] with every [termId] item re-stamped to [status]; the same
+  /// instance when nothing changed.
+  List<TextItem> _patchItems(List<TextItem> items, int termId, String status) {
+    List<TextItem>? result;
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i];
+      if (item.wordId == termId) {
+        result ??= items.sublist(0, i);
+        result.add(item.copyWith(statusClass: 'status$status'));
+      } else {
+        result?.add(item);
+      }
+    }
+    return result ?? items;
   }
 
   /// Gets the current page number from the server for a book

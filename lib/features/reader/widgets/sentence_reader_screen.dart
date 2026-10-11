@@ -1395,15 +1395,14 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           .fetchTermTooltip(item.wordId!);
       // Superseded by a newer tap while this one was fetching.
       if (seq != _tooltipSeq) return;
-      // A null fetch (offline, or the request failed) falls back to a minimal
-      // card built from local data -- see reader_screen.dart.
+      // A null fetch (offline, or the request failed) and an empty popup
+      // (the term carries no translation/reading/tags yet) both fall back to
+      // a minimal card built from local data -- see reader_screen.dart.
       final tooltip = termTooltip != null && termTooltip.hasData
           ? termTooltip
-          : termTooltip == null
-          ? await ref
+          : await ref
                 .read(readerProvider.notifier)
-                .buildLocalTooltipFallback(item)
-          : null;
+                .buildLocalTooltipFallback(item);
       if (seq != _tooltipSeq) return;
       if (tooltip != null && mounted) {
         final langId = item.langId;

@@ -27,6 +27,14 @@ class PdfWord {
     required this.height,
     this.items = const [],
   });
+
+  PdfWord copyWith({List<TextItem>? items}) => PdfWord(
+        left: left,
+        top: top,
+        width: width,
+        height: height,
+        items: items ?? this.items,
+      );
 }
 
 /// Parsed data for one PDF book page: the PDF file plus the tokenized
@@ -48,4 +56,12 @@ class PdfPageData {
     required this.pageNum,
     this.words = const [],
   });
+
+  PdfPageData copyWith({List<PdfWord>? words}) => PdfPageData(
+        pdfPath: pdfPath,
+        pageWidth: pageWidth,
+        pageHeight: pageHeight,
+        pageNum: pageNum,
+        words: words ?? this.words,
+      );
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/logger/widget_logger.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../shared/widgets/loading_indicator.dart';
@@ -24,6 +25,8 @@ import '../../../features/stats/models/stats_data.dart';
 import '../../../core/services/termux_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import '../../../core/cache/providers/book_progress_provider.dart';
+import '../../../core/cache/term_sync_service.dart';
+import '../../../core/dict/dict_repository.dart';
 import '../../../core/outbox/providers/outbox_provider.dart';
 import '../models/text_item.dart';
 import '../models/paragraph.dart';
@@ -350,6 +353,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   void _turnPage(int direction, PageData? pageData) {
     if (direction == 0 || pageData == null) return;
     if (!_canSwipePages(pageData)) return;
+    // The term card lives in the root overlay and would float over the new
+    // page; every turn (tap zone, flick, hardware key, page controls) goes
+    // through here.  After the guards, so a rejected turn keeps the card.
+    TermTooltipClass.close();
     final textSettings = ref.read(textFormattingSettingsProvider);
     if (direction > 0) {
       if (pageData.currentPage > 1) {
@@ -476,6 +483,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     Future.delayed(Duration.zero, _loadLanguageMapping);
     Future.delayed(Duration.zero, _loadStatsIfNeeded);
+    // 开书静默同步词库（服务端 hash 没变时只有一次几十字节的请求）：
+    // web 上补的翻译/注音由此回流到本地词库，词卡兜底和离线阅读都吃它。
+    // 失败完全静默，绝不打扰阅读。
+    unawaited(
+      Future.delayed(
+        Duration.zero,
+        () => ref.read(termSyncServiceProvider).syncIfChanged(),
+      ),
+    );
   }
 
   @override
@@ -1895,6 +1911,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             onTripleTap: (item) {
               _handleTripleTap(item);
             },
+            enableTripleTap: settings.enableTripleTapToMarkKnown,
+            doubleTapTimeout: settings.doubleTapTimeout,
             fontFamily: textSettings.fontFamily,
             fontWeight: textSettings.fontWeight,
             isItalic: textSettings.isItalic,
@@ -2129,58 +2147,78 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       // its own feedback and closes this card), or moved on to another word.
       // Drawing now would stack this card on top of the newer gesture.
       if (seq != _tooltipSeq) return;
-      // A null fetch (offline, or the request failed) no longer means silence:
-      // fall back to a minimal card built from local data. A successful but
-      // empty popup still means "no card" -- that is the server's answer.
+      // A null fetch (offline, or the request failed) and an empty popup
+      // (the term carries no translation/reading/tags yet) both fall back to
+      // a minimal card built from local data -- a tap must always answer
+      // with something.  The empty case matters because the tooltip cache
+      // keeps an empty marker for up to 14 days: a word translated on the
+      // web after the marker was cached would otherwise stay silent on the
+      // device until the entry expires or the term's status changes in-app.
       final tooltip = termTooltip != null && termTooltip.hasData
           ? termTooltip
-          : termTooltip == null
-          ? await ref
+          : await ref
                 .read(readerProvider.notifier)
-                .buildLocalTooltipFallback(item)
-          : null;
+                .buildLocalTooltipFallback(item);
       if (seq != _tooltipSeq) return;
       if (tooltip != null && mounted) {
         final langId = item.langId;
-        // An annotated reading (romanization) outranks the surface form for
-        // TTS -- the engine pronounces the reading the user wrote down.
-        final speakText = ttsSpeakTextForTerm(
-          term: tooltip.term,
-          reading: tooltip.romanization,
-        );
-        // Auto pronounce (Settings -> Reading): read the term as the card opens,
-        // so the reader does not have to reach for the speaker button.
-        if (ref.read(settingsProvider).autoPronounceOnTap) {
-          unawaited(
-            ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
+        // 本地词典（阶段3a）：SQLite 毫秒级查询，弹出前一次带入（卡片单帧
+        // 绘制，墨水屏不重绘）。查询链：原文 → 读音 → 去敬语前缀。
+        String? dictGloss;
+        try {
+          dictGloss = await ref
+              .read(dictRepositoryProvider)
+              .lookupWithReading(tooltip.term, tooltip.romanization);
+        } catch (_) {
+          dictGloss = null;
+        }
+        if (seq != _tooltipSeq) return;
+        if (tooltip != null && mounted) {
+          final langId = item.langId;
+          // An annotated reading (romanization) outranks the surface form for
+          // TTS -- the engine pronounces the reading the user wrote down.
+          final speakText = ttsSpeakTextForTerm(
+            term: tooltip.term,
+            reading: tooltip.romanization,
+          );
+          // Auto pronounce (Settings -> Reading): read the term as the card opens,
+          // so the reader does not have to reach for the speaker button.
+          if (ref.read(settingsProvider).autoPronounceOnTap) {
+            unawaited(
+              ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
+            );
+          }
+          // Grammar button state comes from the page pre-analysis: it knows
+          // whether this sentence matched anything.  no -> greyed out; yes ->
+          // tappable and the grammar page opens instantly; unknown (page not
+          // analysed yet, or the analysis failed) -> keep tappable and let the
+          // sentence-level request answer.
+          final sentence = _extractSentence(item);
+          final grammarPresence = sentence.isEmpty
+              ? GrammarPresence.unknown
+              : ref
+                    .read(sentenceGrammarProvider.notifier)
+                    .presenceFor(sentence);
+          TermTooltipClass.show(
+            context,
+            tooltip,
+            termRect,
+            onSpeak: () => unawaited(
+              ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
+            ),
+            onSentenceTranslation: langId == null
+                ? null
+                : () => _translateSentenceFromCard(item, langId),
+            onGrammar: sentence.isEmpty
+                ? null
+                : () => _openSentenceGrammar(sentence),
+            onDictLookup: tooltip.term.isEmpty
+                ? null
+                : () => _handleDictLookup(tooltip.term),
+            dictGloss: dictGloss,
+            grammarEnabled: grammarPresence != GrammarPresence.no,
           );
         }
-        // Grammar button state comes from the page pre-analysis: it knows
-        // whether this sentence matched anything.  no -> greyed out; yes ->
-        // tappable and the grammar page opens instantly; unknown (page not
-        // analysed yet, or the analysis failed) -> keep tappable and let the
-        // sentence-level request answer.
-        final sentence = _extractSentence(item);
-        final grammarPresence = sentence.isEmpty
-            ? GrammarPresence.unknown
-            : ref
-                  .read(sentenceGrammarProvider.notifier)
-                  .presenceFor(sentence);
-        TermTooltipClass.show(
-          context,
-          tooltip,
-          termRect,
-          onSpeak: () => unawaited(
-            ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
-          ),
-          onSentenceTranslation: langId == null
-              ? null
-              : () => _translateSentenceFromCard(item, langId),
-          onGrammar: sentence.isEmpty
-              ? null
-              : () => _openSentenceGrammar(sentence),
-          grammarEnabled: grammarPresence != GrammarPresence.no,
-        );
       }
     } catch (e) {
       return;
@@ -2269,6 +2307,40 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       ref
           .read(outboxProvider.notifier)
           .enqueueTermStatus(wordId, next, langId: item.langId),
+    );
+  }
+
+  /// 词卡右上角 Dict：把词交给欧路词典。
+  ///
+  /// 默认复制模式——配合欧路开的"悬浮窗取词"，点它的浮动图标就在本 App
+  /// 上面弹释义浮层，全程不跳走。Android 10+ 禁后台读剪贴板，所以"复制
+  /// 即自动弹"不可靠，用户手点欧路浮球（浮窗拿到焦点）才读得到。
+  ///
+  /// 设置切到跳转模式则深链 eudic://dict/<词> 全屏打开欧路；欧路没装或
+  /// 拉不起时退回复制，按钮永远有回应。
+  void _handleDictLookup(String term) async {
+    HapticFeedback.lightImpact();
+    final jumpMode = ref
+        .read(termFormSettingsProvider)
+        .dictButtonJumpMode;
+    if (jumpMode) {
+      try {
+        final launched = await launchUrl(
+          Uri(scheme: 'eudic', host: 'dict', path: '/$term'),
+          mode: LaunchMode.externalApplication,
+        );
+        if (launched) return;
+      } catch (_) {
+        // 没有应用认这个深链：落到下面的复制兜底。
+      }
+    }
+    await Clipboard.setData(ClipboardData(text: term));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制「$term」，点欧路浮球查看释义'),
+        duration: const Duration(milliseconds: 1200),
+      ),
     );
   }
 
@@ -2413,22 +2485,35 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
   String _extractSentence(TextItem item) {
     final state = ref.read(readerProvider);
-    if (state.pageData == null) return '';
+    final page = state.pageData;
+    if (page == null) return '';
 
-    for (final paragraph in state.pageData!.paragraphs) {
-      final sentenceItems = <TextItem>[];
-      for (final textItem in paragraph.textItems) {
-        if (textItem.sentenceId == item.sentenceId) {
-          sentenceItems.add(textItem);
-        } else if (sentenceItems.isNotEmpty) {
-          break;
-        }
-      }
-      if (sentenceItems.isNotEmpty) {
-        return sentenceItems.map((i) => i.text).join();
+    // Manga 页的 HTML 没有 .textsentence 包裹，paragraphs 恒为空 —— 文字项
+    // 全挂在 blocks 上，词卡的句子/语法按钮因此一直静默失效。按阅读顺序摊
+    // 平再拼句：block 的顺序就是 mokuro 的阅读顺序，竖排的 lineItems 本来
+    // 就是列序（右→左、列内上→下），DOM 顺序即阅读顺序。
+    final List<TextItem> allItems;
+    final mangaPage = page.mangaPage;
+    if (mangaPage != null) {
+      allItems = [
+        for (final block in mangaPage.blocks)
+          for (final line in block.lineItems) ...line,
+      ];
+    } else {
+      allItems = [
+        for (final paragraph in page.paragraphs) ...paragraph.textItems,
+      ];
+    }
+
+    final sentenceItems = <TextItem>[];
+    for (final textItem in allItems) {
+      if (textItem.sentenceId == item.sentenceId) {
+        sentenceItems.add(textItem);
+      } else if (sentenceItems.isNotEmpty) {
+        break;
       }
     }
-    return '';
+    return sentenceItems.map((i) => i.text).join();
   }
 
   void _showTermForm(

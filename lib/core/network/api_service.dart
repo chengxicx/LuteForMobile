@@ -1213,6 +1213,27 @@ class ApiService {
     );
   }
 
+  /// GET /term/sync —— 词库全量同步。服务端对全部词条算内容 hash，客户端带上
+  /// 上次同步的 hash，没变化时只回 unchanged（几十字节），变了才回全量 JSON
+  /// （约 2MB / 1.6 万词）。任何失败返回 null，调用方静默跳过——同步永远
+  /// 不能打扰阅读。
+  Future<Map<String, dynamic>?> getTermSync(String? storedHash) async {
+    try {
+      final response = await _dio.get<String>(
+        '/term/sync',
+        queryParameters: {
+          if (storedHash != null && storedHash.isNotEmpty) 'hash': storedHash,
+        },
+        options: Options(extra: _noQueue),
+      );
+      final data = response.data;
+      if (data == null || data.isEmpty) return null;
+      return jsonDecode(data) as Map<String, dynamic>;
+    } catch (e) {
+      return null;
+    }
+  }
+
   Future<Response<String>> fetchAllTerms({
     int start = 0,
     int length = 1000,
