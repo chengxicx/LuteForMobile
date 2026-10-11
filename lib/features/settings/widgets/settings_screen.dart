@@ -1566,12 +1566,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 }
 
-/// 本地词典（阶段 3）：两个来源——
-///  1. 服务器词典池：GET /dict/status 拉列表，选一本下载到目标语言的
-///     激活库（下载地址由文件名派生，见 ServerDictionary.urlFor）；
-///  2. 本地导入：设备上的 .mdx 文件，用内置解析器本地转成查询库。
-/// 词典按语言分库：先选语言，下载/导入都落到该语言的激活库，阅读时按
-/// 当前书的语言查对应词典；旧版单词典时代的库保留为查询回落。
+/// 本地词典（阶段 3）：本机词典池 + 按语言选用。
+///  1. 服务器词典池：GET /dict/status 拉列表，逐本下载到本机词典池
+///     （dict/pool/，**与语言无关**，下载地址由文件名派生，见
+///     ServerDictionary.urlFor）；
+///  2. 本地导入：设备上的 .mdx 文件，用内置解析器本地转换后进池。
+/// 池内词典可删除；每门语言在池里"选用"一本（选用记录按语言各存一份），
+/// 同一本可被多门语言共用。旧版按语言分库的 `active_<langId>.db` 会在打开
+/// 本卡时被收养进池（见 DictRepository.adoptLegacyPerLangDicts）。
 class _DictDownloadCard extends ConsumerStatefulWidget {
   const _DictDownloadCard();
 
@@ -1580,12 +1582,15 @@ class _DictDownloadCard extends ConsumerStatefulWidget {
 }
 
 class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
-  static const _importTag = 'mdx';
   bool _busy = false;
   bool _importing = false;
+  bool _deleting = false;
   int _percent = -1;
   int _processed = 0;
   String _error = '';
+
+  /// 一次性提示（下载/导入成功后的下一步引导），下一次操作时清掉。
+  String _hint = '';
 
   /// 服务器词典池（GET /dict/status）。null = 还没拿到（加载中或失败），
   /// 空列表 = 服务器池是空的。
@@ -1595,23 +1600,27 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
   /// 拉列表失败的原因（服务器没配、没登录、服务端没这个端点）。
   String? _dictsError;
 
-  /// 用户在列表里选中的文件名；下载目标。
-  String? _selectedFile;
+  /// 本机词典池（dict/pool/），空列表 = 一本都没下载/导入。
+  List<PoolDict> _pool = const [];
 
-  /// 已安装专属词典的语言 id（扫 dict 目录所得）。
+  /// langId → 选用的池内文件名。
+  Map<int, String> _selections = const {};
+
+  /// 有可用词典的语言 id（选用池词典 ∪ 残留 per-lang 旧库）。
   List<int> _installedIds = const [];
 
   /// 是否存在旧版单词典时代的共享库（查询回落用）。
-  bool _legacyDict = false;
+  bool _legacyShared = false;
 
-  /// 用户显式选中的语言；null 时回落到默认选择（见 [_effectiveLangId]）。
+  /// 用户显式选中的语言（为它选词典）；null 时回落到默认选择
+  /// （见 [_effectiveLangId]）。
   int? _selectedLangId;
 
   @override
   void initState() {
     super.initState();
     _loadServerDicts();
-    _refreshInstalled();
+    _refreshPool();
   }
 
   /// 拉服务器词典池列表。需要登录态；失败时保留本地导入入口，只是没有
@@ -1638,33 +1647,24 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       _loadingDicts = false;
       _serverDicts = dicts;
       _dictsError = dicts == null ? '获取失败：检查服务器地址与登录状态' : null;
-      if (dicts != null && dicts.isNotEmpty && _selectedFile == null) {
-        // 默认选中服务端的默认词典（旧版手机下回来的那本），否则第一本。
-        final picked = dicts.firstWhere(
-          (d) => d.isDefault,
-          orElse: () => dicts.first,
-        );
-        _selectedFile = picked.filename;
-      }
-      // 刷新后选中的那本不见了（服务端删掉/改名）→ 清除选择，否则
-      // "下载"会去拉一个 404。
-      if (dicts != null &&
-          _selectedFile != null &&
-          !dicts.any((d) => d.filename == _selectedFile)) {
-        _selectedFile = null;
-      }
     });
   }
 
-  Future<void> _refreshInstalled() async {
+  /// 刷新本机词典池状态：先收养旧版 per-lang 库，再读池/选用/安装情况。
+  Future<void> _refreshPool() async {
     final repo = ref.read(dictRepositoryProvider);
+    await repo.adoptLegacyPerLangDicts();
+    final pool = await repo.listPool();
+    final selections = await repo.selectionMap();
     final ids = await repo.installedLangIds();
     final legacy = await repo.hasLegacyDict();
     if (!mounted) return;
     setState(() {
+      _pool = pool;
+      _selections = selections;
       _installedIds = ids;
-      _legacyDict = legacy;
-      // 默认选中第一个已装词典的语言；语言列表加载后若仍未选，
+      _legacyShared = legacy;
+      // 默认选中第一个有词典的语言；语言列表加载后若仍未选，
       // build 里会回落到列表第一个（见 [_effectiveLangId]）。
       if (_selectedLangId == null && ids.isNotEmpty) {
         _selectedLangId = ids.first;
@@ -1692,15 +1692,8 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
     return '语言 #$id';
   }
 
-  /// 下载列表里选中的那本到目标语言的激活库。
+  /// 下载列表里的一本到本机词典池（不绑定语言）。
   Future<void> _downloadFile(ServerDictionary dict) async {
-    final languages =
-        ref.read(languageListProvider).value ?? const <Language>[];
-    final langId = _effectiveLangId(languages);
-    if (langId == null) {
-      setState(() => _error = '语言列表不可用，无法确定词典归属语言');
-      return;
-    }
     final url = ServerDictionary.urlFor(
       ref.read(settingsProvider).serverUrl,
       dict.filename,
@@ -1709,12 +1702,13 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       _busy = true;
       _percent = 0;
       _error = '';
+      _hint = '';
     });
     final ok = await ref
         .read(dictRepositoryProvider)
-        .download(
+        .downloadToPool(
           url,
-          langId: langId,
+          filename: dict.filename,
           onProgress: (received, total) {
             if (total > 0 && mounted) {
               setState(() => _percent = received * 100 ~/ total);
@@ -1722,15 +1716,23 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
           },
         );
     if (!mounted) return;
+    final languages =
+        ref.read(languageListProvider).value ?? const <Language>[];
+    final langName = _languageName(languages, _effectiveLangId(languages));
     setState(() {
       _busy = false;
       _percent = -1;
-      if (!ok) _error = '下载失败：${dict.displayName}（链接不可用或非本 App 词典格式）';
+      if (ok) {
+        _hint = '已下载到本机词典库——在上方「本机词典」点选，即可为$langName启用';
+      } else {
+        _error = '下载失败：${dict.displayName}（链接不可用或非本 App 词典格式）';
+      }
     });
-    await _refreshInstalled();
+    await _refreshPool();
   }
 
-  Future<void> _importMdx() async {
+  /// 把 [filename] 选用为当前语言的词典。
+  Future<void> _selectDict(String filename) async {
     final languages =
         ref.read(languageListProvider).value ?? const <Language>[];
     final langId = _effectiveLangId(languages);
@@ -1739,9 +1741,25 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       return;
     }
     setState(() {
+      _error = '';
+      _hint = '';
+    });
+    try {
+      await ref.read(dictRepositoryProvider).selectDict(langId, filename);
+    } catch (e) {
+      if (mounted) setState(() => _error = '选用失败：$e');
+      return;
+    }
+    await _refreshPool();
+  }
+
+  /// 导入 .mdx 进本机词典池（不绑定语言）。
+  Future<void> _importMdx() async {
+    setState(() {
       _importing = true;
       _processed = 0;
       _error = '';
+      _hint = '';
     });
     try {
       final picked = await FilePicker.pickFiles(
@@ -1760,9 +1778,8 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       }
       final result = await ref
           .read(dictRepositoryProvider)
-          .importMdx(
+          .importMdxToPool(
             path,
-            langId: langId,
             onProgress: (processed) {
               if (mounted) setState(() => _processed = processed);
             },
@@ -1779,8 +1796,11 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
           ImportStatus.empty => result.message,
           ImportStatus.ioError => '导入失败：${result.message}',
         };
+        if (result.ok) {
+          _hint = '已导入本机词典库——在上方「本机词典」点选，即可为语言启用';
+        }
       });
-      await _refreshInstalled();
+      await _refreshPool();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -1791,15 +1811,48 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
     }
   }
 
-  /// 已安装情况的摘要（语言名 + 旧版共享库提示）。
+  /// 删除池内词典（二次确认）。删除后清掉所有语言里指向它的选用。
+  Future<void> _deleteDict(String filename) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除词典'),
+        content: Text(
+          '删除「$filename」？文件将从本机移除，之后可重新下载或导入。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() {
+      _deleting = true;
+      _error = '';
+      _hint = '';
+    });
+    await ref.read(dictRepositoryProvider).deletePoolDict(filename);
+    if (!mounted) return;
+    setState(() => _deleting = false);
+    await _refreshPool();
+  }
+
+  /// 已安装情况的摘要（各语言选用的词典 + 旧版共享库提示）。
   String _installedSummary(List<Language> languages) {
-    final names = [
-      for (final id in _installedIds) _languageName(languages, id),
-    ];
-    final parts = [
-      if (names.isNotEmpty) '专属词典：${names.join('、')}',
-      if (_legacyDict) '旧版共享词典（回落用）',
-    ];
+    final parts = <String>[];
+    for (final id in _installedIds) {
+      final name = _languageName(languages, id);
+      final picked = _selections[id];
+      parts.add(picked != null ? '$name → $picked' : '$name（旧版词典）');
+    }
+    if (_legacyShared) parts.add('旧版共享词典（回落用）');
     return parts.join(' · ');
   }
 
@@ -1808,27 +1861,34 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
     final languages =
         ref.watch(languageListProvider).value ?? const <Language>[];
     final selectedId = _effectiveLangId(languages);
-    final installed = selectedId != null && _installedIds.contains(selectedId);
     final langName = _languageName(languages, selectedId);
+    final current = selectedId != null ? _selections[selectedId] : null;
+    final currentInPool = current != null &&
+        _pool.any((d) => d.filename == current);
     // DropdownButtonFormField 的 value 必须在 items 里，否则断言炸：
     // 语言列表加载失败（离线）时 items 为空，此时只显示 hint。
     final dropdownValue =
         languages.any((l) => l.id == selectedId) ? selectedId : null;
+    final busy = _busy || _importing || _deleting;
     final String subtitle;
     if (_busy) {
       subtitle = '下载中 ${_percent < 0 ? '' : '$_percent%'}…';
     } else if (_importing) {
       subtitle = '解析中… 已处理 $_processed 条';
+    } else if (_deleting) {
+      subtitle = '删除中…';
     } else if (_error.isNotEmpty) {
       // 必须排在 installed 前面：已经装好一本词典时再导一本失败的，若先走
       // installed 分支，副标题会照旧显示"已就绪"，用户以为这次也成功了。
       subtitle = _error;
-    } else if (installed) {
-      subtitle = '$langName 已就绪 · 词卡释义离线可用';
-    } else if (_legacyDict) {
-      subtitle = '$langName 未装专属词典，查询暂回落到旧版共享词典';
+    } else if (currentInPool) {
+      subtitle = '$langName 使用「$current」· 词卡释义离线可用';
+    } else if (selectedId != null && _installedIds.contains(selectedId)) {
+      subtitle = '$langName 使用旧版词典（未入池）';
+    } else if (_legacyShared) {
+      subtitle = '$langName 未选用词典，查询暂回落到旧版共享词典';
     } else {
-      subtitle = '$langName 未安装 · 下载已转换的词典，或导入 .mdx 文件';
+      subtitle = '$langName 未选用词典';
     }
 
     return Card(
@@ -1853,7 +1913,17 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                     .withValues(alpha: 0.6),
               ),
             ),
-            if (_installedIds.isNotEmpty || _legacyDict) ...[
+            if (_hint.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                _hint,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            ],
+            if (_installedIds.isNotEmpty || _legacyShared) ...[
               const SizedBox(height: 6),
               Text(
                 _installedSummary(languages),
@@ -1885,20 +1955,83 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                     child: Text(lang.name, style: const TextStyle(fontSize: 13)),
                   ),
               ],
-              onChanged: _busy || _importing
+              onChanged: busy
                   ? null
                   : (v) => setState(() {
-                      _selectedLangId = v;
-                      _error = '';
-                    }),
+                        _selectedLangId = v;
+                        _error = '';
+                        _hint = '';
+                      }),
               decoration: const InputDecoration(
                 isDense: true,
                 border: OutlineInputBorder(),
-                labelText: '词典所属语言',
+                labelText: '为哪门语言选择词典',
               ),
               hint: const Text('语言列表加载中…'),
             ),
             const SizedBox(height: 12),
+            // -------------------------------------------------- 本机词典池
+            Text(
+              '本机词典（点选为上方语言启用，可删除）',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            if (_pool.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '本机还没有词典——从下方服务器词典池下载，或导入 .mdx 文件',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.6),
+                  ),
+                ),
+              )
+            else
+              for (final dict in _pool)
+                ListTile(
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    currentInPool && dict.filename == current
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    size: 20,
+                  ),
+                  title: Text(
+                    dict.filename,
+                    style: const TextStyle(fontSize: 13),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${dict.sizeMb.toStringAsFixed(1)} MB',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.6),
+                    ),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    tooltip: '删除',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: busy ? null : () => _deleteDict(dict.filename),
+                  ),
+                  onTap: busy ? null : () => _selectDict(dict.filename),
+                ),
+            const SizedBox(height: 12),
+            // -------------------------------------------------- 服务器词典池
             Row(
               children: [
                 Text(
@@ -1918,7 +2051,7 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                   )
                 else
                   IconButton(
-                    onPressed: _busy || _importing ? null : _loadServerDicts,
+                    onPressed: busy ? null : _loadServerDicts,
                     icon: const Icon(Icons.refresh, size: 18),
                     tooltip: '刷新列表',
                     visualDensity: VisualDensity.compact,
@@ -1959,9 +2092,9 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                   visualDensity: VisualDensity.compact,
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(
-                    _selectedFile == dict.filename
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
+                    _pool.any((d) => d.filename == dict.filename)
+                        ? Icons.download_done
+                        : Icons.cloud_download_outlined,
                     size: 20,
                   ),
                   title: Row(
@@ -2000,6 +2133,30 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                           ),
                         ),
                       ],
+                      if (_pool.any((d) => d.filename == dict.filename)) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primary
+                                  .withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: Text(
+                            '已下载',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                   subtitle: dict.summary.isEmpty
@@ -2014,31 +2171,26 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                                 .withValues(alpha: 0.6),
                           ),
                         ),
-                  onTap: _busy || _importing
-                      ? null
-                      : () => setState(() {
-                            _selectedFile = dict.filename;
-                            _error = '';
-                          }),
+                  trailing: IconButton(
+                    icon: Icon(
+                      _pool.any((d) => d.filename == dict.filename)
+                          ? Icons.refresh
+                          : Icons.download,
+                      size: 18,
+                    ),
+                    tooltip: _pool.any((d) => d.filename == dict.filename)
+                        ? '重新下载（覆盖本机副本）'
+                        : '下载到本机',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: _busy ? null : () => _downloadFile(dict),
+                  ),
                 ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _busy || _importing || _selectedFile == null
-                    ? null
-                    : () {
-                        final picked = _serverDicts!.firstWhere(
-                          (d) => d.filename == _selectedFile,
-                          orElse: () => _serverDicts!.first,
-                        );
-                        _downloadFile(picked);
-                      },
-                icon: const Icon(Icons.download, size: 16),
-                label: Text('下载到「$langName」'),
-              ),
             ],
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: _busy || _importing ? null : _importMdx,
+              onPressed: _busy || _importing || _deleting ? null : _importMdx,
               icon: const Icon(Icons.upload_file, size: 16),
               label: const Text('导入 .mdx 文件'),
             ),
