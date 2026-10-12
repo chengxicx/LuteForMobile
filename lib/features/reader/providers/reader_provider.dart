@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dio/dio.dart' show DioException, DioExceptionType;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/foundation.dart';
 import 'package:meta/meta.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/content_service.dart';
@@ -602,6 +603,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
   /// view and a next page exists: the page HTML via [preloadNextPage], and
   /// -- for manga -- the next page's image into the disk cache.
   void _triggerNextPagePreload(PageData pageData) {
+    _startFullBookPreload(pageData);
     if (pageData.currentPage >= pageData.pageCount) return;
 
     _enqueuePrefetch(() async {
@@ -612,6 +614,69 @@ class ReaderNotifier extends Notifier<ReaderState> {
       unawaited(_preloadNextMangaImage(pageData));
     });
     _enqueuePrefetch(() => preloadTooltipsForNextPage());
+  }
+
+  int? _fullPreloadBookId;
+  bool _fullPreloadRunning = false;
+
+  /// Whole-book background preload.
+  ///
+  /// The reader already preloads page N+1 after each turn, but any jump of
+  /// two or more pages (or flipping back) still hits the network and shows
+  /// the loading spinner. This walks the book's pages once, sequentially and
+  /// gently (short pause between fetches), so a book opened on page 1 is
+  /// fully cached a minute later and every turn is a cache hit. Runs behind
+  /// the user's own requests because each page fetch is a single awaited
+  /// call in its own micro-task chain — never holds the serial prefetch
+  /// queue. Aborted on book switch; the first failed fetch (offline) aborts
+  /// the walk and the next page view re-arms it. Manga page *images* are NOT
+  /// included — they are multi-MB each and stay on the next-page-only
+  /// prefetch.
+  void _startFullBookPreload(PageData pageData) {
+    if (_fullPreloadRunning && _fullPreloadBookId == pageData.bookId) return;
+    _fullPreloadBookId = pageData.bookId;
+    _fullPreloadRunning = true;
+    unawaited(
+      _runFullBookPreload(
+        pageData.bookId,
+        pageData.currentPage,
+        pageData.pageCount,
+      ),
+    );
+  }
+
+  Future<void> _runFullBookPreload(
+    int bookId,
+    int startPage,
+    int pageCount,
+  ) async {
+    try {
+      final cacheService = ref.read(pageCacheServiceProvider);
+      // Metadata is per-book static except #page_num, which preloadPage
+      // patches per page — same reuse preloadNextPage already does.
+      final metadata = await cacheService.getMetadataFromCache(
+        bookId,
+        startPage,
+      );
+      for (var pageNum = 1; pageNum <= pageCount; pageNum++) {
+        if (_fullPreloadBookId != bookId) return; // switched books
+        final cached = await cacheService.getFromCache(bookId, pageNum);
+        if (cached != null) continue;
+        await _repository.preloadPage(
+          bookId,
+          pageNum,
+          cachedMetadataHtml: metadata,
+        );
+        // Fetch failed (offline / server down) — stop hammering, re-arm on
+        // the next page view.
+        if (await cacheService.getFromCache(bookId, pageNum) == null) return;
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+    } finally {
+      if (_fullPreloadBookId == bookId) {
+        _fullPreloadRunning = false;
+      }
+    }
   }
 
   /// If the page just loaded is manga, prefetch the next page's image into
@@ -1312,6 +1377,15 @@ class ReaderNotifier extends Notifier<ReaderState> {
       ApiLogger.logError('getCurrentPageForBook', e, details: 'bookId=$bookId');
       return -1;
     }
+  }
+
+  /// Pushes the locally displayed page to the server (fire-and-forget).
+  ///
+  /// See [ContentService.syncCurrentPageToServer] for why the local page wins
+  /// on resume instead of the server's (often stale) record.
+  Future<void> syncCurrentPageToServer(int bookId, int pageNum) {
+    return _repository.contentService
+        .syncCurrentPageToServer(bookId, pageNum);
   }
 
   /// Record that the page was read.

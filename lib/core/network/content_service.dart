@@ -258,6 +258,27 @@ class ContentService {
     }
   }
 
+  /// Pushes the locally displayed page to the server as its current page
+  /// (fire-and-forget).
+  ///
+  /// Background: cached/offline page turns never notify the server, so the
+  /// server's page lags behind what the user is actually reading. On resume
+  /// the reader used to trust the stale server page and yank the user
+  /// backwards; now the local page wins and the server is pulled up to date.
+  /// The response (full page HTML) is discarded — errors are swallowed since
+  /// the next successful page turn or resume will re-sync anyway.
+  Future<void> syncCurrentPageToServer(int bookId, int pageNum) async {
+    try {
+      await _apiService.loadBookPageForReading(bookId, pageNum);
+    } catch (e) {
+      ApiLogger.logError(
+        'syncCurrentPageToServer',
+        e,
+        details: 'bookId=$bookId pageNum=$pageNum',
+      );
+    }
+  }
+
   /// Updates the page number in metadata HTML string
   String _updatePageNumInMetadata(String metadataHtml, int newPageNum) {
     // Simple string replacement for the page number input value
@@ -1279,6 +1300,14 @@ class ContentService {
   /// Gets the current page number from the server for a book
   /// This is used to check if the server's current page matches the reader's page
   /// This uses the existing getBookPageStructure method which already calls the correct endpoint
+  ///
+  /// Returns -1 when the page number cannot be determined (network error,
+  /// login redirect, unexpected HTML).  Callers treat -1 as "no data, stay
+  /// put".  This used to return 1 as a default, which made the resume-time
+  /// page sync jump the reader back to page 1 whenever the first request
+  /// after returning from the background failed (stale socket) -- the
+  /// failure never even reached the server, so diag.log showed the jump
+  /// with no preceding GET /read/<id>.
   Future<int> getCurrentPageForBook(int bookId) async {
     try {
       final response = await _apiService.getBookPageStructure(bookId);
@@ -1297,10 +1326,10 @@ class ContentService {
           }
         }
       }
-      return 1; // Default to page 1 if parsing fails
+      return -1; // Unparseable response -- caller keeps the current page
     } catch (e) {
       ApiLogger.logError('getCurrentPageForBook', e, details: 'bookId=$bookId');
-      return 1; // Default to page 1 on error
+      return -1; // Network failure -- caller keeps the current page
     }
   }
 

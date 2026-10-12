@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/logger/widget_logger.dart';
+import '../../../core/logger/api_logger.dart';
 import '../../../shared/theme/eink.dart';
 import '../../../shared/widgets/hardware_key_navigator.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
@@ -321,17 +322,24 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
             .read(readerProvider.notifier)
             .getCurrentPageForBook(pageData.bookId);
 
-        if (serverPage != -1 && serverPage != pageData.currentPage) {
+        // Re-read the page AFTER the await: the user may have turned pages
+        // while the request was in flight, and comparing against the
+        // pre-await snapshot would yank them back to a stale page.
+        final currentPage = ref.read(readerProvider).pageData?.currentPage;
+        if (currentPage == null) {
+          _checkServerPageInProgress = false;
+          return;
+        }
+
+        // Server lags behind (cached/offline turns never sync) → pull the
+        // server up to the local page instead of jumping backwards.
+        if (serverPage != -1 && serverPage != currentPage) {
           ref
               .read(readerProvider.notifier)
-              .loadPage(
-                bookId: pageData.bookId,
-                pageNum: serverPage,
-                showFullPageError: false,
-              );
+              .syncCurrentPageToServer(pageData.bookId, currentPage);
         }
       } catch (e) {
-        print('Error checking server page: $e');
+        ApiLogger.logError('checkServerPage', e);
       }
     }
 

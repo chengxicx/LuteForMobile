@@ -541,8 +541,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     }
   }
 
-  /// Checks if the server's current page matches the reader's page
-  /// If they don't match, navigate to the server's page
+  /// Syncs page position on resume — with the LOCAL page as the source of
+  /// truth.
+  ///
+  /// Background: cached/offline page turns never notify the server, so the
+  /// server's record usually lags behind what the user is actually reading.
+  /// Trusting the server here would yank the user backwards on every resume
+  /// (seen in the wild as "switch away and back → jumped to page 8"), so
+  /// instead we push the local page up. The only thing this gives up is
+  /// cross-device "follow the web reader" — which was the very source of
+  /// those backwards jumps.
   Future<void> _checkServerPage() async {
     if (_checkServerPageInProgress) {
       return;
@@ -552,21 +560,24 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final pageData = ref.read(readerProvider).pageData;
     if (pageData != null) {
       try {
+        // Re-read the page AFTER the await: the user may have turned pages
+        // while the request was in flight — compare against the freshest
+        // local state, never the pre-await snapshot.
         final serverPage = await ref
             .read(readerProvider.notifier)
             .getCurrentPageForBook(pageData!.bookId);
+        final currentPage = ref.read(readerProvider).pageData?.currentPage;
+        if (currentPage == null) {
+          _checkServerPageInProgress = false;
+          return;
+        }
 
-        // If we got a valid page number from server and it's different from current page
-        if (serverPage != -1 && serverPage != pageData!.currentPage) {
-          // Navigate to the server's page
+        // Server lags behind (cached/offline turns never sync) → pull the
+        // server up to the local page instead of jumping backwards.
+        if (serverPage != -1 && serverPage != currentPage) {
           ref
               .read(readerProvider.notifier)
-              .loadPage(
-                bookId: pageData!.bookId,
-                pageNum: serverPage,
-                showFullPageError:
-                    false, // Don't show full page error for navigation
-              );
+              .syncCurrentPageToServer(pageData!.bookId, currentPage);
         }
       } catch (e) {
         ApiLogger.logError('checkServerPage', e);
