@@ -31,6 +31,69 @@ void main() {
     });
   });
 
+  // 与 web 端 lute/dict/service.py: strip_duplicate_headword 的测试用例
+  // 一一对应：释义首行只是复述所查词（词头 + 可选【读音】注释）时删掉，
+  // 其余情况原样保留。行为漂移会造成 mobile 与 web 词卡显示不一致。
+  group('stripDuplicateHeadword', () {
+    test('词头【读音】行被删掉', () {
+      final gloss = '目覚まし時計【めざましどけい⑤】\n名\n闹钟。';
+      expect(
+        DictRepository.stripDuplicateHeadword(gloss, '目覚まし時計'),
+        '名\n闹钟。',
+      );
+    });
+
+    test('裸词头行被删掉', () {
+      expect(
+        DictRepository.stripDuplicateHeadword('たのしい\n愉快yúkuài', 'たのしい'),
+        '愉快yúkuài',
+      );
+    });
+
+    test('首行是别的词头：原样保留（读音命中的词条自己的词头是答案的一部分）', () {
+      const gloss = '終わり\n【おわり】\n结束';
+      expect(
+        DictRepository.stripDuplicateHeadword(gloss, 'おわり'),
+        gloss,
+      );
+    });
+
+    test('首行词头后还有别的字符：保留（首行承载信息）', () {
+      expect(
+        DictRepository.stripDuplicateHeadword('箱は\n名\n箱子', '箱'),
+        '箱は\n名\n箱子',
+      );
+      expect(
+        DictRepository.stripDuplicateHeadword('終わりです。\n名', '終わり'),
+        '終わりです。\n名',
+      );
+    });
+
+    test('词条只有词头一行：不删（否则什么都不剩）', () {
+      expect(
+        DictRepository.stripDuplicateHeadword('たのしい', 'たのしい'),
+        'たのしい',
+      );
+    });
+
+    test('零宽空格不参与比较', () {
+      expect(
+        DictRepository.stripDuplicateHeadword('たのしい\n愉快', 'たの\u200bしい'),
+        '愉快',
+      );
+    });
+
+    test('空输入原样通过', () {
+      expect(DictRepository.stripDuplicateHeadword(null, 'たのしい'), isNull);
+      expect(DictRepository.stripDuplicateHeadword('', 'たのしい'), '');
+      expect(DictRepository.stripDuplicateHeadword(' gloss\nmore', ''), ' gloss\nmore');
+      expect(
+        DictRepository.stripDuplicateHeadword(' gloss\nmore', '\u200b'),
+        ' gloss\nmore',
+      );
+    });
+  });
+
   // 词典池模型：下载/导入与语言解耦，选用关系按语言各存一份 key。
   // 这两个纯函数决定持久化 key 与池内文件名，改名会让老用户的选择
   //  silently 失效，锁住。

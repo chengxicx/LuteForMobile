@@ -435,6 +435,34 @@ class DictRepository {
 
   // ----------------------------------------------------------------- 查询
 
+  /// 与 web 端 `lute/dict/service.py: strip_duplicate_headword` 逐条对齐的
+  /// Dart 版：词条释义以词典自己的词头开头（如
+  /// `目覚まし時計【めざましどけい⑤】`），而卡片头部已经显示了查的词，
+  /// 那一行就是纯重复——只在**整行**只复述了 [text]（词头 + 可选
+  /// 【读音】注释 + 空白）时才删掉它。
+  ///
+  /// 首行是别的内容（通过读音查到的词条自己的词头、词性、释义本体）时
+  /// 原样返回；词条只剩词头一行时也不删（否则什么都不剩）。
+  static String? stripDuplicateHeadword(String? gloss, String? text) {
+    if (gloss == null || gloss.isEmpty || text == null || text.isEmpty) {
+      return gloss;
+    }
+    final lines = gloss.split('\n');
+    // 比较前洗掉零宽空格并 trim：词典词头里常埋 \u200b 控制版式。
+    const zwsp = '\u200b';
+    final key = text.replaceAll(zwsp, '').trim();
+    final first = lines.first.replaceAll(zwsp, '').trim();
+    if (key.isEmpty || !first.startsWith(key)) return gloss;
+    // 词头之后只允许空白与一段可选的【…】注释——注释里出现别的字
+    // （【他動】之类）说明首行还承载信息，保留。
+    final rest = RegExp(r'^\s*(?:【[^】]*】)?\s*$')
+        .firstMatch(first.substring(key.length));
+    if (rest == null) return gloss;
+    final remainderHasContent = lines.skip(1).any((l) => l.trim().isNotEmpty);
+    if (!remainderHasContent) return gloss;
+    return lines.sublist(1).join('\n');
+  }
+
   /// 按候选词链查询释义（已剥 HTML 的纯文本，带换行）。查不到返回 null。
   ///
   /// [langId] 决定查哪个语言的词典：该语言选用的池内词典 → 旧版 per-lang
@@ -468,7 +496,11 @@ class DictRepository {
         );
         if (defs.isEmpty) continue;
         final def = defs.first['def'];
-        return def is String && def.isNotEmpty ? def : null;
+        if (def is! String || def.isEmpty) return null;
+        // 与 web 阅读页同一规则：卡片头部已显示所查的词，释义开头那行
+        // 纯复述词头的（含【读音】注释）删掉。以查询词 [term] 为准，
+        // 与命中用的候选词无关（读音命中的词条首行不匹配即原样保留）。
+        return stripDuplicateHeadword(def, term);
       }
       return null;
     } catch (e) {
