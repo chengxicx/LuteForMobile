@@ -1145,6 +1145,50 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           const SizedBox(height: 24),
                           Row(
                             children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Show furigana',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Readings above words that contain kanji. '
+                                      'Only languages that supply readings '
+                                      '(Japanese, Mandarin, Cantonese) are '
+                                      'affected. This switch is the app\'s own '
+                                      'and is independent of the language '
+                                      'setting on the web reader.',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.6),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.8,
+                                child: Switch(
+                                  value: settings.furiganaEnabled,
+                                  onChanged: (value) {
+                                    ref
+                                        .read(settingsProvider.notifier)
+                                        .updateFuriganaEnabled(value);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+                          Row(
+                            children: [
                               const Text('Show stats bar in reader'),
                               const Spacer(),
                               Transform.scale(

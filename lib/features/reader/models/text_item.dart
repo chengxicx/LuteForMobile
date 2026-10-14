@@ -46,6 +46,18 @@ class TextItem {
   bool get isWord => wordId != null;
   bool get isSpace => text.trim().isEmpty;
 
+  /// Stable identity of this item's rendered cell within a page.
+  ///
+  /// The reader keys its per-word `GlobalKey`s by this, and the furigana
+  /// readings map is keyed by it too -- so the two sides must agree, and
+  /// `TextDisplay._itemKeyId` delegates here rather than rebuilding the
+  /// string.  `order` is the server's *page-wide* token index (see
+  /// `calculate_textitems.py`, which enumerates the whole page's tokens), so
+  /// it is already unique within a page; paragraph and word id are folded in
+  /// to keep the key legible and to make sure a non-word cell can never
+  /// collide with a word.
+  String get renderKey => '$paragraphId-$order-${wordId ?? 'space'}';
+
   /// 显示用文本：剥掉词元里的零宽空格（U+200B，Lute 建词/导入时常混入）。
   ///
   /// 只用于渲染。正文是拉丁字体，日文和 ZWS 走不同的回退字体；带 ZWS 的词

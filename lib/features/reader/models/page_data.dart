@@ -43,6 +43,19 @@ class PageData {
   /// the cues (the page text can be hand-edited).
   final List<int> pageCueMap;
 
+  /// The language whose readings annotate this page as furigana
+  /// (`LUTE_FURIGANA.langId`, rendered by `read/index.html`).
+  ///
+  /// This is the `language_id` the readings endpoint wants.  It is null on
+  /// servers predating the block, which is also the signal to leave the
+  /// page layout untouched -- no reading slot is reserved, so a page from
+  /// an older server looks exactly as it did before.
+  ///
+  /// Note the app does **not** read the block's `enabled` flag: the reader
+  /// has its own "show furigana" setting, independent of the language's
+  /// web toggle.
+  final int? furiganaLangId;
+
   PageData({
     required this.bookId,
     required this.currentPage,
@@ -59,6 +72,7 @@ class PageData {
     this.bilibili,
     this.cues = const [],
     this.pageCueMap = const [],
+    this.furiganaLangId,
   });
 
   /// A book has playable audio when it has an uploaded audio file
@@ -97,6 +111,7 @@ class PageData {
     BilibiliData? bilibili,
     List<YoutubeCue>? cues,
     List<int>? pageCueMap,
+    int? furiganaLangId,
   }) {
     return PageData(
       bookId: bookId ?? this.bookId,
@@ -114,6 +129,7 @@ class PageData {
       bilibili: bilibili ?? this.bilibili,
       cues: cues ?? this.cues,
       pageCueMap: pageCueMap ?? this.pageCueMap,
+      furiganaLangId: furiganaLangId ?? this.furiganaLangId,
     );
   }
 

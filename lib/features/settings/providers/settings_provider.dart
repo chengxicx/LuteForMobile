@@ -70,6 +70,7 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyExperimentalBookDetailsFullStatsEndpoint =
       'experimental_book_details_full_stats_endpoint';
   static const String _keyEInkMode = 'eink_mode';
+  static const String _keyFuriganaEnabled = 'furigana_enabled';
   static const String _keyOrientationLock = 'orientation_lock';
 
   @override
@@ -142,6 +143,7 @@ class SettingsNotifier extends Notifier<Settings> {
     final experimentalBookDetailsFullStatsEndpoint =
         prefs.getBool(_keyExperimentalBookDetailsFullStatsEndpoint) ?? false;
     final eInkMode = prefs.getBool(_keyEInkMode) ?? false;
+    final furiganaEnabled = prefs.getBool(_keyFuriganaEnabled) ?? true;
     final orientationLock = _orientationLockFromName(
       prefs.getString(_keyOrientationLock),
     );
@@ -186,6 +188,7 @@ class SettingsNotifier extends Notifier<Settings> {
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint,
       eInkMode: eInkMode,
+      furiganaEnabled: furiganaEnabled,
       orientationLock: orientationLock,
     );
 
@@ -438,6 +441,13 @@ class SettingsNotifier extends Notifier<Settings> {
     state = state.copyWith(eInkMode: enabled);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyEInkMode, enabled);
+  }
+
+  /// 打开/关闭正文注音（furigana）。与 web 端的语言设置相互独立。
+  Future<void> updateFuriganaEnabled(bool enabled) async {
+    state = state.copyWith(furiganaEnabled: enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyFuriganaEnabled, enabled);
   }
 
   Future<void> updateOrientationLock(OrientationLock lock) async {

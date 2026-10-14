@@ -45,6 +45,20 @@ class TextDisplay extends StatefulWidget {
 
   final TextDirection? textDirection;
 
+  /// Whether the page is annotated with readings (furigana) -- i.e. whether
+  /// every word cell reserves a slot above it for one.
+  ///
+  /// Deliberately independent of whether the readings have arrived yet: the
+  /// slot is reserved as soon as this is true, so the text does not reflow
+  /// when they land.  (The web reader adds its `furigana-on` class early for
+  /// exactly the same reason.)
+  final bool furiganaEnabled;
+
+  /// Readings to paint above the words, keyed by [TextItem.renderKey].
+  ///
+  /// A word with no entry keeps its (empty, equally tall) slot.
+  final Map<String, String> furiganaReadings;
+
   const TextDisplay({
     super.key,
     required this.paragraphs,
@@ -70,6 +84,8 @@ class TextDisplay extends StatefulWidget {
     this.highlightedOrder,
     this.highlightedSentenceIds = const {},
     this.textDirection,
+    this.furiganaEnabled = false,
+    this.furiganaReadings = const {},
   });
 
   /// One tappable word.  [displayOverride] replaces only the rendered
@@ -104,6 +120,8 @@ class TextDisplay extends StatefulWidget {
     bool isSelected = false,
     String? displayOverride,
     Color? slabTextColor,
+    String? reading,
+    bool reserveReadingSlot = false,
   }) {
     Color? textColor;
     Color? backgroundColor;
@@ -211,6 +229,67 @@ class TextDisplay extends StatefulWidget {
       forceStrutHeight: true,
     );
 
+    final wordText = Text(
+      displayOverride ?? item.displayText,
+      style: textStyle,
+      strutStyle: strutStyle,
+    );
+
+    // Furigana (readings above the word).  The reading goes in a fixed-height
+    // slot *above* the word, and -- crucially -- **every** cell gets that
+    // slot, not just the annotated ones.  That is what keeps all the cells in
+    // a paragraph the same height: the paragraph is a `Wrap` whose children
+    // are laid out independently, so without a uniform slot an annotated cell
+    // would be taller than its neighbours and the kanji/kana baselines the
+    // strut above works so hard to align would drift apart again.  It is also
+    // why the readings can land late without the page reflowing -- the space
+    // is already reserved.
+    //
+    // Sizes scale with [textSize] rather than being the shadowing panel's
+    // hardcoded 13/10 (those are tuned for its fixed 19px text).  The 0.5
+    // factor matches the web reader's `rt { font-size: 0.5em }`.
+    //
+    // The slot is scaled by the platform's text scale factor as well, because
+    // the word and the reading are: a `SizedBox` is measured in logical pixels
+    // and so is *not* touched by text scaling, while the text inside it is.
+    // Without this the two drift apart as the system font size grows, and past
+    // a scale of ~1.4 the reading is taller than its slot and spills onto the
+    // word below.  (Measured on the Leaf5C: its system font scale is 0.85, so
+    // an unscaled slot is 25% too tall there -- harmless, but only by luck of
+    // which side of 1.0 the device sits on.)
+    final readingSlotHeight = MediaQuery.textScalerOf(
+      context,
+    ).scale(textSize * 0.7);
+    final Widget cell = reserveReadingSlot
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: readingSlotHeight,
+                child: reading == null
+                    ? null
+                    : Text(
+                        reading,
+                        maxLines: 1,
+                        style: TextStyle(
+                          // A slightly muted copy of the word's own ink: it
+                          // stays legible on the status colour blocks, on the
+                          // playing-line block, and on an e-ink panel's 16
+                          // greys.  (The web reader likewise paints `rt` in
+                          // the plain font colour, not the term's status.)
+                          color: (textStyle.color ?? Colors.black).withValues(
+                            alpha: 0.75,
+                          ),
+                          fontSize: textSize * 0.5,
+                          height: 1.0,
+                        ),
+                      ),
+              ),
+              wordText,
+            ],
+          )
+        : wordText;
+
     final textWidget = Container(
       padding: backgroundColor != null || isSelected
           ? const EdgeInsets.symmetric(horizontal: 2.0)
@@ -231,11 +310,7 @@ class TextDisplay extends StatefulWidget {
           ...?glowEffect == null ? null : [glowEffect],
         ],
       ),
-      child: Text(
-        displayOverride ?? item.displayText,
-        style: textStyle,
-        strutStyle: strutStyle,
-      ),
+      child: cell,
     );
 
     if (item.wordId != null) {
@@ -375,9 +450,20 @@ class _TextDisplayState extends State<TextDisplay> {
     super.dispose();
   }
 
-  String _itemKeyId(TextItem item) {
-    return '${item.paragraphId}-${item.order}-${item.wordId ?? 'space'}';
+  @override
+  void didUpdateWidget(TextDisplay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Readings landing (or the furigana setting flipping) changes how tall
+    // every word cell is.  A long-press drag caches each cell's screen rect
+    // and only rebuilds it at the start of the next drag, so a stale cache
+    // would hit-test against the old heights mid-drag.
+    if (oldWidget.furiganaEnabled != widget.furiganaEnabled ||
+        !identical(oldWidget.furiganaReadings, widget.furiganaReadings)) {
+      _clearHitTestCache();
+    }
   }
+
+  String _itemKeyId(TextItem item) => item.renderKey;
 
   GlobalKey _itemKeyFor(TextItem item) {
     final keyId = _itemKeyId(item);
@@ -582,6 +668,8 @@ class _TextDisplayState extends State<TextDisplay> {
       highlightedOrder: widget.highlightedOrder,
       highlightedSentenceIds: widget.highlightedSentenceIds,
       isSelected: _isSelected(item),
+      reading: widget.furiganaReadings[item.renderKey],
+      reserveReadingSlot: widget.furiganaEnabled,
     );
   }
 

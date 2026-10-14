@@ -48,6 +48,15 @@ class Settings {
   final bool autoRefreshFullStats;
   final bool experimentalBookDetailsFullStatsEndpoint;
 
+  /// 在正文的汉字上方显示注音（furigana）。
+  ///
+  /// 这是**客户端自己的**开关，与 web 端「语言设置 → Show furigana above
+  /// words」相互独立：web 关了不影响这里，反之亦然。默认开启。
+  ///
+  /// 只有能提供读音的语言（日/中/粤）会真的画出注音——服务端对其它语言
+  /// 返回空读音，客户端自然不渲染；另外整页没有汉字的书也不会发请求。
+  final bool furiganaEnabled;
+
   /// 墨水屏模式（E-ink mode）。打开后关掉动画、水波纹、阴影等持续重绘的
   /// 视觉效果，并把翻页从「拖动跟手」改成「左右区域点击」。
   /// 目标设备 BOOX Leaf 5C，详见 docs/eink_leaf5c_plan.md。
@@ -96,6 +105,7 @@ class Settings {
     this.alwaysRefreshBookDetails = true,
     this.autoRefreshFullStats = false,
     this.experimentalBookDetailsFullStatsEndpoint = false,
+    this.furiganaEnabled = true,
     this.eInkMode = false,
     this.orientationLock = OrientationLock.portrait,
   });
@@ -141,6 +151,7 @@ class Settings {
     bool? alwaysRefreshBookDetails,
     bool? autoRefreshFullStats,
     bool? experimentalBookDetailsFullStatsEndpoint,
+    bool? furiganaEnabled,
     bool? eInkMode,
     OrientationLock? orientationLock,
   }) {
@@ -203,6 +214,7 @@ class Settings {
       experimentalBookDetailsFullStatsEndpoint:
           experimentalBookDetailsFullStatsEndpoint ??
           this.experimentalBookDetailsFullStatsEndpoint,
+      furiganaEnabled: furiganaEnabled ?? this.furiganaEnabled,
       eInkMode: eInkMode ?? this.eInkMode,
       orientationLock: orientationLock ?? this.orientationLock,
     );
@@ -245,6 +257,7 @@ class Settings {
       alwaysRefreshBookDetails: true,
       autoRefreshFullStats: false,
       experimentalBookDetailsFullStatsEndpoint: false,
+      furiganaEnabled: true,
       eInkMode: false,
       orientationLock: OrientationLock.portrait,
     );
@@ -293,6 +306,7 @@ class Settings {
         other.autoRefreshFullStats == autoRefreshFullStats &&
         other.experimentalBookDetailsFullStatsEndpoint ==
             experimentalBookDetailsFullStatsEndpoint &&
+        other.furiganaEnabled == furiganaEnabled &&
         other.eInkMode == eInkMode &&
         other.orientationLock == orientationLock;
   }
@@ -335,6 +349,7 @@ class Settings {
     alwaysRefreshBookDetails,
     autoRefreshFullStats,
     experimentalBookDetailsFullStatsEndpoint,
+    furiganaEnabled,
     eInkMode,
     orientationLock,
   ]);

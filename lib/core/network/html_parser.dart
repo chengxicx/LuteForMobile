@@ -62,6 +62,13 @@ class HtmlParser {
     // null videoId (which is why _extractYoutubeData returns null for it).
     final cues = _extractCueList(metadataDocument, textDocument);
     final pageCueMap = _extractPageCueMapFrom(textDocument, metadataDocument);
+    // The furigana switch/langId is rendered by read/index.html, i.e. the
+    // metadata document, but fall back to the text document for the same
+    // reason the LUTE_YT_DATA block is searched in both (the block can
+    // arrive in either depending on endpoint).
+    final furiganaLangId =
+        _extractFuriganaLangId(metadataDocument) ??
+        _extractFuriganaLangId(textDocument);
 
     return PageData(
       bookId: bookId,
@@ -79,6 +86,7 @@ class HtmlParser {
       bilibili: bilibili,
       cues: cues,
       pageCueMap: pageCueMap,
+      furiganaLangId: furiganaLangId,
     );
   }
 
@@ -329,6 +337,38 @@ class HtmlParser {
         startPos: _extractStartPos(text),
         cues: _extractCues(text),
       );
+    }
+    return null;
+  }
+
+  /// The reading language id for furigana, from the `LUTE_FURIGANA` block
+  /// the reading page renders (`read/index.html`):
+  ///
+  ///     var LUTE_FURIGANA = { enabled: false, langId: 9 };
+  ///
+  /// Unlike the `LUTE_YT_DATA.*` assignments this is a plain object
+  /// literal, so it gets its own regex rather than going through
+  /// [_readJsonString].  `enabled` is deliberately ignored: the app has
+  /// its own "show furigana" setting, independent of the language's web
+  /// toggle, so the reader can show readings the web side has turned off.
+  /// Only the language id is needed -- it is the `language_id` the
+  /// readings endpoint requires, and the server answers `reading: null`
+  /// for languages that cannot supply readings, so there is no client-side
+  /// language whitelist here.
+  ///
+  /// Returns null on servers predating the block.  That null is also the
+  /// signal to leave the page layout exactly as it is (no reserved
+  /// reading slot).
+  int? _extractFuriganaLangId(html.Document document) {
+    for (final script in document.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('LUTE_FURIGANA')) continue;
+
+      final match = RegExp(
+        r'LUTE_FURIGANA\s*=\s*\{[^}]*?\blangId\s*:\s*(\d+)',
+      ).firstMatch(text);
+      final langId = match != null ? int.tryParse(match.group(1)!) : null;
+      if (langId != null) return langId;
     }
     return null;
   }

@@ -1548,20 +1548,23 @@ class ContentService {
     return _pollShadowingTask(taskId, onWait);
   }
 
-  /// Furigana readings for one sentence's tokens, from
+  /// Furigana readings for a batch of tokens, from
   /// `POST /read/shadowing/readings`.
   ///
-  /// [fullText] is the sentence the tokens belong to.  Sending it lets the
-  /// server parse the sentence once and read each morpheme in context
-  /// (一つ -> ひとつ, not the isolated 一 + つ); without it the server
-  /// falls back to looking each token up on its own.  Optional so a caller
-  /// with only tokens still works against an older server.
+  /// [fullText] is the text the tokens belong to.  Sending it lets the
+  /// server parse it once and read each morpheme in context (一つ -> ひとつ,
+  /// not the isolated 一 + つ); without it the server falls back to looking
+  /// each token up on its own.  Optional so a caller with only tokens still
+  /// works against an older server.
+  ///
+  /// The response is positionally parallel to [tokens] -- entry *i* is the
+  /// reading of `tokens[i]`, `null` when that token has none.
   ///
   /// Best-effort: a failure (or a language without readings) yields an
-  /// empty list, and the panel simply shows the plain words -- never a
-  /// blocking error, because the readings are decoration around the
-  /// practice itself.
-  Future<List<ShadowingToken>> fetchShadowingReadings({
+  /// empty list, and callers simply show the plain words -- never a
+  /// blocking error, because the readings are decoration around the text
+  /// itself.
+  Future<List<ShadowingToken>> fetchReadings({
     required int languageId,
     required List<String> tokens,
     String? fullText,
@@ -1581,6 +1584,20 @@ class ContentService {
         .whereType<Map<String, dynamic>>()
         .map(ShadowingToken.fromJson)
         .toList();
+  }
+
+  /// The shadowing panel's name for [fetchReadings]; kept so the practice
+  /// screen reads in its own vocabulary.
+  Future<List<ShadowingToken>> fetchShadowingReadings({
+    required int languageId,
+    required List<String> tokens,
+    String? fullText,
+  }) {
+    return fetchReadings(
+      languageId: languageId,
+      tokens: tokens,
+      fullText: fullText,
+    );
   }
 
   /// Polls a scoring task every 1.5s for up to 10 minutes (same budget as

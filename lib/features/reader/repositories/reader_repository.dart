@@ -1,4 +1,5 @@
 import '../../../core/network/content_service.dart';
+import '../../shadowing/models/shadowing_result.dart';
 import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../models/term_form.dart';
@@ -38,6 +39,21 @@ class ReaderRepository {
     } catch (e) {
       throw Exception('Failed to load term tooltip: $e');
     }
+  }
+
+  /// Furigana readings for a batch of tokens, positionally parallel to
+  /// [tokens] (`POST /read/shadowing/readings`).  Best-effort: an empty
+  /// list when the server has none to give.
+  Future<List<ShadowingToken>> fetchReadings({
+    required int languageId,
+    required List<String> tokens,
+    String? fullText,
+  }) {
+    return contentService.fetchReadings(
+      languageId: languageId,
+      tokens: tokens,
+      fullText: fullText,
+    );
   }
 
   /// Fetches a term tooltip and returns both the parsed object and raw HTML.

@@ -34,6 +34,7 @@ import '../models/term_form.dart';
 import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
+import '../providers/furigana_provider.dart';
 import '../providers/audio_player_provider.dart';
 import '../providers/player_mode_provider.dart';
 import '../providers/sentence_tts_provider.dart';
@@ -1905,6 +1906,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       highlightedParagraphId: _highlightedParagraphId,
       highlightedOrder: _highlightedOrder,
       highlightedSentenceIds: highlightedSentenceIds,
+      furiganaEnabled: furiganaActive(
+        pageData,
+        enabled: settings.furiganaEnabled,
+      ),
+      furiganaReadings: ref.watch(furiganaProvider).readings,
     );
 
     final mangaPage = pageData.mangaPage;

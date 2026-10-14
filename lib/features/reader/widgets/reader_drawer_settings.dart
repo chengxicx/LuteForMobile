@@ -50,6 +50,8 @@ class ReaderDrawerSettings extends ConsumerWidget {
           if (currentRoute != 'sentence-reader') ...[
             const SizedBox(height: 16),
             _buildPageNumbersToggle(context, ref, settings),
+            const SizedBox(height: 16),
+            _buildFuriganaToggle(context, ref, settings),
           ],
           const SizedBox(height: 16),
           Consumer(
@@ -479,6 +481,33 @@ class ReaderDrawerSettings extends ConsumerWidget {
             value: settings.showPageNumbers,
             onChanged: (value) {
               ref.read(settingsProvider.notifier).updateShowPageNumbers(value);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 正文注音开关。这是 App 自己的开关，与 web 端语言设置里的
+  /// 「Show furigana above words」相互独立。
+  Widget _buildFuriganaToggle(
+    BuildContext context,
+    WidgetRef ref,
+    dynamic settings,
+  ) {
+    return Row(
+      children: [
+        const Text(
+          'Show Furigana',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const Spacer(),
+        Transform.scale(
+          scale: 0.8,
+          child: Switch(
+            value: settings.furiganaEnabled,
+            onChanged: (value) {
+              ref.read(settingsProvider.notifier).updateFuriganaEnabled(value);
             },
           ),
         ),
