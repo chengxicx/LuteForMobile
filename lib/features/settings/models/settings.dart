@@ -65,6 +65,11 @@ class Settings {
   /// 屏幕方向：跟随系统自动旋转，还是锁定竖屏/横屏。默认锁定竖屏。
   final OrientationLock orientationLock;
 
+  /// 界面显示语言代码：'en' / 'zh' / 'ja' / 'ko'。仅存本机
+  /// （SharedPreferences），与 Web 端 ui_language **相互独立**、互不同步
+  /// （用户 2026-10-14 要求）；与学习内容的 languageFilter 也是两回事。
+  final String uiLanguage;
+
   static const String termuxUrl = 'http://127.0.0.1:5001';
 
   const Settings({
@@ -108,6 +113,7 @@ class Settings {
     this.furiganaEnabled = true,
     this.eInkMode = false,
     this.orientationLock = OrientationLock.portrait,
+    this.uiLanguage = 'en',
   });
 
   Settings copyWith({
@@ -154,6 +160,7 @@ class Settings {
     bool? furiganaEnabled,
     bool? eInkMode,
     OrientationLock? orientationLock,
+    String? uiLanguage,
   }) {
     return Settings(
       localUrl: localUrl ?? this.localUrl,
@@ -217,6 +224,7 @@ class Settings {
       furiganaEnabled: furiganaEnabled ?? this.furiganaEnabled,
       eInkMode: eInkMode ?? this.eInkMode,
       orientationLock: orientationLock ?? this.orientationLock,
+      uiLanguage: uiLanguage ?? this.uiLanguage,
     );
   }
 
@@ -260,6 +268,7 @@ class Settings {
       furiganaEnabled: true,
       eInkMode: false,
       orientationLock: OrientationLock.portrait,
+      uiLanguage: 'en',
     );
   }
 
@@ -308,7 +317,8 @@ class Settings {
             experimentalBookDetailsFullStatsEndpoint &&
         other.furiganaEnabled == furiganaEnabled &&
         other.eInkMode == eInkMode &&
-        other.orientationLock == orientationLock;
+        other.orientationLock == orientationLock &&
+        other.uiLanguage == uiLanguage;
   }
 
   @override
@@ -352,6 +362,7 @@ class Settings {
     furiganaEnabled,
     eInkMode,
     orientationLock,
+    uiLanguage,
   ]);
 
   bool isValidServerUrl(String url) {

@@ -21,6 +21,7 @@ import '../models/settings.dart';
 import '../models/tts_settings.dart';
 import '../../../shared/theme/theme_definitions.dart';
 import '../../../app.dart';
+import '../../../l10n/generated/app_localizations.dart';
 import 'theme_selector_screen.dart';
 import 'tts_settings_section.dart';
 import 'ai_settings_section.dart';
@@ -251,6 +252,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     WidgetLogger.logRebuild('SettingsScreen', _buildCount);
 
     final settings = ref.watch(settingsProvider);
+    // of() 可空（gen_l10n 规范输出）；delegate 已挂在 MaterialApp 上，
+    // 这里必然非空。
+    final l10n = AppLocalizations.of(context)!;
     final session = ref.watch(sessionProvider);
     final themeSettings = ref.watch(themeSettingsProvider);
     final textSettings = ref.watch(textFormattingSettingsProvider);
@@ -1450,6 +1454,57 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             alpha: 0.6,
                           ),
                         ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // 界面语言：仅本机保存、即时生效，与 Web 端的 ui_language
+              // 相互独立（用户 2026-10-14 要求）。选项 label 用各语言母语名。
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        l10n.settingsUiLanguage,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.settingsUiLanguageDesc,
+                        style: TextStyle(
+                          color: context.appColorScheme.text.primary
+                              .withValues(alpha: 0.6),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: settings.uiLanguage,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 12,
+                          ),
+                        ),
+                        items: [
+                          for (final lang in kUiLanguages)
+                            DropdownMenuItem(
+                              value: lang.code,
+                              child: Text(lang.label),
+                            ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            ref
+                                .read(settingsProvider.notifier)
+                                .updateUiLanguage(value);
+                          }
+                        },
                       ),
                     ],
                   ),

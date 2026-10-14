@@ -28,6 +28,20 @@ class ViewDrawerSettings {
   const ViewDrawerSettings.none() : settingsContent = null;
 }
 
+/// 界面语言选项。值域与 Web 端 UI_LANGUAGES 一致（en/zh/ja/ko），但 App 的
+/// 选择**仅存本机**，与 Web 端 ui_language 相互独立（用户 2026-10-14 要求）。
+/// label 用各语言的母语名，自身不翻译。
+const List<({String code, String label})> kUiLanguages =
+    <({String code, String label})>[
+      (code: 'en', label: 'English'),
+      (code: 'zh', label: '中文'),
+      (code: 'ja', label: '日本語'),
+      (code: 'ko', label: '한국어'),
+    ];
+
+/// 合法的界面语言代码（与 Web settings 表 ui_language 同值域）。
+const List<String> kUiLanguageCodes = <String>['en', 'zh', 'ja', 'ko'];
+
 class SettingsNotifier extends Notifier<Settings> {
   static const String _keyLocalUrl = 'local_url';
   static const String _keyBasicAuthUser = 'basic_auth_user';
@@ -72,6 +86,8 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyEInkMode = 'eink_mode';
   static const String _keyFuriganaEnabled = 'furigana_enabled';
   static const String _keyOrientationLock = 'orientation_lock';
+  // App 本机偏好。与 Web settings 表的 ui_language 同值域但**互不同步**。
+  static const String _keyUiLanguage = 'ui_language';
 
   @override
   Settings build() {
@@ -147,6 +163,7 @@ class SettingsNotifier extends Notifier<Settings> {
     final orientationLock = _orientationLockFromName(
       prefs.getString(_keyOrientationLock),
     );
+    final uiLanguage = prefs.getString(_keyUiLanguage) ?? 'en';
 
     final currentBookId = prefs.getInt(_keyCurrentBookId);
     final currentBookLangId = prefs.getInt(_keyCurrentBookLangId);
@@ -190,6 +207,7 @@ class SettingsNotifier extends Notifier<Settings> {
       eInkMode: eInkMode,
       furiganaEnabled: furiganaEnabled,
       orientationLock: orientationLock,
+      uiLanguage: uiLanguage,
     );
 
     // 启动即应用方向锁：设置是在 build() 的异步加载里到位的，
@@ -457,6 +475,16 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.setString(_keyOrientationLock, lock.name);
   }
 
+  /// 切换界面语言（'en' / 'zh' / 'ja' / 'ko'）。仅本机生效并持久化——
+  /// 与 Web 端的 ui_language **相互独立**，不读不写服务端（用户 2026-10-14
+  /// 明确要求两边独立）。
+  Future<void> updateUiLanguage(String code) async {
+    if (!kUiLanguageCodes.contains(code)) return;
+    state = state.copyWith(uiLanguage: code);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyUiLanguage, code);
+  }
+
   Future<void> updateShowStatsBar(bool show) async {
     state = state.copyWith(showStatsBar: show);
     final prefs = await SharedPreferences.getInstance();
@@ -598,6 +626,7 @@ class SettingsNotifier extends Notifier<Settings> {
     await prefs.remove(_keyAutoRefreshFullStats);
     await prefs.remove(_keyExperimentalBookDetailsFullStatsEndpoint);
     await prefs.remove(_keyOrientationLock);
+    await prefs.remove(_keyUiLanguage);
 
     // The per-book page memory goes with the current-book pointer that
     // was just removed -- otherwise a "reset" would still leave 200
@@ -611,6 +640,13 @@ class SettingsNotifier extends Notifier<Settings> {
 
 final settingsProvider = NotifierProvider<SettingsNotifier, Settings>(() {
   return SettingsNotifier();
+});
+
+/// 当前界面语言 → MaterialApp.locale。非法值回退 en（与 Web 端
+/// current_language() 的兜底一致）。
+final localeProvider = Provider<Locale>((ref) {
+  final code = ref.watch(settingsProvider.select((s) => s.uiLanguage));
+  return Locale(kUiLanguageCodes.contains(code) ? code : 'en');
 });
 
 @immutable
