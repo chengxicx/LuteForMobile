@@ -9,10 +9,11 @@
 //   * the context text sent to the server is the word tokens joined --
 //     punctuation excluded, exactly like the web's `tokens.join("")`;
 //   * a reading is shown only when it exists, differs from the word, and the
-//     word contains a kanji (kana already reads as itself);
-//   * a page whose word cells contain no kanji is never asked about at all,
-//     which is what keeps the default-on setting from firing requests on
-//     every Latin / Cyrillic / hangul book.
+//     word needs a reading under the page's script (`needs_reading`): a
+//     kanji, or any Thai character when the script is "thai";
+//   * a page whose word cells contain none of that script is never asked
+//     about at all, which is what keeps the default-on setting from firing
+//     requests on every Latin / Cyrillic / hangul book.
 //
 // 运行：flutter test test/furigana_mapping_test.dart
 
@@ -50,6 +51,17 @@ void main() {
     });
   });
 
+  group('hasThai', () {
+    test('matches Thai and not Han / kana / Latin', () {
+      expect(hasThai('สวัสดี'), isTrue);
+      expect(hasThai('การอ่าน'), isTrue);
+      expect(hasThai('夜'), isFalse);
+      expect(hasThai('よる'), isFalse);
+      expect(hasThai('lute'), isFalse);
+      expect(hasThai('。'), isFalse);
+    });
+  });
+
   group('pageNeedsReadings', () {
     test('true when a word cell carries a kanji', () {
       expect(
@@ -77,6 +89,56 @@ void main() {
           _item('夜', wordId: null),
           _item('の', wordId: 1),
         ]),
+        isFalse,
+        reason: 'only word cells can receive a reading',
+      );
+    });
+
+    test('thai script: a Thai word triggers the request', () {
+      expect(
+        pageNeedsReadings([
+          _item('สวัสดี', wordId: 1),
+          _item('ครับ', wordId: 2),
+        ], script: 'thai'),
+        isTrue,
+        reason: 'Thai script shows no pronunciation of its own -- every word',
+      );
+    });
+
+    test('thai script: a page without Thai words does not', () {
+      expect(
+        pageNeedsReadings([
+          _item('the', wordId: 1),
+          _item('book', wordId: 2),
+        ], script: 'thai'),
+        isFalse,
+      );
+    });
+
+    test('a Thai word without the thai script does not trigger', () {
+      expect(
+        pageNeedsReadings([_item('สวัสดี', wordId: 1)]),
+        isFalse,
+        reason: 'null script (older server) keeps the han-only rule',
+      );
+      expect(
+        pageNeedsReadings([_item('สวัสดี', wordId: 1)], script: 'han'),
+        isFalse,
+        reason: 'an older server would answer reading: null anyway',
+      );
+    });
+
+    test('thai script: Thai outside a word cell does not count', () {
+      expect(
+        pageNeedsReadings([
+          _item('สวัสดี', wordId: null),
+          _item('ครับ', wordId: 1),
+        ], script: 'thai'),
+        isTrue,
+        reason: 'the word cell below still triggers it',
+      );
+      expect(
+        pageNeedsReadings([_item('สวัสดี', wordId: null)], script: 'thai'),
         isFalse,
         reason: 'only word cells can receive a reading',
       );
@@ -170,6 +232,52 @@ void main() {
 
       final out = <String, String>{};
       mergeBatchReadings(out, batch, ['  ']);
+
+      expect(out, isEmpty);
+    });
+
+    test('thai script: a Thai word keeps its RTGS reading', () {
+      final batch = buildFuriganaBatches([
+        _item('สวัสดี', wordId: 1, order: 0),
+      ]).single;
+
+      final out = <String, String>{};
+      mergeBatchReadings(out, batch, [
+        'sa\u0300wa\u0300tdi',
+      ], script: 'thai');
+
+      expect(
+        out,
+        {'0-0-1': 'sa\u0300wa\u0300tdi'},
+        reason: 'the han guard must not drop Thai readings; combining tone '
+            'marks are stored verbatim',
+      );
+    });
+
+    test('the same reading is dropped without the thai script', () {
+      final batch = buildFuriganaBatches([
+        _item('สวัสดี', wordId: 1, order: 0),
+      ]).single;
+
+      final out = <String, String>{};
+      mergeBatchReadings(out, batch, ['sa\u0300wa\u0300tdi']);
+
+      expect(
+        out,
+        isEmpty,
+        reason: 'default (null) script is the han rule, unchanged',
+      );
+    });
+
+    test('thai script: reading == word, null and blank are still dropped', () {
+      final batch = buildFuriganaBatches([
+        _item('สวัสดี', wordId: 1, order: 0),
+        _item('ครับ', wordId: 2, order: 1),
+        _item('ใช่', wordId: 3, order: 2),
+      ]).single;
+
+      final out = <String, String>{};
+      mergeBatchReadings(out, batch, ['สวัสดี', null, '  '], script: 'thai');
 
       expect(out, isEmpty);
     });

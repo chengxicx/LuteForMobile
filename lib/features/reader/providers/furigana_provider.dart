@@ -55,6 +55,10 @@ class FuriganaNotifier extends Notifier<FuriganaState> {
   /// Identity of the page the current readings belong to (or are being
   /// fetched for): book, page and language.  An answer that arrives after
   /// the reader moved on is dropped rather than painted over the new page.
+  /// The furigana script is deliberately not part of it: it is a pure
+  /// function of the language id (the server's `_furigana_script`), so one
+  /// identity cannot change script, and every page turn re-reads it from
+  /// the freshly parsed [PageData] anyway.
   (int, int, int)? _identity;
 
   @override
@@ -96,7 +100,12 @@ class FuriganaNotifier extends Notifier<FuriganaState> {
     // page's ruby over this page's words wherever the numbers line up.
     if (state.hasReadings) state = const FuriganaState();
 
-    if (!pageNeedsReadings(page.paragraphs.expand((p) => p.textItems))) return;
+    if (!pageNeedsReadings(
+      page.paragraphs.expand((p) => p.textItems),
+      script: page.furiganaScript,
+    )) {
+      return;
+    }
 
     unawaited(_load(page, identity));
   }
@@ -128,6 +137,7 @@ class FuriganaNotifier extends Notifier<FuriganaState> {
         merged,
         batches[i],
         responses[i].map((token) => token.reading).toList(),
+        script: page.furiganaScript,
       );
     }
     if (merged.isEmpty) return;

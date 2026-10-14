@@ -24,10 +24,17 @@ class ShadowingSheet extends ConsumerStatefulWidget {
   final List<ShadowingSentence> sentences;
   final int initialIndex;
 
+  /// The page's `LUTE_FURIGANA.script` ("thai" / "han" / null), so the
+  /// panel knows whether a reading in Latin letters is a Thai RTGS
+  /// romanization (shown above the word) or a Japanese reading the user
+  /// switched to romaji (not furigana, hidden).
+  final String? furiganaScript;
+
   const ShadowingSheet({
     super.key,
     required this.sentences,
     required this.initialIndex,
+    this.furiganaScript,
   });
 
   @override
@@ -107,6 +114,22 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     } else if (velocity >= 500 || distance >= 100) {
       _moveSentence(-1);
     }
+  }
+
+  /// 注音槽显示的读音:假名标注,或泰语页的 RTGS 罗马字。
+  ///
+  /// 两个白名单合一的原因不同但结论一致:日文场景用户把「发音字符」设成
+  /// 罗马字时 get_reading 返回拉丁字母——那不是 furigana,直接当没有,
+  /// 词上方留空、点击读汉字本身;而泰语页面(script=="thai")的拉丁读音
+  /// 正是 RTGS 罗马字,泰文自己不带发音,和假名一样必须显示出来。
+  /// 与阅读页 TextDisplay 的选词规则同一套语义(web lute-furigana.js
+  /// 的 needs_reading)。
+  String? _displayReading(String? reading) {
+    if (reading == null) return null;
+    final r = reading.trim();
+    if (r.isEmpty) return null;
+    if (widget.furiganaScript == 'thai') return r;
+    return _kanaReading(r);
   }
 
   /// 假名标注:只认含假名(平/片)的读音。用户把「发音字符」设成罗马字
@@ -258,7 +281,11 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
     required bool speaking,
     required bool pressed,
   }) {
-    final kana = _kanaReading(reading);
+    // 显示的注音(_displayReading:假名或泰语罗马字)与朗读选词
+    // (_kanaReading:仅假名)分开:泰语点词仍朗读泰文本身——罗马字丢给
+    // th-TH 语音会读错,和阅读页"汉字按 kana 发声"是同一动机。
+    final displayReading = _displayReading(reading);
+    final spokenReading = _kanaReading(reading);
     // 两级反馈:按下先给浅底色(网络合成要一两秒,先承认这一下),开口后换
     // 跟读行同一块底色。墨水屏"靠形状不靠色",下边框常驻(不发音时透明),
     // 高亮亮灭不引起重排。
@@ -272,7 +299,7 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
       onTapDown: (_) => setState(() => _pressed = (area, index)),
       onTapUp: (_) => setState(() => _pressed = null),
       onTapCancel: () => setState(() => _pressed = null),
-      onTap: () => _speakWord(area, index, kana ?? text),
+      onTap: () => _speakWord(area, index, spokenReading ?? text),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
         child: Container(
@@ -295,9 +322,9 @@ class _ShadowingSheetState extends ConsumerState<ShadowingSheet> {
             children: [
               SizedBox(
                 height: 13,
-                child: kana != null
+                child: displayReading != null
                     ? Text(
-                        kana,
+                        displayReading,
                         style: TextStyle(
                           color: palette.muted,
                           fontSize: 10,

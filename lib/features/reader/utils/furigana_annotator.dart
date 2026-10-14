@@ -17,8 +17,25 @@ final RegExp _hanPattern = RegExp(
   r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]',
 );
 
+/// Thai characters -- the script a reading exists to explain when the
+/// page's `LUTE_FURIGANA.script` is "thai".  The same range the web
+/// reader tests (`has_thai`).
+final RegExp _thaiPattern = RegExp(r'[\u0e00-\u0e7f]');
+
 /// Whether [text] contains a character that needs a reading above it.
 bool hasKanji(String text) => _hanPattern.hasMatch(text);
+
+/// Whether [text] contains a Thai character.
+bool hasThai(String text) => _thaiPattern.hasMatch(text);
+
+/// Whether [text] needs a reading under [script] -- the web reader's
+/// `needs_reading` (lute-furigana.js): every Thai word when the script is
+/// "thai" (the script shows no pronunciation of its own), only
+/// Han-bearing words otherwise (kana, hangul and Latin already show
+/// their own pronunciation).  A null script -- a server predating the
+/// field -- selects the "han" rule, same as the web.
+bool _needsReading(String text, String? script) =>
+    script == 'thai' ? hasThai(text) : hasKanji(text);
 
 /// One readings request: a paragraph's word tokens plus the context text
 /// they are read in.
@@ -50,13 +67,16 @@ class FuriganaBatch {
 
 /// Whether this page is worth asking for readings at all.
 ///
-/// Only languages that can supply readings (Japanese, Mandarin, Cantonese)
-/// are written with Han characters, so a page whose word cells contain none
-/// can be skipped outright.  That keeps the app's default-on setting from
-/// firing a request per paragraph on every Latin / Cyrillic / hangul book.
-bool pageNeedsReadings(Iterable<TextItem> items) {
+/// Only languages that can supply readings (Japanese, Mandarin, Cantonese,
+/// Thai) are written in a script whose pronunciation is hidden, so a page
+/// whose word cells contain none of that script can be skipped outright.
+/// That keeps the app's default-on setting from firing a request per
+/// paragraph on every Latin / Cyrillic / hangul book.  Which script counts
+/// is the page's `LUTE_FURIGANA.script` (see [_needsReading]); a null
+/// script keeps the Han-only rule.
+bool pageNeedsReadings(Iterable<TextItem> items, {String? script}) {
   for (final item in items) {
-    if (item.wordId != null && hasKanji(item.text)) return true;
+    if (item.wordId != null && _needsReading(item.text, script)) return true;
   }
   return false;
 }
@@ -94,22 +114,25 @@ List<FuriganaBatch> buildFuriganaBatches(Iterable<TextItem> items) {
 /// reading of the *i*th token, or null when the server had none.
 ///
 /// A reading is stored only when it will actually be shown, applying the
-/// same three guards as the web reader's `wrap_ruby`: the reading must be
-/// present, must differ from the word itself, and the word must contain a
-/// Han character.  A word whose reading equals its text (a kana word read as
-/// itself) would just repeat the word above itself.
+/// same guards as the web reader's `wrap_ruby`: the reading must be
+/// present, must differ from the word itself, and the word must need a
+/// reading under the page's script (a Han character, or any Thai
+/// character when the script is "thai").  A word whose reading equals its
+/// text (a kana word read as itself) would just repeat the word above
+/// itself.
 void mergeBatchReadings(
   Map<String, String> out,
   FuriganaBatch batch,
-  List<String?> readings,
-) {
+  List<String?> readings, {
+  String? script,
+}) {
   for (var i = 0; i < batch.items.length; i++) {
     final reading = i < readings.length ? readings[i]?.trim() : null;
     if (reading == null || reading.isEmpty) continue;
 
     final item = batch.items[i];
     if (reading == item.text) continue;
-    if (!hasKanji(item.text)) continue;
+    if (!_needsReading(item.text, script)) continue;
 
     out[item.renderKey] = reading;
   }

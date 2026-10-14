@@ -62,13 +62,14 @@ class HtmlParser {
     // null videoId (which is why _extractYoutubeData returns null for it).
     final cues = _extractCueList(metadataDocument, textDocument);
     final pageCueMap = _extractPageCueMapFrom(textDocument, metadataDocument);
-    // The furigana switch/langId is rendered by read/index.html, i.e. the
-    // metadata document, but fall back to the text document for the same
-    // reason the LUTE_YT_DATA block is searched in both (the block can
-    // arrive in either depending on endpoint).
-    final furiganaLangId =
-        _extractFuriganaLangId(metadataDocument) ??
-        _extractFuriganaLangId(textDocument);
+    // The furigana config (switch/langId/script) is rendered by
+    // read/index.html, i.e. the metadata document, but fall back to the
+    // text document for the same reason the LUTE_YT_DATA block is
+    // searched in both (the block can arrive in either depending on
+    // endpoint).
+    final furigana =
+        _extractFuriganaConfig(metadataDocument) ??
+        _extractFuriganaConfig(textDocument);
 
     return PageData(
       bookId: bookId,
@@ -86,7 +87,8 @@ class HtmlParser {
       bilibili: bilibili,
       cues: cues,
       pageCueMap: pageCueMap,
-      furiganaLangId: furiganaLangId,
+      furiganaLangId: furigana?.langId,
+      furiganaScript: furigana?.script,
     );
   }
 
@@ -341,34 +343,49 @@ class HtmlParser {
     return null;
   }
 
-  /// The reading language id for furigana, from the `LUTE_FURIGANA` block
-  /// the reading page renders (`read/index.html`):
+  /// The furigana config from the `LUTE_FURIGANA` block the reading page
+  /// renders (`read/index.html`):
   ///
-  ///     var LUTE_FURIGANA = { enabled: false, langId: 9 };
+  ///     var LUTE_FURIGANA = { enabled: false, langId: 9, script: "thai" };
   ///
   /// Unlike the `LUTE_YT_DATA.*` assignments this is a plain object
   /// literal, so it gets its own regex rather than going through
   /// [_readJsonString].  `enabled` is deliberately ignored: the app has
   /// its own "show furigana" setting, independent of the language's web
   /// toggle, so the reader can show readings the web side has turned off.
-  /// Only the language id is needed -- it is the `language_id` the
-  /// readings endpoint requires, and the server answers `reading: null`
-  /// for languages that cannot supply readings, so there is no client-side
-  /// language whitelist here.
+  /// The language id is the `language_id` the readings endpoint requires,
+  /// and the server answers `reading: null` for languages that cannot
+  /// supply readings, so there is no client-side language whitelist here.
+  ///
+  /// `script` is passed through verbatim as well: it picks the
+  /// word-selection rule the web reader applies (`lute-furigana.js`:
+  /// `needs_reading`) -- "thai" annotates every Thai word, anything else
+  /// (including null, from a server predating the field) only Han-bearing
+  /// ones.  No whitelist on this side, exactly like the web.
   ///
   /// Returns null on servers predating the block.  That null is also the
   /// signal to leave the page layout exactly as it is (no reserved
   /// reading slot).
-  int? _extractFuriganaLangId(html.Document document) {
-    for (final script in document.querySelectorAll('script')) {
-      final text = script.text;
+  ({int langId, String? script})? _extractFuriganaConfig(html.Document document) {
+    for (final scriptTag in document.querySelectorAll('script')) {
+      final text = scriptTag.text;
       if (!text.contains('LUTE_FURIGANA')) continue;
 
       final match = RegExp(
         r'LUTE_FURIGANA\s*=\s*\{[^}]*?\blangId\s*:\s*(\d+)',
       ).firstMatch(text);
       final langId = match != null ? int.tryParse(match.group(1)!) : null;
-      if (langId != null) return langId;
+      if (langId == null) continue;
+
+      final scriptMatch = RegExp(
+        r'''LUTE_FURIGANA\s*=\s*\{[^}]*?\bscript\s*:\s*("([^"]*)"|null)''',
+      ).firstMatch(text);
+      final scriptLiteral = scriptMatch?.group(1);
+      final script = scriptLiteral == null || scriptLiteral == 'null'
+          ? null
+          : scriptMatch!.group(2);
+
+      return (langId: langId, script: script);
     }
     return null;
   }

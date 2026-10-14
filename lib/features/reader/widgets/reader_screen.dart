@@ -960,6 +960,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       builder: (context) => ShadowingSheet(
         sentences: sentences,
         initialIndex: initialIndex,
+        furiganaScript: pageData.furiganaScript,
       ),
     ).then((_) {
       if (mounted) {

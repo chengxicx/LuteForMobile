@@ -56,6 +56,15 @@ class PageData {
   /// web toggle.
   final int? furiganaLangId;
 
+  /// Which words on this page get a reading (`LUTE_FURIGANA.script`,
+  /// rendered by `read/index.html`): "thai" annotates every Thai word,
+  /// "han" only Han-bearing ones.
+  ///
+  /// Null on servers predating the field -- and every value but "thai"
+  /// selects the "han" rule, the same fallback the web reader applies
+  /// (`lute-furigana.js`: `needs_reading`).
+  final String? furiganaScript;
+
   PageData({
     required this.bookId,
     required this.currentPage,
@@ -73,6 +82,7 @@ class PageData {
     this.cues = const [],
     this.pageCueMap = const [],
     this.furiganaLangId,
+    this.furiganaScript,
   });
 
   /// A book has playable audio when it has an uploaded audio file
@@ -112,6 +122,7 @@ class PageData {
     List<YoutubeCue>? cues,
     List<int>? pageCueMap,
     int? furiganaLangId,
+    String? furiganaScript,
   }) {
     return PageData(
       bookId: bookId ?? this.bookId,
@@ -130,6 +141,7 @@ class PageData {
       cues: cues ?? this.cues,
       pageCueMap: pageCueMap ?? this.pageCueMap,
       furiganaLangId: furiganaLangId ?? this.furiganaLangId,
+      furiganaScript: furiganaScript ?? this.furiganaScript,
     );
   }
 
