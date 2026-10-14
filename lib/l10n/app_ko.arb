@@ -1,0 +1,29 @@
+{
+  "appTitle": "Song Mobile",
+
+  "navReader": "리더",
+  "navBooks": "책장",
+  "navGrammar": "문법",
+  "navReview": "복습",
+  "navStats": "통계",
+  "navTerms": "용어",
+  "navHelp": "도움말",
+  "navSettings": "설정",
+
+  "commonCancel": "취소",
+  "commonOk": "확인",
+  "commonSave": "저장",
+  "commonDelete": "삭제",
+  "commonRetry": "재시도",
+  "commonLoading": "불러오는 중…",
+  "commonError": "오류",
+  "commonClose": "닫기",
+
+  "settingsTitle": "설정",
+  "settingsSectionServer": "서버",
+  "settingsSectionReading": "읽기",
+  "settingsSectionStorage": "저장소",
+  "settingsSectionAppearance": "모양",
+  "settingsUiLanguage": "인터페이스 언어",
+  "settingsUiLanguageDesc": "앱 인터페이스에 사용할 언어입니다. 이 기기에만 저장되며 웹 설정 페이지와 독립적입니다."
+}

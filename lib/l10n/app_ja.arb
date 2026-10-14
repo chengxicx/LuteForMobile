@@ -1,0 +1,29 @@
+{
+  "appTitle": "Song Mobile",
+
+  "navReader": "リーダー",
+  "navBooks": "本棚",
+  "navGrammar": "文法",
+  "navReview": "復習",
+  "navStats": "統計",
+  "navTerms": "用語",
+  "navHelp": "ヘルプ",
+  "navSettings": "設定",
+
+  "commonCancel": "キャンセル",
+  "commonOk": "OK",
+  "commonSave": "保存",
+  "commonDelete": "削除",
+  "commonRetry": "再試行",
+  "commonLoading": "読み込み中…",
+  "commonError": "エラー",
+  "commonClose": "閉じる",
+
+  "settingsTitle": "設定",
+  "settingsSectionServer": "サーバー",
+  "settingsSectionReading": "読む",
+  "settingsSectionStorage": "ストレージ",
+  "settingsSectionAppearance": "外観",
+  "settingsUiLanguage": "表示言語",
+  "settingsUiLanguageDesc": "アプリのインターフェースに使用する言語。この端末にのみ保存され、ウェブの設定ページとは独立しています。"
+}

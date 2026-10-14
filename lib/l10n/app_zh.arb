@@ -1,0 +1,29 @@
+{
+  "appTitle": "Song Mobile",
+
+  "navReader": "阅读",
+  "navBooks": "书架",
+  "navGrammar": "语法",
+  "navReview": "复习",
+  "navStats": "统计",
+  "navTerms": "术语",
+  "navHelp": "帮助",
+  "navSettings": "设置",
+
+  "commonCancel": "取消",
+  "commonOk": "确定",
+  "commonSave": "保存",
+  "commonDelete": "删除",
+  "commonRetry": "重试",
+  "commonLoading": "加载中…",
+  "commonError": "错误",
+  "commonClose": "关闭",
+
+  "settingsTitle": "设置",
+  "settingsSectionServer": "服务器",
+  "settingsSectionReading": "阅读",
+  "settingsSectionStorage": "存储",
+  "settingsSectionAppearance": "外观",
+  "settingsUiLanguage": "界面语言",
+  "settingsUiLanguageDesc": "应用界面使用的语言。仅保存于本机，与网页端设置相互独立。"
+}

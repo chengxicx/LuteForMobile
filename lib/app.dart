@@ -23,6 +23,7 @@ import 'package:song_mobile/shared/theme/app_theme.dart';
 import 'package:song_mobile/shared/theme/eink.dart';
 import 'package:song_mobile/shared/theme/theme_definitions.dart';
 import 'package:song_mobile/shared/theme/theme_extensions.dart';
+import 'package:song_mobile/l10n/generated/app_localizations.dart';
 import 'package:song_mobile/features/settings/providers/settings_provider.dart';
 import 'package:song_mobile/features/settings/models/settings.dart';
 import 'package:song_mobile/shared/widgets/app_drawer.dart';
@@ -207,6 +208,20 @@ class App extends ConsumerWidget {
           theme: eInk ? applyEInkTheme(lightTheme) : lightTheme,
           darkTheme: eInk ? applyEInkTheme(darkTheme) : darkTheme,
           themeMode: themeMode,
+          // C2 起：locale 由设置页「界面语言」下拉驱动（本地持久化 +
+          // 启动时服务端校正），切换即时生效、无需重启。
+          locale: ref.watch(localeProvider),
+          supportedLocales: AppLocalizations.supportedLocales,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          localeResolutionCallback: (deviceLocale, supportedLocales) {
+            if (deviceLocale == null) return const Locale('en');
+            for (final locale in supportedLocales) {
+              if (locale.languageCode == deviceLocale.languageCode) {
+                return locale;
+              }
+            }
+            return const Locale('en');
+          },
           home: const MainNavigation(),
         ),
       ),
