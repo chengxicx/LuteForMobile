@@ -247,9 +247,12 @@ void main() {
       reason: 'a skippable fragment must not raise an error banner',
     );
     expect(
-      state.currentIndex,
-      greaterThan(6),
-      reason: 'the player must not end up parked on the fragment',
+      state.currentIndex == -1 || state.currentIndex > 6,
+      isTrue,
+      reason:
+          'the player must not end up parked on the fragment; -1 means the '
+          'page was read to the end and reset for the next play (see '
+          'tts_player_page_lifecycle_test)',
     );
   });
 

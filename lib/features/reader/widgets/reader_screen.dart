@@ -1106,6 +1106,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       final page = next.currentPage;
       if (page <= 0) return;
 
+      // 翻页/跳页也要换朗读句子表：TTS 播放条念的是「某一页」的句子，而
+      // _loadTtsIfNeeded 原先只在 loadBook / reloadPage 里被调用 —— 翻页走的
+      // 是 _turnPage / _goToPage，句子表停在旧页上，于是在第二页按播放，念的
+      // 是第一页、高亮跟着错的句子滚。所有改 pageData 的路（翻页、跳页、
+      // 恢复阅读）都过这个 listener，在这里补一次；_loadTtsIfNeeded 内部按
+      // 「书-页」去重，同页刷新不会重装，仍在放的音频由 loadPage 负责停下
+      // （见 TTSPlayerNotifier.loadPage）。
+      _loadTtsIfNeeded(next);
+
       // 语法预分析：翻页稳定 3 秒后后台跑一次整页分析（与 Grammar tab 同一个
       // 请求、同一份缓存）。词卡的 Grammar 按钮状态和句子语法页靠它秒出。
       // analyzeCurrentPage 按页去重，不会重复发；延迟 3 秒是让位给开页时的

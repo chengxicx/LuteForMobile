@@ -395,6 +395,10 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// 去追 —— 那条链上任何一步静默失败，就会一直用兜底语言码（默认 `en`）。
   /// 传下来的名字在 [_applyLanguage] 里于每句开口前推给服务。
   void loadPage(List<TTSPlayerSentence> sentences, {String? bookLanguageName}) {
+    // 换页先把还在念的音频停掉：它属于上一页。句子表已经换成新页的，不停的话
+    // 旧页的声音会继续放，而完成事件也随着下面的退订不再到来 —— 它就那么悬着，
+    // 直到用户自己按停。翻页时走到这里正是「音频与可见页面不再匹配」的时刻。
+    _stopService();
     _resetPosition();
     _clearPrefetch();
     _serviceStateSubscription?.cancel();
@@ -1151,9 +1155,14 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     } else {
       _positionTimer?.cancel();
       _advanceOnComplete = false;
+      // 整页读完 = 回到「未开始」：再按播放从第一句重新念。原先这里停在末句
+      // 上，play() 于是走「从当前句继续」分支 —— 读完后再按播放要么把末句
+      // 再念一遍，要么（平台侧重放刚结束的那份音频不出声时）像卡住一样没有
+      // 任何反应。currentIndex 回 -1 与 stop() 的复位一致，时间轴归零，句号
+      // 计数回到 1/N，下一次播放与翻开这一页时完全相同。
       state = state.copyWith(
-        positionInSnippet:
-            state.currentSnippet?.estimatedDuration ?? state.positionInSnippet,
+        currentIndex: -1,
+        positionInSnippet: Duration.zero,
         status: TTSPlayerStatus.idle,
       );
     }
