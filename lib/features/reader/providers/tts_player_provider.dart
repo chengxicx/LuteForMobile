@@ -333,10 +333,24 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
           language.tag == state.languageTag) {
         return;
       }
+      // 「晚到」的语言意味着这本页的句子表是在未解析状态下装载的：冷启动
+      // 恢复阅读时前几句已经按兜底语言码（默认 en）被服务端拒答过，甚至
+      // 已经降级到本地语音（横幅还挂着）。语言一到就把拒答计数与降级状态
+      // 清零 —— 正在朗读时，下一句就会用正确的语言重试服务端（横幅随之
+      // 消失）；空闲时下次开口自然用正确的语言，因为每句开口前
+      // [_applyLanguage] 都会重算并重推。
+      final arrivedLate = !state.languageResolved;
       state = state.copyWith(
         languageTag: language.tag,
         languageResolved: language.resolved,
       );
+      if (arrivedLate) {
+        _resetRefusals();
+        _forceOnDeviceFallback = false;
+        if (state.fallbackNotice != null) {
+          state = state.copyWith(clearFallbackNotice: true);
+        }
+      }
     });
     return const TTSPlayerState();
   }
@@ -487,6 +501,15 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   Future<void> play({bool tickPosition = true}) async {
     if (!state.hasSnippets) return;
     _tickPosition = tickPosition;
+    // 再按播放 = 用户重新开口，给服务端再一次机会：拒答降级就此撤销，否则
+    // 服务器恢复之后这个播放会话还一直念本地语音、播放条也一直挂着
+    // 「已切到本地语音」。翻页（loadPage）和停止（stop）本来就撤销，这里
+    // 补上恢复播放这条路 —— 用户不需要为了回到服务端先特意按一次停止。
+    _resetRefusals();
+    if (_forceOnDeviceFallback || state.fallbackNotice != null) {
+      _forceOnDeviceFallback = false;
+      state = state.copyWith(clearFallbackNotice: true);
+    }
     // 完成处理不在预武装：要等 [_speakCurrent] 真正把语句交给服务之后。
     // 预武装会让上一句的 stop 回声落在装载窗口里被误读为完成。
     if (state.currentIndex < 0) {
