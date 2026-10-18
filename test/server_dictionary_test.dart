@@ -11,7 +11,6 @@ void main() {
     test('完整元数据（web 导入路径写的 sidecar）', () {
       final d = ServerDictionary.fromJson({
         'filename': 'ja_zh_shogakukan_v2.db',
-        'is_default': true,
         'title': '新世纪日汉双解大辞典',
         'size_mb': 81.2,
         'entries': 153775,
@@ -21,7 +20,6 @@ void main() {
         'modified': '2026-10-12 03:31',
       });
       expect(d.filename, 'ja_zh_shogakukan_v2.db');
-      expect(d.isDefault, isTrue);
       expect(d.displayName, '新世纪日汉双解大辞典');
       expect(d.summary, '81.2 MB · 15.4 万条释义 · 40.1 万词头');
     });
@@ -34,7 +32,6 @@ void main() {
       });
       expect(d.displayName, 'plain.db');
       expect(d.summary, '12.0 MB');
-      expect(d.isDefault, isFalse);
       expect(d.entries, isNull);
     });
 
@@ -57,16 +54,28 @@ void main() {
     test('成功形状解析成列表', () {
       final list = ServerDictionary.parseStatusResponse({
         'result': 'success',
-        'default_filename': 'ja_zh_shogakukan_v2.db',
         'dictionaries': [
-          {'filename': 'ja_zh_shogakukan_v2.db', 'is_default': true},
-          {'filename': 'other.db', 'is_default': false},
+          {'filename': 'ja_zh_shogakukan_v2.db'},
+          {'filename': 'other.db'},
         ],
       });
       expect(list, isNotNull);
       expect(list!.length, 2);
-      expect(list.first.isDefault, isTrue);
+      expect(list.first.filename, 'ja_zh_shogakukan_v2.db');
       expect(list.last.filename, 'other.db');
+    });
+
+    test('服务端还带着旧字段时也能解析（不多余报错）', () {
+      // lute-v3 在 2026-10-18 之后不再发 is_default / default_filename；
+      // 旧服务端发了也只当普通 JSON，解析不挑食。
+      final list = ServerDictionary.parseStatusResponse({
+        'result': 'success',
+        'default_filename': 'ja_zh_shogakukan_v2.db',
+        'dictionaries': [
+          {'filename': 'a.db', 'is_default': true},
+        ],
+      });
+      expect(list!.single.filename, 'a.db');
     });
 
     test('result 不是 success → null（旧版服务端没这个端点）', () {
@@ -110,11 +119,9 @@ void main() {
         ..httpClientAdapter = _JsonAdapter(
           jsonEncode({
             'result': 'success',
-            'default_filename': 'ja_zh_shogakukan_v2.db',
             'dictionaries': [
               {
                 'filename': 'ja_zh_shogakukan_v2.db',
-                'is_default': true,
                 'title': '新世纪日汉双解大辞典',
                 'size_mb': 81.2,
               },

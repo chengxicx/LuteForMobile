@@ -2,14 +2,15 @@
 ///
 /// 服务端的池是 `lute/static/dict/` 下的 .db 文件（见 lute-v3 的
 /// `lute/dict/service.py`）：设置页的"本地词典"卡片把这个列表拉下来，
-/// 用户选一本下载到对应语言的激活库（`active_<langId>.db`）。
+/// 用户把其中任意一本下到**本机词典池**（`dict/pool/<filename>.db`），
+/// 再在语言设置里选用。**没有"默认词典"**：服务端不指定某一本，
+/// 客户端也不该假定某个文件名有特殊含义。
 ///
 /// 元数据（标题/词条数）来自导入时写的 sidecar；走 CLI 转换、没写
 /// sidecar 的词典只有文件名和大小，展示时逐级退回。
 class ServerDictionary {
   const ServerDictionary({
     required this.filename,
-    required this.isDefault,
     this.title,
     this.sizeMb,
     this.entries,
@@ -21,9 +22,6 @@ class ServerDictionary {
 
   /// 池内的文件名（下载地址由 [urlFor] 派生）。
   final String filename;
-
-  /// 是否是服务端的默认词典（手机旧版默认下载的那本）。
-  final bool isDefault;
 
   /// 词典标题；CLI 转换、没写 sidecar 的词典没有。
   final String? title;
@@ -68,7 +66,6 @@ class ServerDictionary {
   factory ServerDictionary.fromJson(Map<String, dynamic> json) {
     return ServerDictionary(
       filename: json['filename'] as String? ?? '',
-      isDefault: json['is_default'] as bool? ?? false,
       title: json['title'] as String?,
       sizeMb: (json['size_mb'] as num?)?.toDouble(),
       entries: (json['entries'] as num?)?.toInt(),

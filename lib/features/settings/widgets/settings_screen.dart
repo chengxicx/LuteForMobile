@@ -2221,33 +2221,6 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (dict.isDefault) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withValues(alpha: 0.4),
-                            ),
-                          ),
-                          child: Text(
-                            'Default',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withValues(alpha: 0.6),
-                            ),
-                          ),
-                        ),
-                      ],
                       if (_pool.any((d) => d.filename == dict.filename)) ...[
                         const SizedBox(width: 6),
                         Container(
