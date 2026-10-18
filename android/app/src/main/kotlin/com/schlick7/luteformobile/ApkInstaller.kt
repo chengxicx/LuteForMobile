@@ -1,5 +1,6 @@
 package com.schlick7.luteformobile
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -63,16 +64,42 @@ class ApkInstaller(private val context: Context) {
     }
 
     private fun openPermissionSettings() {
-        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Intent(
+        // URI 必须是 `package:<pkg>`（**单冒号**）。写成 `package://<pkg>` 时
+        // Uri.schemeSpecificPart 会变成 "//<pkg>"，Settings 拿它查不到包
+        // → 解析不到 Activity → startActivity 抛 ActivityNotFoundException。
+        // 2026-10-18 在 OnePlus PHB110 (Android 15) 上实测：`am start -a
+        // android.settings.MANAGE_UNKNOWN_APP_SOURCES -d "package://<pkg>"`
+        // 什么都不会打开（前台仍是桌面），换成 `package:<pkg>` 才有正确的
+        // "安装未知应用 / Song Mobile" 授权页。
+        val candidates = mutableListOf<Intent>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            candidates += Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package://${context.packageName}")
+                Uri.parse("package:${context.packageName}")
             )
+            // 个别 ROM 不认带 data 的形式，退回"安装未知应用"总列表。
+            candidates += Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
         } else {
-            Intent(Settings.ACTION_SECURITY_SETTINGS)
+            candidates += Intent(Settings.ACTION_SECURITY_SETTINGS)
         }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        // 最后兜底：应用详情页（用户仍可从那里进权限）。
+        candidates += Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}")
+        )
+
+        for (intent in candidates) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                context.startActivity(intent)
+                return
+            } catch (e: ActivityNotFoundException) {
+                // 换下一个候选，全部失败最后抛出去让 Dart 侧能提示用户。
+            }
+        }
+        throw IllegalStateException(
+            "No activity to open install-permission settings"
+        )
     }
 
     private fun installApk(path: String) {
@@ -94,6 +121,13 @@ class ApkInstaller(private val context: Context) {
                     Intent.FLAG_ACTIVITY_NEW_TASK
             )
         }
-        context.startActivity(intent)
+        try {
+            context.startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            // 没有系统安装器（极少见）时给出可读错误，别静默失败。
+            throw IllegalStateException(
+                "No system package installer on this device"
+            )
+        }
     }
 }

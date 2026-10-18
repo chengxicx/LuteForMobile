@@ -17,16 +17,36 @@ class ApkInstaller {
   }
 
   /// 打开系统的"允许安装未知应用"授权页，用户授权后回到应用重试。
+  ///
+  /// 失败时抛 [ApkInstallerException]（带原生侧可读原因），由调用方提示
+  /// 用户——早先这里静默吞掉异常，表现为"点 Open Settings 毫无反应"。
   static Future<void> openPermissionSettings() async {
     try {
       await _channel.invokeMethod('openPermissionSettings');
     } on MissingPluginException {
-      // 非 Android 平台无此通道，静默忽略。
+      throw const ApkInstallerException('Not running on Android');
+    } on PlatformException catch (e) {
+      throw ApkInstallerException(e.message ?? e.code);
     }
   }
 
   /// 拉起系统安装器安装 [filePath] 指向的 APK。
   static Future<void> install(String filePath) async {
-    await _channel.invokeMethod('installApk', {'path': filePath});
+    try {
+      await _channel.invokeMethod('installApk', {'path': filePath});
+    } on MissingPluginException {
+      throw const ApkInstallerException('Not running on Android');
+    } on PlatformException catch (e) {
+      throw ApkInstallerException(e.message ?? e.code);
+    }
   }
+}
+
+/// 安装相关失败的可读异常（消息来自 Android 侧）。
+class ApkInstallerException implements Exception {
+  final String message;
+  const ApkInstallerException(this.message);
+
+  @override
+  String toString() => message;
 }

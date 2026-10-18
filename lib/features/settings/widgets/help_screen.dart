@@ -1095,7 +1095,8 @@ class _AppUpdateContent extends ConsumerStatefulWidget {
   ConsumerState<_AppUpdateContent> createState() => _AppUpdateContentState();
 }
 
-class _AppUpdateContentState extends ConsumerState<_AppUpdateContent> {
+class _AppUpdateContentState extends ConsumerState<_AppUpdateContent>
+    with WidgetsBindingObserver {
   _UpdatePhase _phase = _UpdatePhase.idle;
   PackageInfo? _packageInfo;
   AppUpdateManifest? _manifest;
@@ -1106,9 +1107,41 @@ class _AppUpdateContentState extends ConsumerState<_AppUpdateContent> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     PackageInfo.fromPlatform().then((info) {
       if (mounted) setState(() => _packageInfo = info);
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// 从系统授权页返回时重查一次权限：用户刚打开"允许安装未知应用"开关
+  /// 回来，卡片应立刻从 permissionRequired 回到可安装状态，不用再点一次
+  /// 检查更新。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (_phase != _UpdatePhase.permissionRequired) return;
+    _refreshPermission();
+  }
+
+  Future<void> _refreshPermission() async {
+    if (!await ApkInstaller.canInstall()) return;
+    if (!mounted) return;
+    setState(() {
+      _phase = _manifest != null ? _UpdatePhase.available : _UpdatePhase.idle;
+    });
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   String get _currentVersionLabel {
@@ -1152,6 +1185,9 @@ class _AppUpdateContentState extends ConsumerState<_AppUpdateContent> {
 
     if (!await ApkInstaller.canInstall()) {
       setState(() => _phase = _UpdatePhase.permissionRequired);
+      _showMessage(
+        'Allow "Install unknown apps" for Song Mobile first, then tap Install again.',
+      );
       return;
     }
 
@@ -1194,7 +1230,11 @@ class _AppUpdateContentState extends ConsumerState<_AppUpdateContent> {
   }
 
   Future<void> _openPermissionSettings() async {
-    await ApkInstaller.openPermissionSettings();
+    try {
+      await ApkInstaller.openPermissionSettings();
+    } catch (e) {
+      _showMessage('Could not open system settings: $e');
+    }
   }
 
   @override
