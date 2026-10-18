@@ -15,6 +15,11 @@
 
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!-- In-app self-update (Help > Check for Updates): lets the system
+         installer offer APK installs started by the app itself.  The user
+         still has to grant "install unknown apps" per-app on Android 8+. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -76,6 +81,18 @@
             android:authorities="com.schlick7.luteformobile.serverhealth"
             android:exported="false"
             android:enabled="true" />
+
+        <!-- Shares the self-update APK with the system installer
+             (ApkInstaller.kt). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

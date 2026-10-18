@@ -1,10 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../../../app.dart';
 import '../../../core/logger/widget_logger.dart';
+import '../../../core/services/apk_installer.dart';
+import '../../../core/services/app_update_service.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
+import '../providers/settings_provider.dart';
 
 class HelpScreen extends ConsumerWidget {
   final GlobalKey<ScaffoldState>? scaffoldKey;
@@ -45,6 +51,10 @@ class HelpScreen extends ConsumerWidget {
             SliverList(
               delegate: SliverChildListDelegate([
                 const SizedBox(height: 8),
+                if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+                  _buildUpdateSection(context),
+                  const SizedBox(height: 8),
+                ],
                 _buildReaderScreenSection(context),
                 const SizedBox(height: 8),
                 _buildTermFormSection(context),
@@ -70,6 +80,20 @@ class HelpScreen extends ConsumerWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildUpdateSection(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSectionHeader(context, 'App Update', Icons.system_update),
+          const Divider(),
+          const _AppUpdateContent(),
+        ],
       ),
     );
   }
@@ -243,7 +267,7 @@ class HelpScreen extends ConsumerWidget {
             context,
             Icons.swipe_down,
             'Swipe down',
-            'Close (quick action) Toggle in Settings to Auto Save or Cancel',
+            'Close (quick action). The "Auto Save on Close" toggle controls whether closing saves changes',
           ),
           const Divider(),
           _buildSubsectionHeader(context, 'Dictionary Features'),
@@ -252,12 +276,6 @@ class HelpScreen extends ConsumerWidget {
             Icons.fingerprint,
             'Double-tap parent term',
             'Open parent\'s term form',
-          ),
-          _buildControlItem(
-            context,
-            Icons.link,
-            'Parent Status Linked',
-            'Toggle Parent status syncing. ',
           ),
           const Divider(),
           _buildSubsectionHeader(context, 'AI Features'),
@@ -427,12 +445,6 @@ class HelpScreen extends ConsumerWidget {
             '"Show Known Terms" toggle',
             'Include status 99 (Known) terms in Termslist',
           ),
-          _buildControlItem(
-            context,
-            Icons.refresh,
-            '"Flush Cache & Rebuild" button',
-            'Clear sentence cache and reload',
-          ),
           const Divider(),
           _buildSubsectionHeader(context, 'AI Translation Widget'),
           _buildControlItem(
@@ -489,48 +501,62 @@ class HelpScreen extends ConsumerWidget {
             context,
             Icons.bookmark,
             'Bookmark indicators',
-            'Yellow markers on progress bar',
+            'Sentence markers on progress bar (tap the sentence arrows to jump between them)',
           ),
+          const Divider(),
+          _buildSubsectionHeader(context, 'Sentence Navigation'),
           _buildControlItem(
             context,
             Icons.skip_previous,
-            'Previous bookmark button',
-            'Jump to earlier bookmark',
+            'Previous sentence button',
+            'Jump to the start of the current/previous sentence',
           ),
           _buildControlItem(
             context,
             Icons.skip_next,
-            'Next bookmark button',
-            'Jump to next bookmark',
+            'Next sentence button',
+            'Jump to the next sentence',
           ),
-          _buildControlItem(
-            context,
-            Icons.bookmark_add,
-            'Add/Remove bookmark button',
-            'Toggle bookmark at current position',
-          ),
-          const Divider(),
-          _buildSubsectionHeader(context, 'Navigation Controls'),
-          _buildControlItem(
-            context,
-            Icons.replay_10,
-            'Rewind 10s button',
-            'Skip back 10 seconds',
-          ),
-          _buildControlItem(
-            context,
-            Icons.forward_10,
-            'Forward 10s button',
-            'Skip forward 10 seconds',
-          ),
-          const Divider(),
-          _buildSubsectionHeader(context, 'Speed Control'),
           _buildControlItem(
             context,
             Icons.speed,
-            'Playback speed button',
-            'Cycle through speeds (0.6x, 0.7x, 0.8x, 0.9x, 1.0x, 1.1x, 1.2x, 1.3x, 1.4x, 1.5x)',
+            'Rate stepper',
+            'Decrease/increase playback speed (0.6x - 1.5x); tap the value to reset to 1.0x',
           ),
+          const Divider(),
+          _buildSubsectionHeader(context, 'Aux Controls'),
+          _buildControlItem(
+            context,
+            Icons.loop,
+            'Loop sentence',
+            'Repeat the current sentence continuously',
+          ),
+          _buildControlItem(
+            context,
+            Icons.pause_circle_outline,
+            'Auto-pause',
+            'Automatically pause at the end of each sentence',
+          ),
+          _buildControlItem(
+            context,
+            Icons.repeat,
+            'AB repeat',
+            'Tap to mark point A, again to mark B, then the segment loops; tap again to cancel',
+          ),
+          _buildControlItem(
+            context,
+            Icons.mic,
+            'Shadowing',
+            'Record yourself reading the current sentence (when enabled)',
+          ),
+          _buildControlItem(
+            context,
+            Icons.record_voice_over,
+            'Switch to TTS read-aloud',
+            'Swap the audio player for the TTS bar (requires TTS to be configured)',
+          ),
+          const Divider(),
+          _buildSubsectionHeader(context, 'Position Display'),
           _buildControlItem(
             context,
             Icons.timer,
@@ -623,14 +649,14 @@ class HelpScreen extends ConsumerWidget {
           _buildControlItem(
             context,
             Icons.search,
-            'Search field',
-            'Type to filter books (auto-updates)',
+            'Search button',
+            'Open the search dialog, then type to filter books',
           ),
           _buildControlItem(
             context,
-            Icons.clear,
-            'Clear button',
-            'Remove search text',
+            Icons.language,
+            'Language / tag filter chips',
+            'Filter the shelf by language or tag',
           ),
           _buildControlItem(
             context,
@@ -652,24 +678,6 @@ class HelpScreen extends ConsumerWidget {
             'Long-press card',
             'Show details dialog (archived, audio, etc.)',
           ),
-          _buildControlItem(
-            context,
-            Icons.check_circle,
-            'Checkmark icon',
-            'Book completed',
-          ),
-          _buildControlItem(
-            context,
-            Icons.headphones,
-            'Audio icon',
-            'Book has audio',
-          ),
-          _buildControlItem(
-            context,
-            Icons.linear_scale,
-            'Status distribution bar',
-            'Visual breakdown of term status',
-          ),
           const Divider(),
           _buildSubsectionHeader(context, 'Card Information'),
           _buildControlItem(context, Icons.title, 'Title', 'Book title'),
@@ -677,7 +685,7 @@ class HelpScreen extends ConsumerWidget {
             context,
             Icons.language,
             'Language',
-            'Book language',
+            'Book language (with flag emoji)',
           ),
           _buildControlItem(
             context,
@@ -693,12 +701,6 @@ class HelpScreen extends ConsumerWidget {
           ),
           _buildControlItem(
             context,
-            Icons.format_list_numbered,
-            'Page progress',
-            'Current page and total (e.g., "5/25")',
-          ),
-          _buildControlItem(
-            context,
             Icons.local_offer,
             'Tags',
             'Book tags (if shown)',
@@ -708,6 +710,18 @@ class HelpScreen extends ConsumerWidget {
             Icons.access_time,
             'Last read time',
             'Time since last read (if shown)',
+          ),
+          _buildControlItem(
+            context,
+            Icons.verified,
+            'New-word difficulty badge',
+            'EASY / CHAL / HARD based on the share of new words',
+          ),
+          _buildControlItem(
+            context,
+            Icons.collections_bookmark,
+            'Book Set badge & progress',
+            'Series cards show the set size and a read/total progress bar',
           ),
           const Divider(),
           _buildSubsectionHeader(context, 'Book Details Dialog'),
@@ -788,7 +802,7 @@ class HelpScreen extends ConsumerWidget {
             context,
             Icons.arrow_right,
             'AI Provider dropdown',
-            'Select provider (OpenAI, Local OpenAI, None)',
+            'Select provider (OpenAI, Local OpenAI, Gemini, None)',
           ),
           _buildControlItem(
             context,
@@ -871,34 +885,26 @@ class HelpScreen extends ConsumerWidget {
           _buildControlItem(
             context,
             Icons.calculate,
-            'Calc Sample Size',
-            'Pages sampled when calculating book stats (1-500). Lower = faster. Lower this is you lose server connection on launch',
+            'Pages to Refresh',
+            'Pages sampled when calculating book stats (1-500). Lower = faster, but stats are less accurate',
           ),
           _buildControlItem(
             context,
             Icons.layers,
-            'Pages to Process at Once',
-            'Batch size for stats refresh (1-5). Lower take long but reduce server load',
+            'Books to Process at Once',
+            'Batch size for stats refresh. Lower takes longer but reduces server load',
           ),
           _buildControlItem(
             context,
             Icons.timer,
-            'Cooldown Before Refresh',
-            'Hours between auto-refresh (1-336). Prevents excessive recalculation',
-          ),
-          const Divider(),
-          _buildSubsectionHeader(context, 'Tooltip Caching'),
-          _buildControlItem(
-            context,
-            Icons.cached,
-            'Enable Tooltip Caching',
-            'Cache term tooltips for 48 hours. Significantly speeds up tooltip loading, especially on slow connections',
+            'Cooldown Before Refresh (hours)',
+            'Hours between auto-refresh. Prevents excessive recalculation',
           ),
           _buildControlItem(
             context,
-            Icons.speed,
-            'Tooltip Batch Size',
-            'Max concurrent tooltip fetches (1-10). Higher = faster but more server load',
+            Icons.pin,
+            '500 Sample Size',
+            'Sample size (1-500) for the 500-page stats calculation',
           ),
           const Divider(),
           _buildSubsectionHeader(context, 'Known Terms Display'),
@@ -909,26 +915,12 @@ class HelpScreen extends ConsumerWidget {
             'This is performance heavy, if you are having problems loading into books try disabling this',
           ),
           const Divider(),
-          _buildSubsectionHeader(context, 'Swipe Navigation'),
-          _buildControlItem(
-            context,
-            Icons.swipe,
-            'Enable Swipe Navigation',
-            'Toggle swipe gestures for page navigation. If you experience issues with pages turning unexpectedly between app launches, try disabling this',
-          ),
-          _buildControlItem(
-            context,
-            Icons.check_circle_outline,
-            'Mark Pages as Read When Swiping',
-            'Automatically mark pages as read when navigating via swipe gestures',
-          ),
-          const Divider(),
           _buildSubsectionHeader(context, 'Location'),
           _buildControlItem(
             context,
             Icons.settings,
             'Settings',
-            'Book Stats: Settings > Book Stats Settings. Tooltip Caching & Batch Size & Known Terms: Settings > Reading Settings',
+            'Book Stats: open the drawer on the Books screen ("Book Settings" panel). Known Terms Count: Settings',
           ),
         ],
       ),
@@ -1080,6 +1072,227 @@ class HelpScreen extends ConsumerWidget {
           : null,
       trailing: const Icon(Icons.arrow_forward_ios, size: 16),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+    );
+  }
+}
+
+enum _UpdatePhase {
+  idle,
+  checking,
+  upToDate,
+  available,
+  downloading,
+  permissionRequired,
+  error,
+}
+
+/// Help 页顶部的自更新卡片：查 `/static/app_version.json` 清单 → 对比
+/// versionCode → 下载（进度条）→ sha1 校验 → 拉起系统安装器。仅 Android。
+class _AppUpdateContent extends ConsumerStatefulWidget {
+  const _AppUpdateContent();
+
+  @override
+  ConsumerState<_AppUpdateContent> createState() => _AppUpdateContentState();
+}
+
+class _AppUpdateContentState extends ConsumerState<_AppUpdateContent> {
+  _UpdatePhase _phase = _UpdatePhase.idle;
+  PackageInfo? _packageInfo;
+  AppUpdateManifest? _manifest;
+  String _apkPath = '';
+  double? _progress;
+  String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    PackageInfo.fromPlatform().then((info) {
+      if (mounted) setState(() => _packageInfo = info);
+    });
+  }
+
+  String get _currentVersionLabel {
+    final info = _packageInfo;
+    if (info == null) return '';
+    return '${info.version} (build ${info.buildNumber})';
+  }
+
+  Future<void> _check() async {
+    final serverUrl = ref.read(settingsProvider).serverUrl.trim();
+    if (serverUrl.isEmpty) {
+      setState(() {
+        _phase = _UpdatePhase.error;
+        _error = 'No server configured. Set the server URL in Settings first.';
+      });
+      return;
+    }
+    setState(() {
+      _phase = _UpdatePhase.checking;
+      _error = '';
+    });
+    final result = await AppUpdateService.check(serverUrl);
+    if (!mounted) return;
+    setState(() {
+      if (result.error != null) {
+        _phase = _UpdatePhase.error;
+        _error = 'Update check failed: ${result.error}';
+      } else if (result.updateAvailable) {
+        _phase = _UpdatePhase.available;
+        _manifest = result.manifest;
+      } else {
+        _phase = _UpdatePhase.upToDate;
+      }
+    });
+  }
+
+  Future<void> _downloadAndInstall() async {
+    final serverUrl = ref.read(settingsProvider).serverUrl.trim();
+    final manifest = _manifest;
+    if (serverUrl.isEmpty || manifest == null) return;
+
+    if (!await ApkInstaller.canInstall()) {
+      setState(() => _phase = _UpdatePhase.permissionRequired);
+      return;
+    }
+
+    // 之前已下载过（如授权"安装未知应用"后回来重试），本地文件仍有效
+    // 就直接装，不重复下载。
+    if (_apkPath.isNotEmpty && File(_apkPath).existsSync()) {
+      try {
+        await ApkInstaller.install(_apkPath);
+        return;
+      } catch (_) {
+        // 本地文件失效（被系统清理等），回退到重新下载。
+      }
+    }
+
+    setState(() {
+      _phase = _UpdatePhase.downloading;
+      _progress = null;
+      _error = '';
+    });
+    try {
+      final path = await AppUpdateService.downloadApk(
+        serverUrl,
+        manifest,
+        onProgress: (p) {
+          if (mounted) setState(() => _progress = p);
+        },
+      );
+      if (!mounted) return;
+      _apkPath = path;
+      // 拉起系统安装器后应用会退到后台；用户取消安装再回来时停在当前
+      // 状态，APK 已在本地，直接点 Install 即可重试，不会重新下载。
+      await ApkInstaller.install(path);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _UpdatePhase.error;
+        _error = 'Update failed: $e';
+      });
+    }
+  }
+
+  Future<void> _openPermissionSettings() async {
+    await ApkInstaller.openPermissionSettings();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        ListTile(
+          leading: Icon(
+            switch (_phase) {
+              _UpdatePhase.upToDate => Icons.check_circle,
+              _UpdatePhase.available => Icons.download_for_offline,
+              _UpdatePhase.error => Icons.error_outline,
+              _ => Icons.system_update,
+            },
+            size: 24,
+          ),
+          title: SelectableText(
+            switch (_phase) {
+              _UpdatePhase.checking => 'Checking for updates...',
+              _UpdatePhase.upToDate =>
+                'Up to date ($_currentVersionLabel)',
+              _UpdatePhase.available =>
+                'New version ${_manifest?.version} (build ${_manifest?.build}) available',
+              _UpdatePhase.downloading => _progress == null
+                  ? 'Downloading update...'
+                  : 'Downloading update... ${(_progress! * 100).toStringAsFixed(0)}%',
+              _UpdatePhase.permissionRequired =>
+                'Install permission required (current: $_currentVersionLabel)',
+              _UpdatePhase.error => _error,
+              _ => 'Current version: $_currentVersionLabel',
+            },
+            style: Theme.of(context)
+                .textTheme
+                .bodyLarge
+                ?.copyWith(fontWeight: FontWeight.w500),
+          ),
+          subtitle: switch (_phase) {
+            _UpdatePhase.available => const SelectableText(
+                'Download and install from the server',
+              ),
+            _UpdatePhase.permissionRequired => const SelectableText(
+                'Allow "Install unknown apps" for Song Mobile, then tap Install again',
+              ),
+            _UpdatePhase.error => _error.length > 80
+                ? SelectableText(_error)
+                : null,
+            _ => null,
+          },
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+        ),
+        if (_phase == _UpdatePhase.downloading)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: LinearProgressIndicator(value: _progress),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (_phase == _UpdatePhase.idle ||
+                  _phase == _UpdatePhase.upToDate ||
+                  _phase == _UpdatePhase.error)
+                TextButton.icon(
+                  onPressed: _phase == _UpdatePhase.checking ? null : _check,
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: Text(_phase == _UpdatePhase.error
+                      ? 'Retry'
+                      : 'Check for Updates'),
+                ),
+              if (_phase == _UpdatePhase.available) ...[
+                TextButton(
+                  onPressed: _check,
+                  child: const Text('Recheck'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: _downloadAndInstall,
+                  icon: const Icon(Icons.download, size: 18),
+                  label: const Text('Download & Install'),
+                ),
+              ],
+              if (_phase == _UpdatePhase.permissionRequired) ...[
+                TextButton(
+                  onPressed: _openPermissionSettings,
+                  child: const Text('Open Settings'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: _downloadAndInstall,
+                  icon: const Icon(Icons.install_mobile, size: 18),
+                  label: const Text('Install'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

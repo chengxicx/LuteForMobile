@@ -3,32 +3,37 @@ Ignore the lute-v3 directory
 
 ## Build & delivery 流程（固定，勿改道）
 
-### 服务器上有两套 Flutter + 两份项目树，别串了（2026-09-26 实测更正）
+### 服务器上有两份项目树，别串了（2026-10-17 实测更正：/root/android-dev 旧树已删除）
 
 | | 验证树 | 发布构建树 |
 |---|---|---|
-| Flutter | `/root/android-dev/flutter/bin` | `/opt/flutter` |
-| 项目 | `/root/android-dev/src/LuteForMobile` | `/opt/lute_mobile_src` |
-| 用途 | `analyze` / `test`，秒级反馈 | 出 release APK（`/opt/build_apk.sh` 里 `cd /opt/lute_mobile_src`） |
+| Flutter | `/opt/flutter`（PUB_CACHE=/opt/flutter/.pub-cache） | `/opt/flutter`（同上） |
+| 项目 | `/opt/lute_mobile_base` | `/opt/lute_mobile_src` |
+| 用途 | `analyze` / `test` | 出 release APK（`/opt/build_apk.sh` 里 `cd /opt/lute_mobile_src`） |
 
+`/opt/run_analyze.sh` 一键对两棵树跑 pub get + analyze（输出 /tmp/analyze_base.txt、/tmp/analyze_work.txt）。
 **两份树不共享代码**：只同步验证树就出包，包里还是发布树的旧代码。改动要同步到**两边**。
+⚠️ pubspec.yaml 依赖 `third_party/`（本地 audioplayers fork，path 依赖）——base 树曾缺失导致 pub get exit=66，缺失时从构建树 `rsync -a` 过去。
 
 ### 1. 同步改动（增量，秒级）
 
 ```bash
-rsync -az --delete -e "ssh -o BatchMode=yes" lib/  root@172.236.226.132:/root/android-dev/src/LuteForMobile/lib/
-rsync -az --delete -e "ssh -o BatchMode=yes" test/ root@172.236.226.132:/root/android-dev/src/LuteForMobile/test/
+for dst in /opt/lute_mobile_base /opt/lute_mobile_src; do
+  rsync -az --delete -e "ssh -o BatchMode=yes" lib/  root@172.236.226.132:$dst/lib/
+  rsync -az --delete -e "ssh -o BatchMode=yes" test/ root@172.236.226.132:$dst/test/
+  rsync -az -e "ssh -o BatchMode=yes" pubspec.yaml root@172.236.226.132:$dst/pubspec.yaml
+done
 ```
 
-出包前同样把 `lib/` 同步到 `/opt/lute_mobile_src/`。`--delete` 必须带，否则远端删掉的文件会留下并参与编译。
+改了 `android/` 原生代码时，`android/app/src/main/` 也要同步进两棵树。`--delete` 必须带，否则远端删掉的文件会留下并参与编译。
 
 ### 2. 验证
 
 ```bash
-ssh root@172.236.226.132 'cd /root/android-dev/src/LuteForMobile && export PATH=/root/android-dev/flutter/bin:$PATH && flutter analyze'
+ssh root@172.236.226.132 'bash /opt/run_analyze.sh'
 ```
 
-- `flutter analyze` 只要有任何 issue 就非零退出，**按严重级别判断**，只有 `error` 是致命的。
+- `flutter analyze` 只要有任何 issue 就非零退出，**按严重级别判断**，只有 `error` 是致命的（基线约 205 条 info/warning，属存量，无需清零）。
 - `flutter test` **逐文件跑**（`for f in test/*_test.dart; do timeout 90 flutter test "$f"; done`），整目录并发在这台 3.8GB 的机器上会挂住十分钟不出声。
 
 ### 3. 构建 release APK
@@ -59,6 +64,10 @@ EXIT= 行、APK mtime 不更新——用这三点识别被杀）。现用 2800M 
    （实测 33 秒 ~ 3 分钟，波动大；用 `shasum -a 1` 与服务器侧 `sha1sum` 校验）
 3. 用户手机直接下载也用同一个 CDN URL，所以下载完先别删服务器上的文件，等用户确认后再清理。
 4. 文件名**必须带时间戳**：CDN 按 URL 缓存，同名新包会拿到旧字节（HTTP 200、体积相同，只有 sha256 能看出来）。
+5. **发版要同时更新 `/opt/lute/lute/static/app_version.json`**（应用内 Help > App Update
+   读它检查更新）：`{"version":"1.3.6","build":43,"apk":"<静态目录里的APK文件名>","sha1":"<APK的sha1>"}`。
+   `build` 对应 pubspec 的 `+N`（Android versionCode），是新旧判据；`apk` 文件名带时间戳防 CDN 旧缓存；
+   `sha1` 供客户端下载后校验。客户端拉清单时自带 `?_=<时间戳>` 破缓存。
 
 ### 5. 装机验证（设备常插着 USB）
 
