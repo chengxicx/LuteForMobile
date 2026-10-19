@@ -926,6 +926,55 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+              // 锁屏/切后台继续播放。默认开：开着时靠 mediaPlayback 前台服务
+              // 保住进程（MediaPlaybackService.kt）；关掉就回到"paused 即停播
+              // 并记住位置"的老行为，适合不想让后台占电量的场景。
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Background Playback',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Keep the audiobook and read-aloud going when '
+                              'the screen locks or you switch to another app.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: context.appColorScheme.text.secondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Transform.scale(
+                        scale: 0.8,
+                        child: Switch(
+                          value: settings.backgroundPlayback,
+                          onChanged: (value) {
+                            ref
+                                .read(settingsProvider.notifier)
+                                .updateBackgroundPlayback(value);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
               // The reader's drawer panel used to be the only place these lived,
               // and there they were unreachable (non-scrollable panel, pushed
               // off-screen).  Same controls, one more way in.

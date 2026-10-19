@@ -65,6 +65,12 @@ class Settings {
   /// 屏幕方向：跟随系统自动旋转，还是锁定竖屏/横屏。默认锁定竖屏。
   final OrientationLock orientationLock;
 
+  /// 锁屏 / 切到后台后是否继续播放（有声书 MP3 与整页朗读 TTS 共用）。
+  ///
+  /// 默认开启。关闭时回到 2026-09 的老行为：`AppLifecycleState.paused`
+  /// 一到就停播并记下位置（见 utils/player_lifecycle.dart）。
+  final bool backgroundPlayback;
+
   /// 界面显示语言代码：'en' / 'zh' / 'ja' / 'ko'。仅存本机
   /// （SharedPreferences），与 Web 端 ui_language **相互独立**、互不同步
   /// （用户 2026-10-14 要求）；与学习内容的 languageFilter 也是两回事。
@@ -113,6 +119,7 @@ class Settings {
     this.furiganaEnabled = true,
     this.eInkMode = false,
     this.orientationLock = OrientationLock.portrait,
+    this.backgroundPlayback = true,
     this.uiLanguage = 'en',
   });
 
@@ -160,6 +167,7 @@ class Settings {
     bool? furiganaEnabled,
     bool? eInkMode,
     OrientationLock? orientationLock,
+    bool? backgroundPlayback,
     String? uiLanguage,
   }) {
     return Settings(
@@ -224,6 +232,7 @@ class Settings {
       furiganaEnabled: furiganaEnabled ?? this.furiganaEnabled,
       eInkMode: eInkMode ?? this.eInkMode,
       orientationLock: orientationLock ?? this.orientationLock,
+      backgroundPlayback: backgroundPlayback ?? this.backgroundPlayback,
       uiLanguage: uiLanguage ?? this.uiLanguage,
     );
   }
@@ -268,6 +277,7 @@ class Settings {
       furiganaEnabled: true,
       eInkMode: false,
       orientationLock: OrientationLock.portrait,
+      backgroundPlayback: true,
       uiLanguage: 'en',
     );
   }
@@ -318,6 +328,7 @@ class Settings {
         other.furiganaEnabled == furiganaEnabled &&
         other.eInkMode == eInkMode &&
         other.orientationLock == orientationLock &&
+        other.backgroundPlayback == backgroundPlayback &&
         other.uiLanguage == uiLanguage;
   }
 
@@ -362,6 +373,7 @@ class Settings {
     furiganaEnabled,
     eInkMode,
     orientationLock,
+    backgroundPlayback,
     uiLanguage,
   ]);
 

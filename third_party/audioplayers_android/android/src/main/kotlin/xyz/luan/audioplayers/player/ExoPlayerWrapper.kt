@@ -34,6 +34,11 @@ class ExoPlayerWrapper(
         // handleAudioFocus = false：音频焦点由 WrappedPlayer 的 FocusManager 统一
         // 申请/释放，交给 ExoPlayer 会变成两套互相抢（申请两次、丢一次焦点）。
         .setAudioAttributes(media3Attributes(wrappedPlayer.context), false)
+        // 锁屏/切后台继续播放：屏幕熄灭后 CPU 会进 suspend，没有 wake mode
+        // 时 Media3 解码线程拿不到 CPU，音频断续甚至直接停住。WAKE_MODE_NETWORK
+        // 会持有 PARTIAL_WAKE_LOCK（并保证 Wi-Fi 可用），配合 Manifest 的
+        // WAKE_LOCK 权限与 MediaPlaybackService 才是完整的后台播放链路。
+        .setWakeMode(C.WAKE_MODE_NETWORK)
         .build()
 
     /** 当前装配的媒体源；`prepare()` 时才真正交给播放器。 */

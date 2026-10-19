@@ -49,5 +49,31 @@ void main() {
         isFalse,
       );
     });
+
+    // 2026-10-19：用户要求锁屏后能继续听，于是 paused 的处置变成开关。
+    // 开关打开时**任何**生命周期变化都不许停播。
+    test('backgroundPlayback 打开时 paused 也不停（锁屏继续播）', () {
+      expect(
+        shouldStopAudioOnLifecycleChange(
+          AppLifecycleState.paused,
+          backgroundPlayback: true,
+        ),
+        isFalse,
+        reason: '后台播放开着，锁屏 / 切 app 都不该掐掉有声书与整页朗读',
+      );
+    });
+
+    test('backgroundPlayback 打开时其余状态同样不停', () {
+      for (final state in AppLifecycleState.values) {
+        expect(
+          shouldStopAudioOnLifecycleChange(
+            state,
+            backgroundPlayback: true,
+          ),
+          isFalse,
+          reason: 'backgroundPlayback=true 下 $state 不该触发停播',
+        );
+      }
+    });
   });
 }

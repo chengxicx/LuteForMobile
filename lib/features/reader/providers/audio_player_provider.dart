@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../core/cache/audio_cache_layout.dart';
+import '../../../core/services/playback_foreground_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import 'reader_provider.dart';
 import '../utils/pending_seek.dart';
@@ -270,6 +271,10 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
         position: Duration.zero,
       );
       unawaited(_savePosition());
+      // 整本书播完就不再出声，前台服务没有继续挂着的理由。
+      unawaited(
+        PlaybackForegroundService.release(PlaybackForegroundService.mp3),
+      );
     });
   }
 
@@ -545,6 +550,10 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
   }
 
   Future<void> play() async {
+    // 起播就挂上 mediaPlayback 前台服务：锁屏后进程不被冻结，Media3 才能
+    // 一直解码（见 core/services/playback_foreground_service.dart）。
+    // 失败路径在下面的 catch 里撤掉，避免通知空挂。
+    await PlaybackForegroundService.acquire(PlaybackForegroundService.mp3);
     try {
       // 从后台回来时播放器是 stopped 的（`_stopSafely()` 停的），而
       // `stop()` 已经把它内部的位置清零了。此时 `resume()` 会**从头播**，
@@ -569,6 +578,10 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
         await _reloadSourceAndPlay();
       }
     } catch (e) {
+      // 没播出声：前台服务不该继续挂着。
+      await PlaybackForegroundService.release(
+        PlaybackForegroundService.mp3,
+      );
       state = state.copyWith(errorMessage: e.toString());
     }
   }
@@ -620,6 +633,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
   Future<void> pause() async {
     await _audioPlayer!.pause();
+    await PlaybackForegroundService.release(PlaybackForegroundService.mp3);
     await _savePosition();
   }
 
@@ -821,6 +835,8 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _lastAudioUrl = null;
     lastLocalAudioFile = null;
     _stopSafely();
+    // 换书 / 关阅读页 = 彻底卸载音源，前台资格一并撤掉。
+    unawaited(PlaybackForegroundService.release(PlaybackForegroundService.mp3));
   }
 
   void reset() {
@@ -848,6 +864,9 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     _autoSaveTimer?.cancel();
     _autoSaveTimer = null;
     _stopSafely();
+    // 只有"后台播放"关闭时才会走到这里（player_lifecycle.dart）。既然主动
+    // 停播，前台资格也要撤掉，否则锁屏后通知一直挂着却不出声。
+    unawaited(PlaybackForegroundService.release(PlaybackForegroundService.mp3));
   }
 
   /// 回到前台：把播放条复位到切走前的位置。
@@ -1122,6 +1141,7 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
   Future<void> stop() async {
     _stopSafely();
+    await PlaybackForegroundService.release(PlaybackForegroundService.mp3);
   }
 
   void _stopSafely() {

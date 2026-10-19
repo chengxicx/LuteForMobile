@@ -86,6 +86,7 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyEInkMode = 'eink_mode';
   static const String _keyFuriganaEnabled = 'furigana_enabled';
   static const String _keyOrientationLock = 'orientation_lock';
+  static const String _keyBackgroundPlayback = 'background_playback';
   // App 本机偏好。与 Web settings 表的 ui_language 同值域但**互不同步**。
   static const String _keyUiLanguage = 'ui_language';
 
@@ -163,6 +164,9 @@ class SettingsNotifier extends Notifier<Settings> {
     final orientationLock = _orientationLockFromName(
       prefs.getString(_keyOrientationLock),
     );
+    // 默认开启：锁屏/切后台继续播是用户 2026-10-19 提出的需求，老安装没有
+    // 这个键，一律按"开"处理。
+    final backgroundPlayback = prefs.getBool(_keyBackgroundPlayback) ?? true;
     final uiLanguage = prefs.getString(_keyUiLanguage) ?? 'en';
 
     final currentBookId = prefs.getInt(_keyCurrentBookId);
@@ -207,6 +211,7 @@ class SettingsNotifier extends Notifier<Settings> {
       eInkMode: eInkMode,
       furiganaEnabled: furiganaEnabled,
       orientationLock: orientationLock,
+      backgroundPlayback: backgroundPlayback,
       uiLanguage: uiLanguage,
     );
 
@@ -473,6 +478,13 @@ class SettingsNotifier extends Notifier<Settings> {
     _applyOrientationLock(lock);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyOrientationLock, lock.name);
+  }
+
+  /// 锁屏 / 切后台是否继续播放。关闭后回到"paused 即停播"的老行为。
+  Future<void> updateBackgroundPlayback(bool enabled) async {
+    state = state.copyWith(backgroundPlayback: enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyBackgroundPlayback, enabled);
   }
 
   /// 切换界面语言（'en' / 'zh' / 'ja' / 'ko'）。仅本机生效并持久化——

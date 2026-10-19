@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/providers/tts_provider.dart';
 import '../../../core/network/tts_service.dart';
+import '../../../core/services/playback_foreground_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import '../../../shared/utils/tts_language_mapper.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
@@ -500,6 +501,10 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// 墨水屏上"第几句"比"第几秒"有用。
   Future<void> play({bool tickPosition = true}) async {
     if (!state.hasSnippets) return;
+    // 整页朗读是逐句"合成→播放"的长链路，锁屏后既要进程活着（前台服务），
+    // 也要网络能出去（Doze 下才拿得到下一句的 mp3）。持有者与 MP3 分开记，
+    // 两条链路同时要时服务只挂一份。
+    await PlaybackForegroundService.acquire(PlaybackForegroundService.tts);
     _tickPosition = tickPosition;
     // 再按播放 = 用户重新开口，给服务端再一次机会：拒答降级就此撤销，否则
     // 服务器恢复之后这个播放会话还一直念本地语音、播放条也一直挂着
@@ -632,6 +637,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _speakStartedAt = null;
     _instantLoopRepeats = 0;
     _stopService();
+    await PlaybackForegroundService.release(PlaybackForegroundService.tts);
     if (state.status == TTSPlayerStatus.playing ||
         state.status == TTSPlayerStatus.loading) {
       state = state.copyWith(status: TTSPlayerStatus.paused);
@@ -651,6 +657,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     _appliedLanguageTag = null;
     _clearPrefetch();
     _stopService();
+    await PlaybackForegroundService.release(PlaybackForegroundService.tts);
     state = state.copyWith(
       currentIndex: -1,
       positionInSnippet: Duration.zero,
@@ -898,6 +905,10 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         status: TTSPlayerStatus.error,
         errorMessage: e is TTSException ? e.message : e.toString(),
       );
+      // 出错就停在这里，前台服务不该继续挂着。
+      unawaited(
+        PlaybackForegroundService.release(PlaybackForegroundService.tts),
+      );
     }
   }
 
@@ -1006,6 +1017,9 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
           '${state.languageTag ?? '未知'}）。朗读已停下，没有静默跳过；'
           '请检查这本书的语言设置，或换一个 TTS 引擎。',
     );
+    unawaited(
+      PlaybackForegroundService.release(PlaybackForegroundService.tts),
+    );
   }
 
   /// Fetch the sentence after the playhead in the background.
@@ -1093,6 +1107,9 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       status: TTSPlayerStatus.error,
       errorMessage: error.message,
     );
+    unawaited(
+      PlaybackForegroundService.release(PlaybackForegroundService.tts),
+    );
   }
 
   /// Whether the loop should replay the current sentence, as opposed to
@@ -1159,6 +1176,10 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         positionInSnippet: Duration.zero,
         status: TTSPlayerStatus.paused,
       );
+      // 自动暂停 = 这句念完就停，后台服务不必继续挂着。
+      unawaited(
+        PlaybackForegroundService.release(PlaybackForegroundService.tts),
+      );
       return;
     }
 
@@ -1187,6 +1208,10 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         currentIndex: -1,
         positionInSnippet: Duration.zero,
         status: TTSPlayerStatus.idle,
+      );
+      // 整页读完，本轮的播放前台服务到此为止。
+      unawaited(
+        PlaybackForegroundService.release(PlaybackForegroundService.tts),
       );
     }
   }

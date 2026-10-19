@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 class MainActivity : FlutterActivity() {
     private var termuxBridge: TermuxBridge? = null
     private var apkInstaller: ApkInstaller? = null
+    private var mediaPlaybackBridge: MediaPlaybackBridge? = null
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var hasAutoLaunched = false
 
@@ -39,6 +40,8 @@ class MainActivity : FlutterActivity() {
         termuxBridge?.registerMethodChannel(flutterEngine)
         apkInstaller = ApkInstaller(this)
         apkInstaller?.registerMethodChannel(flutterEngine)
+        mediaPlaybackBridge = MediaPlaybackBridge(this)
+        mediaPlaybackBridge?.registerMethodChannel(flutterEngine)
     }
 
     override fun onDestroy() {

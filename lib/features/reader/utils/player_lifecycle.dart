@@ -11,6 +11,15 @@ import 'package:flutter/widgets.dart';
 ///
 /// 切后台的完整序列是 `inactive → hidden → paused`，所以去掉 `inactive`
 /// 之后，真正离开 app 仍然会被 `paused` 兜住，不会漏。
-bool shouldStopAudioOnLifecycleChange(AppLifecycleState state) {
+///
+/// [backgroundPlayback] 为 true 时**一律不停**：用户明确要求锁屏后继续
+/// 有声书 / 整页朗读（2026-10-19）。那时靠 `MediaPlaybackService` 这个
+/// mediaPlayback 类型的前台服务兜住进程，回来时的位置由播放器自己保持，
+/// 不再走 `suspendForBackground` / `restoreAfterBackground` 那一套。
+bool shouldStopAudioOnLifecycleChange(
+  AppLifecycleState state, {
+  bool backgroundPlayback = false,
+}) {
+  if (backgroundPlayback) return false;
   return state == AppLifecycleState.paused;
 }

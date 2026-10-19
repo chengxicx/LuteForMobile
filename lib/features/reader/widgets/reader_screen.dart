@@ -520,7 +520,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       // 回到前台把播放条复位到切走前的位置。`_checkServerPage()` 只在服务端
       // 页码不同时才翻页，所以这条路径不会重新装载音频，位置得自己还回来。
       ref.read(audioPlayerProvider.notifier).restoreAfterBackground();
-    } else if (shouldStopAudioOnLifecycleChange(state)) {
+    } else if (shouldStopAudioOnLifecycleChange(
+      state,
+      backgroundPlayback: ref.read(settingsProvider).backgroundPlayback,
+    )) {
       // 只在真正切后台时停 MP3。inactive（窗口失焦）不算离开 app ——
       // 音量面板、控制中心、权限弹窗都会触发它，理由见
       // utils/player_lifecycle.dart。
@@ -529,6 +532,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       // 本书、同一页、同一位置，不该连音源和进度一起卸掉 —— 那样播放条会
       // 归零，而且按播放也起不来（重装兜底需要音源地址）。
       ref.read(audioPlayerProvider.notifier).suspendForBackground();
+      // 整页朗读是另一条链路（ttsPlayerProvider），同样按这个开关处置：
+      // 关掉后台播放 = 锁屏后一律不出声，不能只停 MP3 而让朗读继续念。
+      final ttsPlayer = ref.read(ttsPlayerProvider);
+      if (ttsPlayer.isPlaying || ttsPlayer.isLoading) {
+        unawaited(ref.read(ttsPlayerProvider.notifier).pause());
+      }
     }
   }
 
