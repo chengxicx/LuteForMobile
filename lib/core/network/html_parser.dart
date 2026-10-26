@@ -1194,9 +1194,19 @@ class HtmlParser {
       final name = link.text.trim();
       if (id == null || name.isEmpty) continue;
 
-      // 旧版语言页没有 Frozen 状态列，row.text 不含 'Frozen'，默认全部 active。
-      final isActive = !row.text.contains('Frozen');
-      parsedLanguages.add(Language(id: id, name: name, isActive: isActive));
+      // 冻结状态有三种与界面语言无关的标记，逐个兜住：
+      //   1. 行内联 style 的 `opacity: 0.5`（整行变灰）；
+      //   2. 状态列的小圆点颜色 #868e96（active 是绿色 #37b24d）；
+      //   3. 动作按钮颜色（active 显示黄色 Freeze，冻结显示绿色 Activate）。
+      // 只认文本是不可靠的：服务端 `t('Frozen')` 在中文界面渲染成
+      // `● 已冻结`、日文是 `凍結済み`，所以只匹配英文 "Frozen" 时每个
+      // 语言都被当成 active，书架过滤就会把冻结语言也列出来。
+      // 旧版语言页没有状态列，三个标记都缺席，仍默认 active。
+      final isFrozen =
+          _rowHasFrozenMarker(row) || row.text.contains('Frozen');
+      parsedLanguages.add(
+        Language(id: id, name: name, isActive: !isFrozen),
+      );
     }
 
     // Keep only one entry per ID to avoid invalid dropdown states when
@@ -1206,6 +1216,36 @@ class HtmlParser {
       uniqueById.putIfAbsent(language.id, () => language);
     }
     return uniqueById.values.toList();
+  }
+
+  /// 语言页上「冻结」的结构标记，全部与界面语言无关。
+  ///
+  /// 服务端模板（`templates/language/index.html`）对一个冻结语言同时做三
+  /// 件事：整行 `style="opacity: 0.5;"`、状态圆点用灰色 `#868e96`（启用
+  /// 时是绿色 `#37b24d`）、动作按钮变成绿色的 "Activate"（启用时是黄色
+  /// 的 "Freeze"）。文案会随界面语言翻译，颜色和 opacity 不会。
+  bool _rowHasFrozenMarker(html.Element row) {
+    String normalize(String? style) =>
+        (style ?? '').replaceAll(' ', '').toLowerCase();
+
+    if (normalize(row.attributes['style']).contains('opacity:0.5')) {
+      return true;
+    }
+
+    for (final span in row.querySelectorAll('span')) {
+      if (normalize(span.attributes['style']).contains('#868e96')) {
+        return true;
+      }
+    }
+
+    // 绿色按钮 = 该语言当前是冻结状态，按钮提供的是「启用」。
+    for (final button in row.querySelectorAll('button')) {
+      if (normalize(button.attributes['style']).contains('#37b24d')) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   LanguageCardSettings parseLanguageCardSettings(

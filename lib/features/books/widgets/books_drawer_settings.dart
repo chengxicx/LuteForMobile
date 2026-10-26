@@ -36,19 +36,54 @@ class _MinMaxValueFormatter extends TextInputFormatter {
   }
 }
 
-class BooksDrawerSettings extends ConsumerWidget {
+class BooksDrawerSettings extends ConsumerStatefulWidget {
   const BooksDrawerSettings({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BooksDrawerSettings> createState() =>
+      _BooksDrawerSettingsState();
+}
+
+class _BooksDrawerSettingsState extends ConsumerState<BooksDrawerSettings> {
+  /// 最近一次成功读到的未冻结语言名。
+  ///
+  /// 抽屉打开时会静默重取语言列表（见 [initState]），重取期间 provider
+  /// 回到 loading，`asData` 为 null；沿用上一份列表，下拉才不会在那一
+  /// 瞬间塌成只剩 "All Languages"。
+  List<String> _lastActiveNames = const <String>[];
+
+  @override
+  void initState() {
+    super.initState();
+    // 抽屉关闭时其内容不在树里（DrawerController 收起后只留一个空
+    // box），所以 initState 就等于「用户打开了侧边栏」。语言列表是
+    // 冻结状态的唯一来源，而 languageListProvider 是根 FutureProvider：
+    // App 常驻时它不会自己过期，于是 web 上刚冻结的语言会一直留在
+    // 下拉里。开抽屉时重取一次，代价是一个 /language/index 的 GET。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshLanguages());
+  }
+
+  Future<void> _refreshLanguages() async {
+    try {
+      ref.invalidate(languageListProvider);
+      await ref.read(languageListProvider.future);
+    } on Exception {
+      // 离线：沿用上次的列表，抽屉照常可用。
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final languagesState = ref.watch(activeLanguageNamesProvider);
+
+    final loadedNames = languagesState.asData?.value;
+    if (loadedNames != null) _lastActiveNames = loadedNames;
 
     // 只列未冻结的语言（对齐 web 过滤下拉）。若已保存的过滤值对应的
     // 语言后来被冻结，先回落到 All，避免 DropdownButton 的 value
     // 不在 items 里触发断言；过滤栏会在语言列表加载后自动清掉它。
-    final List<String> activeNames =
-        languagesState.asData?.value ?? const <String>[];
+    final List<String> activeNames = loadedNames ?? _lastActiveNames;
     final savedFilter = settings.languageFilter;
     final effectiveFilter = savedFilter != null &&
             activeNames.isNotEmpty &&
