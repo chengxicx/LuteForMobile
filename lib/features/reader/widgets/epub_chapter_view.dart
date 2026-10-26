@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/server_status_provider.dart';
+import '../models/chapter_nav.dart';
 import '../models/epub_chapter.dart';
 import '../models/paragraph.dart';
 import '../models/text_item.dart';
@@ -98,6 +99,31 @@ class EpubChapterView extends StatefulWidget {
   /// listener into the document and reports the misses.
   final VoidCallback? onBlankTap;
 
+  /// The end-of-chapter block this chapter should carry: the previous /
+  /// next chapter it leads to and the contents row, or null for a chapter
+  /// that stands alone (a book outside any set) or one whose layout is
+  /// fixed (a fixed-layout page has no flow to append to).
+  ///
+  /// It is *injected* rather than rendered by the server, so the block
+  /// also appears on chapters served from an offline pack written before
+  /// the feature existed -- the pack stores the page HTML verbatim, and
+  /// re-rendering a shelf of books to gain a footer would be absurd.
+  final ChapterNavConfig? chapterNav;
+
+  /// Previous (-1) / next (+1) chapter was pressed in that block.
+  final ValueChanged<int>? onChapterNav;
+
+  /// The Contents row was pressed.
+  final VoidCallback? onOpenContents;
+
+  /// Reading text size, in the same logical pixels the Flutter-rendered
+  /// text uses.  A chapter brings its own typography inside the WebView,
+  /// so the reading pane's size control has to be pushed into the page
+  /// (which is what its own A+/A- buttons do, by stamping the chapter
+  /// container); without this the control silently did nothing on an
+  /// EPUB chapter while working on a text page.
+  final double textSize;
+
   /// Fired for a settled word tap.  The second argument is the *screen*
   /// rect the word card should hang off: only Chromium knows where the
   /// word sits inside the page (it is a `<span>` in a scrolled, zoomed
@@ -122,6 +148,10 @@ class EpubChapterView extends StatefulWidget {
     this.refreshPackAssets,
     this.onPress,
     this.onBlankTap,
+    this.chapterNav,
+    this.onChapterNav,
+    this.onOpenContents,
+    this.textSize = 18,
     required this.onTap,
     required this.onDoubleTap,
     this.onTripleTap,
@@ -135,6 +165,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   InAppWebViewController? _controller;
   bool _pageReady = false;
   double _zoom = 1.0;
+
+  /// The block's configuration last known to be in the page, and a guard so
+  /// only one reconcile is queued per frame.  See [_reconcileChapterNav].
+  String? _navPushed;
+  bool _navReconcileScheduled = false;
+  int _navRetries = 0;
 
   /// The page reports `luteEpubReady` once it has mounted the word spans
   /// and painted the status colours.  Until then the WebView is showing
@@ -331,6 +367,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   String get _pageUrl => _urlOverride ?? _serverPageUrl;
 
   void _registerHandlers(InAppWebViewController controller) {
+    // Keep it: everything that has to reach the page *after* it loaded --
+    // the look, furigana, status pushes, zoom, the end-of-chapter block --
+    // runs outside the load callbacks, which are the only place this
+    // controller was passed in.
+    _controller = controller;
     controller.addJavaScriptHandler(
       handlerName: 'luteEpubReady',
       callback: (args) {
@@ -375,6 +416,26 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       handlerName: 'luteEpubBlankTap',
       callback: (args) {
         if (mounted) widget.onBlankTap?.call();
+      },
+    );
+    // The end-of-chapter block reports through two channels: `{-1, +1}`
+    // for the chapter arrows and a parameter-less call for Contents.  Both
+    // are injected by this widget (see [_pushChapterNav]), so they exist
+    // even on a chapter the server never rendered a footer for.
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubChapterNav',
+      callback: (args) {
+        final payload = args.isNotEmpty && args.first is Map
+            ? (args.first as Map).cast<String, dynamic>()
+            : const <String, dynamic>{};
+        final dir = (payload['dir'] as num?)?.toInt() ?? 0;
+        if (dir != 0) widget.onChapterNav?.call(dir > 0 ? 1 : -1);
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubTocOpen',
+      callback: (args) {
+        widget.onOpenContents?.call();
       },
     );
     controller.addJavaScriptHandler(
@@ -432,6 +493,31 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
   }
 
+  /// Pushes the reading pane's text size into the chapter.
+  ///
+  /// A flow chapter's paragraphs are the book's own, so -- exactly like the
+  /// page's own A+/A- controls -- the size is stamped on the chapter
+  /// container, which keeps the book's relative sizes (headings, footnotes)
+  /// intact.  The page's own `fontSize` key is written too, so a chapter
+  /// rendered again later opens at the reader's size rather than at the
+  /// book's.  Fixed-layout pages are pixel boxes fitted by the zoom
+  /// controls; resizing their text independently would overflow them.
+  Future<void> _pushTextSize() async {
+    if (widget.chapter.fixedLayout) return;
+    final px = widget.textSize.clamp(1, 50);
+    await _runJs('''
+(function () {
+  var body = document.querySelector(
+    '#thetext .epub-body:not([data-epub-viewport])');
+  if (!body) return 'nohost';
+  var root = parseFloat(window.getComputedStyle(document.body).fontSize) || 16;
+  body.style.fontSize = (${px.toStringAsFixed(2)} / root) + 'rem';
+  try { localStorage.setItem('fontSize', ${px.toStringAsFixed(2)}); } catch (e) {}
+  return 'ok';
+})()
+''');
+  }
+
   Map<int, String> _statusMap(List<Paragraph> paragraphs) {
     final map = <int, String>{};
     for (final para in paragraphs) {
@@ -477,6 +563,75 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     );
   }
 
+  /// Inject (or update, or remove) the end-of-chapter block.
+  ///
+  /// Injected from here rather than rendered by the server: a chapter
+  /// served from the offline pack is a *stored* document, and packs
+  /// written before the feature existed have no footer -- re-rendering a
+  /// shelf of books to gain one would be absurd.  The labels are the
+  /// app's (l10n) too, so they follow the interface language without a
+  /// server round trip.
+  ///
+  /// `null` removes an existing block, so a chapter that stops being part
+  /// of a set (or a fixed-layout page, which has no flow to append to)
+  /// cannot keep a stale footer.
+  Future<void> _pushChapterNav([InAppWebViewController? page]) async {
+    final controller = page ?? _controller;
+    if (controller == null) return;
+    final nav = widget.chapterNav;
+    final config = (nav == null || nav.isEmpty)
+        ? 'null'
+        : jsonEncode(nav.toJson());
+    try {
+      // The page answers whether the block actually landed: a push into a
+      // document that has not mounted the chapter yet must not be recorded
+      // as done, or the numbers stay missing for the rest of the chapter.
+      final result = await controller.evaluateJavascript(
+        source: _chapterNavScript.replaceFirst('__CONFIG__', config),
+      );
+      final landed = result == 'ok' || result == 'removed' || result == null;
+      _navPushed = landed ? nav?.signature : null;
+      if (landed) {
+        _navRetries = 0;
+      } else {
+        _scheduleNavRetry();
+      }
+    } catch (_) {
+      // Mid-navigation; the next load, build or retry injects again.
+      _navPushed = null;
+      _scheduleNavRetry();
+    }
+  }
+
+  /// The page was not ready for the block; try again shortly.  Bounded: a
+  /// chapter that never mounts is already handled elsewhere, and a timer
+  /// that keeps firing would just burn battery on an e-ink device.
+  void _scheduleNavRetry() {
+    if (_navRetries >= 6) return;
+    _navRetries++;
+    Timer(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
+      if (_navPushed == widget.chapterNav?.signature) return;
+      unawaited(_pushChapterNav());
+    });
+  }
+
+  /// Pushes the block once the page can take it and its wording differs from
+  /// what the page last rendered.  Cheap to call from every build: it queues
+  /// at most one post-frame pass and does nothing when the block is current.
+  void _reconcileChapterNav() {
+    if (_controller == null) return;
+    if (_navPushed == widget.chapterNav?.signature) return;
+    if (_navReconcileScheduled) return;
+    _navReconcileScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _navReconcileScheduled = false;
+      if (!mounted || _controller == null) return;
+      if (_navPushed == widget.chapterNav?.signature) return;
+      unawaited(_pushChapterNav());
+    });
+  }
+
   @override
   void didUpdateWidget(EpubChapterView oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -485,11 +640,18 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     if (oldWidget.look != widget.look) {
       _pushLook();
     }
+    if (oldWidget.textSize != widget.textSize) {
+      _pushTextSize();
+    }
     if (oldWidget.furiganaEnabled != widget.furiganaEnabled) {
       _runJs(
         'window.LuteEpubBridge && window.LuteEpubBridge.setFurigana(${widget.furiganaEnabled})',
       );
     }
+
+    // The end-of-chapter block is reconciled from [build] rather than here:
+    // it depends on a list that arrives when it arrives, and a build is the
+    // one moment guaranteed to follow every change of that list.
 
     // Status changes arrive as rebuilt paragraph lists; only the changed
     // words are pushed, so the page does not repaint the whole chapter.
@@ -541,6 +703,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   document.addEventListener('click', function (event) {
     var target = event.target;
     if (target && target.closest && target.closest('span.textitem.word')) return;
+    /* The injected end-of-chapter block is chrome, not text: pressing its
+       buttons must not also count as "a tap on empty space" (which in
+       fullscreen mode toggles the app's own bars). */
+    if (target && target.closest && target.closest('.lute-chapter-nav')) return;
     if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
       window.flutter_inappwebview.callHandler('luteEpubBlankTap');
     }
@@ -551,6 +717,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     } catch (_) {
       // The page may be mid-navigation; the next load retries.
     }
+
+    // Last in the DOM pass: the block is appended *after* the chapter, so
+    // it must not be in the tree while the page aligns its word spans.
+    await _pushTextSize();
+    await _pushChapterNav(controller);
 
     // The page reports readiness at DOMContentLoaded, i.e. before the
     // load event, so a live chapter has already lifted the veil here.
@@ -661,6 +832,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       // One async hop offline: pack lookup + local server start.
       return const SizedBox.shrink();
     }
+    // The block's wording can change after the page has loaded -- the
+    // chapter list arrives with the neighbours' numbers, a font change
+    // re-renders the chapter -- and none of that reloads the document.
+    // Reconcile it from the build, which every one of those changes goes
+    // through, instead of relying on a widget-update hook.
+    _reconcileChapterNav();
     return Stack(
       children: [
         // Records where the finger came down -- the tap itself is settled
@@ -818,3 +995,171 @@ class _ZoomButton extends StatelessWidget {
     );
   }
 }
+
+/// Builds the end-of-chapter block inside the page (`__CONFIG__` is
+/// replaced with the JSON of [ChapterNavConfig]).
+///
+/// Rules the design settled on, and why they are spelled out in CSS
+/// rather than left to the browser: square corners, hairline borders, no
+/// shadow and no transition -- this app runs on an e-ink phone, where a
+/// radius renders as a smudge and a 200 ms fade leaves a ghost.  Buttons
+/// are 56 px tall (48 is the touch floor, and a chapter arrow is pressed
+/// with a thumb at the very bottom of a scrolled page); the Contents row
+/// is 48.
+///
+/// Colour comes from `currentColor`, which the two paper looks resolve to
+/// the *pinned* `#1c1b1f` -- the same value the chapter text is pinned to,
+/// because `--paper-filter` inverts the whole sheet.  The theme look has
+/// no paper and inherits the theme's `--font-color`.  The pressed state
+/// paints the block with `currentColor` and the label with the paper
+/// colour, i.e. the same inversion the looks already perform.
+///
+/// The block is appended *inside* `.epub-body`, not next to it: that is
+/// the element the paper looks put `--paper-filter` on, and a pinned
+/// `#1c1b1f` outside it stays dark on a dark sheet (measured: a sibling
+/// block rendered at 1.2:1, invisible).  Living there also means the
+/// block sits in the chapter's own scrolled flow, with the text column's
+/// width, and scrolls away with the words; a fixed bar would permanently
+/// eat 60 px of an already narrow column.
+///
+/// The layout properties carry `!important` because the block lands in
+/// the *book's* scoped stylesheet territory (`div` / `p` rules exist in
+/// real EPUBs); ours must not be re-margined by the book.
+const String _chapterNavScript = r"""
+(function () {
+  var cfg = __CONFIG__;
+  var STYLE_ID = 'lute-chapter-nav-style';
+  var CSS = [
+    '.lute-chapter-nav{margin:44px 0 36px !important;padding:0 !important;',
+    '  text-align:center !important;',
+    '  font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;',
+    '  font-size:13px;line-height:1.2;color:#1c1b1f;}',
+    '.lute-chapter-nav[data-look="theme"]{color:var(--font-color,inherit);}',
+    /* Every part of the block is a `div` of its own; a book that styles
+       `.epub-body div` outranks a bare class selector, so the layout
+       properties are `!important` here too. */
+    '.lute-nav-rule{width:64px;height:1px;margin:0 auto 20px !important;',
+    '  padding:0 !important;background:currentColor !important;opacity:.4;}',
+    '.lute-nav-end{font-size:11px;letter-spacing:3px;text-transform:uppercase;',
+    '  opacity:.62;margin:0 0 20px !important;padding:0 !important;}',
+    '.lute-nav-row{display:flex !important;gap:12px;',
+    '  margin:0 !important;padding:0 !important;}',
+    '.lute-nav-btn{box-sizing:border-box;flex:1 1 0;min-width:0;min-height:56px;',
+    '  display:flex;flex-direction:column;align-items:center;justify-content:center;',
+    '  gap:3px;padding:6px 4px;margin:0 !important;',
+    '  border:1px solid currentColor !important;border-radius:0 !important;',
+    '  background:transparent !important;color:inherit;font:inherit;',
+    '  text-align:center;box-shadow:none !important;outline:none;',
+    '  -webkit-tap-highlight-color:transparent;}',
+    '.lute-nav-main,.lute-nav-sub{color:inherit !important;}',
+    '.lute-nav-btn:active{background:currentColor !important;}',
+    '.lute-nav-btn:active .lute-nav-main,',
+    '.lute-nav-btn:active .lute-nav-sub{color:#fff !important;}',
+    '.lute-chapter-nav[data-look="theme"] .lute-nav-btn:active .lute-nav-main,',
+    '.lute-chapter-nav[data-look="theme"] .lute-nav-btn:active .lute-nav-sub',
+    '  {color:var(--background-color,#fff) !important;}',
+    '.lute-nav-main{font-size:13px;font-weight:500;}',
+    '.lute-nav-sub{font-size:11px;opacity:.62;}',
+    '.lute-nav-toc{display:flex !important;width:100%;min-height:48px;',
+    '  margin:12px 0 0 !important;padding:0 !important;flex:0 0 auto;}'
+  ].join('\n');
+
+  function callFlutter(name, payload) {
+    if (window.flutter_inappwebview &&
+        typeof window.flutter_inappwebview.callHandler === 'function') {
+      window.flutter_inappwebview.callHandler(name, payload || {});
+    }
+  }
+
+  /* The stylesheet is injected once per document; the block itself is
+     rebuilt on every call, so a config change (the chapter list arriving
+     with the neighbours' numbers) simply replaces it. */
+  if (!document.getElementById(STYLE_ID)) {
+    var style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = CSS;
+    document.head.appendChild(style);
+  }
+  var previous = document.querySelector('.lute-chapter-nav');
+  if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
+  if (!cfg) return 'removed';
+
+  /* Inside .epub-body: that is the filtered element the paper looks
+     invert, so the block's ink is inverted with the text.  The fallbacks
+     cover a chapter whose markup has no .epub-body wrapper. */
+  var host = document.querySelector('#epub-chapter .epub-body') ||
+             document.getElementById('epub-chapter') ||
+             document.getElementById('thetext');
+  if (!host) return 'nohost';
+
+  function makeButton(target, extraClass) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'lute-nav-btn' + (extraClass ? ' ' + extraClass : '');
+    var main = document.createElement('span');
+    main.className = 'lute-nav-main';
+    main.textContent = target.label || '';
+    button.appendChild(main);
+    if (target.sub) {
+      var sub = document.createElement('span');
+      sub.className = 'lute-nav-sub';
+      sub.textContent = target.sub;
+      button.appendChild(sub);
+    }
+    return button;
+  }
+
+  function wire(button, handler) {
+    button.addEventListener('click', function (event) {
+      /* The page's own capture-phase listener reports clicks that miss a
+         word; this block is chrome, and its press must not also toggle the
+         app's bars (see the blank-tap wiring in EpubChapterView). */
+      event.preventDefault();
+      event.stopPropagation();
+      handler();
+    });
+  }
+
+  /* A <section>, not a <div>: EPUB stylesheets style divs (`.body` carries
+     the book's own side margins) and this block must not inherit them. */
+  var wrap = document.createElement('section');
+  wrap.className = 'lute-chapter-nav';
+  wrap.setAttribute('data-look', cfg.look || 'theme');
+  wrap.setAttribute('role', 'group');
+
+  var rule = document.createElement('div');
+  rule.className = 'lute-nav-rule';
+  wrap.appendChild(rule);
+
+  if (cfg.end) {
+    var end = document.createElement('div');
+    end.className = 'lute-nav-end';
+    end.textContent = cfg.end;
+    wrap.appendChild(end);
+  }
+
+  var row = document.createElement('div');
+  row.className = 'lute-nav-row';
+  if (cfg.prev) {
+    var prev = makeButton(cfg.prev);
+    wire(prev, function () { callFlutter('luteEpubChapterNav', {dir: -1}); });
+    row.appendChild(prev);
+  }
+  if (cfg.next) {
+    var next = makeButton(cfg.next);
+    wire(next, function () { callFlutter('luteEpubChapterNav', {dir: 1}); });
+    row.appendChild(next);
+  }
+  if (row.childNodes.length) wrap.appendChild(row);
+
+  if (cfg.contents) {
+    var toc = makeButton({label: cfg.contents}, 'lute-nav-toc');
+    wire(toc, function () { callFlutter('luteEpubTocOpen', {}); });
+    wrap.appendChild(toc);
+  }
+
+  host.appendChild(wrap);
+  return 'ok';
+})();
+""";
+

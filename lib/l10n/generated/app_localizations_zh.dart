@@ -79,4 +79,25 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsUiLanguageDesc => '应用界面使用的语言。仅保存于本机，与网页端设置相互独立。';
+
+  @override
+  String get readerPrevChapter => '上一章';
+
+  @override
+  String get readerNextChapter => '下一章';
+
+  @override
+  String get readerEndOfChapter => '本章完';
+
+  @override
+  String get readerEndOfBook => '全书完';
+
+  @override
+  String get readerContents => '目录';
+
+  @override
+  String get readerChaptersLoading => '正在加载章节…';
+
+  @override
+  String get readerChaptersUnavailable => '离线时无法获取章节列表';
 }

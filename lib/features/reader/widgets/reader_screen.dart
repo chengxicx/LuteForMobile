@@ -21,6 +21,7 @@ import '../../../features/settings/models/tts_settings.dart';
 import '../../../features/settings/models/settings.dart';
 import '../../../features/terms/providers/terms_provider.dart';
 import '../../books/providers/books_provider.dart';
+import '../../books/models/book.dart';
 import '../../../features/stats/providers/stats_provider.dart';
 import '../../../features/stats/models/stats_data.dart';
 import '../../../core/services/termux_service.dart';
@@ -34,6 +35,9 @@ import '../models/paragraph.dart';
 import '../models/term_form.dart';
 import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
+import '../models/chapter_nav.dart';
+import '../models/series_chapter.dart';
+import '../providers/series_chapters_provider.dart';
 import '../providers/reader_provider.dart';
 import '../providers/epub_offline_provider.dart';
 import '../providers/furigana_provider.dart';
@@ -56,11 +60,13 @@ import 'sentence_translation.dart';
 import 'book_completion_celebration_dialog.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../core/network/session_manager.dart';
+import '../../../l10n/generated/app_localizations.dart';
 import 'audio_player.dart';
 import 'package:song_mobile/app.dart';
 import 'manga_page_view.dart';
 import 'pdf_page_view.dart';
 import 'epub_chapter_view.dart';
+import 'chapter_contents_sheet.dart';
 import 'youtube_player_view.dart';
 import 'tts_player_widget.dart';
 import '../../shadowing/models/shadowing_sentence.dart';
@@ -1741,6 +1747,18 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   Widget _buildBody(bool isLoading, String? errorMessage, PageData? pageData) {
     final settings = ref.watch(settingsProvider);
 
+    // 章节目录比章节本身晚到：一次网络往返之后才知道 `4 / 55`。
+    // 到了就重画一次，让章末块的副文案补上 —— 光靠 watch 不够，因为
+    // watch 的是一次「已经解析好」的值，而这里要的是「到达」这个事件。
+    final navTag = pageData?.seriesTag;
+    if (navTag != null) {
+      ref.listen(seriesChaptersProvider(navTag), (previous, next) {
+        final arrived = previous?.asData?.value == null &&
+            next.asData?.value != null;
+        if (arrived && mounted) setState(() {});
+      });
+    }
+
     // 转圈延迟显示：启动恢复走本地页缓存，通常一两帧就位；立刻画进度圈
     // 会让每次冷启动都闪一下 loading。真的慢（缓存未命中 → 走网络）时才显示。
     if (isLoading) {
@@ -2053,6 +2071,18 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 _resetHideTimer();
               }
             },
+            // The end-of-chapter block: an EPUB chapter is its own book, so
+            // "next chapter" is a book switch, not a page turn.  Null for a
+            // book outside any set (and for fixed-layout pages, which have
+            // no flow to append to).
+            chapterNav: _buildChapterNav(pageData, settings),
+            onChapterNav: (direction) => _openChapter(
+              direction > 0
+                  ? (pageData.seriesNextBookId ?? 0)
+                  : (pageData.seriesPrevBookId ?? 0),
+            ),
+            onOpenContents: _openContents,
+            textSize: textSettings.textSize,
             onDoubleTap: (item) {
               _handleDoubleTap(item);
             },
@@ -3042,6 +3072,108 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           onClose: () => Navigator.of(context).pop(),
         );
       },
+    );
+  }
+
+  /// The end-of-chapter block this chapter should carry, or null when
+  /// there is nothing to navigate to.
+  ///
+  /// A chapter *is a book* here: an EPUB import splits a volume into one
+  /// Lute book per chapter, and the volume's tag is what groups them back
+  /// into a set.  The neighbours come from the server
+  /// (`PageData.seriesPrev/NextBookId`, already ordered by
+  /// `lute/book/series.py: series_neighbours`), so the arrows work even
+  /// before the chapter list arrives -- the list only adds the `3 / 55`
+  /// under each label, and a slow list delays the numbers, never the
+  /// buttons.
+  ChapterNavConfig? _buildChapterNav(PageData pageData, Settings settings) {
+    final chapter = pageData.epubChapter;
+    if (chapter == null || chapter.fixedLayout) return null;
+    final tag = pageData.seriesTag;
+    if (tag == null) return null;
+
+    final prevId = pageData.seriesPrevBookId;
+    final nextId = pageData.seriesNextBookId;
+    // A set with one chapter has nowhere to go; an "End of book" plate over
+    // an empty row of buttons would just be noise.
+    if (prevId == null && nextId == null) return null;
+
+    final l10n = AppLocalizations.of(context);
+    if (l10n == null) return null;
+
+    final chapters = ref.watch(seriesChaptersProvider(tag)).asData?.value;
+    final total = chapters?.length ?? 0;
+
+    ChapterNavTarget target(int bookId, String label) {
+      String? sub;
+      if (chapters != null && total > 1) {
+        for (final entry in chapters) {
+          if (entry.bookId == bookId) {
+            sub = '${entry.position} / $total';
+            break;
+          }
+        }
+      }
+      return ChapterNavTarget(label: label, sub: sub);
+    }
+
+    return ChapterNavConfig(
+      look: settings.epubLookMode,
+      // The last chapter of the set is the last chapter of the book: the
+      // plate is the only place the difference is visible.
+      endLabel: nextId == null
+          ? l10n.readerEndOfBook
+          : l10n.readerEndOfChapter,
+      prev: prevId == null
+          ? null
+          : target(prevId, l10n.readerPrevChapter),
+      next: nextId == null
+          ? null
+          : target(nextId, l10n.readerNextChapter),
+      contents: l10n.readerContents,
+    );
+  }
+
+  /// Opens another chapter of the set being read.
+  ///
+  /// Chapters are separate books, so this is a book switch: it goes through
+  /// the same navigation the shelf and the series list use, which also
+  /// makes the new chapter the remembered current book (what the reader
+  /// restores on the next launch).  The [Book] is passed along because a
+  /// member of a book set is hidden from the shelf listing, and without it
+  /// the reader would fall back to a title-less, language-less book.
+  void _openChapter(int bookId) {
+    if (bookId <= 0) return;
+    final tag = ref.read(readerProvider).pageData?.seriesTag;
+    Book? book;
+    if (tag != null) {
+      final chapters = ref.read(seriesChaptersProvider(tag)).asData?.value;
+      for (final entry in chapters ?? const <SeriesChapter>[]) {
+        if (entry.bookId == bookId) {
+          book = entry.book;
+          break;
+        }
+      }
+    }
+    TermTooltipClass.close();
+    ref.read(navigationProvider).navigateToReader(bookId, null, book);
+  }
+
+  /// The chapter list of the current set.
+  Future<void> _openContents() async {
+    final pageData = ref.read(readerProvider).pageData;
+    final tag = pageData?.seriesTag;
+    if (pageData == null || tag == null) return;
+    final l10n = AppLocalizations.of(context);
+    if (l10n == null) return;
+    await showChapterContentsSheet(
+      context: context,
+      tag: tag,
+      currentBookId: pageData.bookId,
+      title: l10n.readerContents,
+      loadingLabel: l10n.readerChaptersLoading,
+      emptyLabel: l10n.readerChaptersUnavailable,
+      onSelect: (chapter) => _openChapter(chapter.bookId),
     );
   }
 

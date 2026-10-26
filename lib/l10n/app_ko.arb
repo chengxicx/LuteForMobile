@@ -25,5 +25,13 @@
   "settingsSectionStorage": "저장소",
   "settingsSectionAppearance": "모양",
   "settingsUiLanguage": "인터페이스 언어",
-  "settingsUiLanguageDesc": "앱 인터페이스에 사용할 언어입니다. 이 기기에만 저장되며 웹 설정 페이지와 독립적입니다."
+  "settingsUiLanguageDesc": "앱 인터페이스에 사용할 언어입니다. 이 기기에만 저장되며 웹 설정 페이지와 독립적입니다.",
+
+  "readerPrevChapter": "이전 장",
+  "readerNextChapter": "다음 장",
+  "readerEndOfChapter": "이 장의 끝",
+  "readerEndOfBook": "이 책의 끝",
+  "readerContents": "목차",
+  "readerChaptersLoading": "장을 불러오는 중…",
+  "readerChaptersUnavailable": "오프라인에서는 장 목록을 불러올 수 없습니다"
 }

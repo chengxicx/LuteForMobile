@@ -80,4 +80,25 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get settingsUiLanguageDesc =>
       'アプリのインターフェースに使用する言語。この端末にのみ保存され、ウェブの設定ページとは独立しています。';
+
+  @override
+  String get readerPrevChapter => '前の章';
+
+  @override
+  String get readerNextChapter => '次の章';
+
+  @override
+  String get readerEndOfChapter => '本章の終わり';
+
+  @override
+  String get readerEndOfBook => '本書の終わり';
+
+  @override
+  String get readerContents => '目次';
+
+  @override
+  String get readerChaptersLoading => '章を読み込み中…';
+
+  @override
+  String get readerChaptersUnavailable => 'オフラインでは章の一覧を取得できません';
 }

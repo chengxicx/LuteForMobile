@@ -245,6 +245,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Language used for the app interface. Saved on this device only — independent of the web settings page.'**
   String get settingsUiLanguageDesc;
+
+  /// End-of-chapter button: open the previous chapter of the book set. Kept short (about 13 characters) so it fits a half-width button.
+  ///
+  /// In en, this message translates to:
+  /// **'Prev chapter'**
+  String get readerPrevChapter;
+
+  /// End-of-chapter button: open the next chapter of the book set.
+  ///
+  /// In en, this message translates to:
+  /// **'Next chapter'**
+  String get readerNextChapter;
+
+  /// Small plate above the end-of-chapter buttons on a chapter that has a following one.
+  ///
+  /// In en, this message translates to:
+  /// **'End of chapter'**
+  String get readerEndOfChapter;
+
+  /// Same plate on the last chapter of the book set.
+  ///
+  /// In en, this message translates to:
+  /// **'End of book'**
+  String get readerEndOfBook;
+
+  /// End-of-chapter row and sheet title: the chapter list of the book set.
+  ///
+  /// In en, this message translates to:
+  /// **'Contents'**
+  String get readerContents;
+
+  /// Contents sheet placeholder while the chapter list is being fetched.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading chapters…'**
+  String get readerChaptersLoading;
+
+  /// Contents sheet placeholder when the list could neither be fetched nor served from the cache.
+  ///
+  /// In en, this message translates to:
+  /// **'Chapter list unavailable offline'**
+  String get readerChaptersUnavailable;
 }
 
 class _AppLocalizationsDelegate

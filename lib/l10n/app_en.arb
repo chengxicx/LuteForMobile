@@ -51,5 +51,20 @@
   "settingsUiLanguage": "Interface language",
   "@settingsUiLanguage": { "description": "Settings row label: UI display language dropdown." },
   "settingsUiLanguageDesc": "Language used for the app interface. Saved on this device only — independent of the web settings page.",
-  "@settingsUiLanguageDesc": { "description": "Settings row description under the interface language dropdown." }
+  "@settingsUiLanguageDesc": { "description": "Settings row description under the interface language dropdown." },
+
+  "readerPrevChapter": "Prev chapter",
+  "@readerPrevChapter": { "description": "End-of-chapter button: open the previous chapter of the book set. Kept short (about 13 characters) so it fits a half-width button." },
+  "readerNextChapter": "Next chapter",
+  "@readerNextChapter": { "description": "End-of-chapter button: open the next chapter of the book set." },
+  "readerEndOfChapter": "End of chapter",
+  "@readerEndOfChapter": { "description": "Small plate above the end-of-chapter buttons on a chapter that has a following one." },
+  "readerEndOfBook": "End of book",
+  "@readerEndOfBook": { "description": "Same plate on the last chapter of the book set." },
+  "readerContents": "Contents",
+  "@readerContents": { "description": "End-of-chapter row and sheet title: the chapter list of the book set." },
+  "readerChaptersLoading": "Loading chapters…",
+  "@readerChaptersLoading": { "description": "Contents sheet placeholder while the chapter list is being fetched." },
+  "readerChaptersUnavailable": "Chapter list unavailable offline",
+  "@readerChaptersUnavailable": { "description": "Contents sheet placeholder when the list could neither be fetched nor served from the cache." }
 }

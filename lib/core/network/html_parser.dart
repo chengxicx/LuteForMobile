@@ -17,6 +17,17 @@ import '../../features/terms/models/term.dart';
 import 'dictionary_service.dart';
 import 'local_dict.dart';
 
+/// The book-set breadcrumbs `read/index.html` renders for a book that is
+/// one chapter of a series: the two hidden neighbour ids and the tag on
+/// the "back to book set" link.
+class _SeriesInfo {
+  final String? tag;
+  final int? prevBookId;
+  final int? nextBookId;
+
+  const _SeriesInfo({this.tag, this.prevBookId, this.nextBookId});
+}
+
 class HtmlParser {
   final Function(String, int)? searchTermsProvider;
 
@@ -77,6 +88,11 @@ class HtmlParser {
         _extractFuriganaConfig(metadataDocument) ??
         _extractFuriganaConfig(textDocument);
 
+    // Book-set breadcrumbs live in the reading page (read/index.html), i.e.
+    // the metadata document; the text fragment never carries them.
+    final series =
+        _extractSeries(metadataDocument) ?? _extractSeries(textDocument);
+
     return PageData(
       bookId: bookId,
       currentPage: currentPage,
@@ -96,7 +112,48 @@ class HtmlParser {
       pageCueMap: pageCueMap,
       furiganaLangId: furigana?.langId,
       furiganaScript: furigana?.script,
+      seriesTag: series?.tag,
+      seriesPrevBookId: series?.prevBookId,
+      seriesNextBookId: series?.nextBookId,
     );
+  }
+
+  /// The book set this book sits in, or null when it stands alone.
+  ///
+  /// An EPUB import turns every chapter into its own Lute book, and the
+  /// chapters of one volume share a tag the server is configured to treat
+  /// as a series.  `read/index.html` renders, for exactly those books:
+  ///
+  ///   * `<input id="series_next_book_id" value="927">` (and the `_prev_`
+  ///     twin), computed by `lute/book/series.py: series_neighbours`;
+  ///   * `<a class="end-icon-btn toc" href="/book/series/<tag>">`.
+  ///
+  /// Both are absent for a standalone book, which is what keeps the
+  /// chapter navigation out of books that have no chapters.
+  _SeriesInfo? _extractSeries(html.Document document) {
+    int? readId(String selector) {
+      final raw = document.querySelector(selector)?.attributes['value']?.trim();
+      if (raw == null || raw.isEmpty) return null;
+      final id = int.tryParse(raw);
+      return (id != null && id > 0) ? id : null;
+    }
+
+    final prev = readId('#series_prev_book_id');
+    final next = readId('#series_next_book_id');
+
+    String? tag;
+    for (final link in document.querySelectorAll('a[href]')) {
+      final href = (link.attributes['href'] ?? '').trim();
+      const prefix = '/book/series/';
+      if (!href.startsWith(prefix)) continue;
+      final raw = href.substring(prefix.length).split('?').first.split('#').first;
+      if (raw.isEmpty) continue;
+      tag = Uri.decodeComponent(raw);
+      break;
+    }
+
+    if (prev == null && next == null && tag == null) return null;
+    return _SeriesInfo(tag: tag, prevBookId: prev, nextBookId: next);
   }
 
   String? _extractTitle(html.Document document) {

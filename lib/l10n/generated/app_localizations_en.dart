@@ -80,4 +80,25 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get settingsUiLanguageDesc =>
       'Language used for the app interface. Saved on this device only — independent of the web settings page.';
+
+  @override
+  String get readerPrevChapter => 'Prev chapter';
+
+  @override
+  String get readerNextChapter => 'Next chapter';
+
+  @override
+  String get readerEndOfChapter => 'End of chapter';
+
+  @override
+  String get readerEndOfBook => 'End of book';
+
+  @override
+  String get readerContents => 'Contents';
+
+  @override
+  String get readerChaptersLoading => 'Loading chapters…';
+
+  @override
+  String get readerChaptersUnavailable => 'Chapter list unavailable offline';
 }

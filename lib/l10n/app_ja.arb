@@ -25,5 +25,13 @@
   "settingsSectionStorage": "ストレージ",
   "settingsSectionAppearance": "外観",
   "settingsUiLanguage": "表示言語",
-  "settingsUiLanguageDesc": "アプリのインターフェースに使用する言語。この端末にのみ保存され、ウェブの設定ページとは独立しています。"
+  "settingsUiLanguageDesc": "アプリのインターフェースに使用する言語。この端末にのみ保存され、ウェブの設定ページとは独立しています。",
+
+  "readerPrevChapter": "前の章",
+  "readerNextChapter": "次の章",
+  "readerEndOfChapter": "本章の終わり",
+  "readerEndOfBook": "本書の終わり",
+  "readerContents": "目次",
+  "readerChaptersLoading": "章を読み込み中…",
+  "readerChaptersUnavailable": "オフラインでは章の一覧を取得できません"
 }

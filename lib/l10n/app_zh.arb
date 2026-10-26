@@ -25,5 +25,13 @@
   "settingsSectionStorage": "存储",
   "settingsSectionAppearance": "外观",
   "settingsUiLanguage": "界面语言",
-  "settingsUiLanguageDesc": "应用界面使用的语言。仅保存于本机，与网页端设置相互独立。"
+  "settingsUiLanguageDesc": "应用界面使用的语言。仅保存于本机，与网页端设置相互独立。",
+
+  "readerPrevChapter": "上一章",
+  "readerNextChapter": "下一章",
+  "readerEndOfChapter": "本章完",
+  "readerEndOfBook": "全书完",
+  "readerContents": "目录",
+  "readerChaptersLoading": "正在加载章节…",
+  "readerChaptersUnavailable": "离线时无法获取章节列表"
 }

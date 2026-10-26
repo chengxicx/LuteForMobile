@@ -67,6 +67,26 @@ class PageData {
   /// (`lute-furigana.js`: `needs_reading`).
   final String? furiganaScript;
 
+  /// The book set (series) this book belongs to, as the server names it.
+  ///
+  /// An EPUB import writes **one Lute book per chapter**, and the chapters
+  /// of one volume share a book tag that the server is configured to treat
+  /// as a series (`book_series_tags`).  `read/index.html` renders the tag
+  /// only for such a book -- as the "back to book set" link at the end of
+  /// the text -- so its presence *is* the answer to "is this a chapter of
+  /// something bigger".  Null for a standalone book.
+  final String? seriesTag;
+
+  /// The chapter books on either side of this one in that set.
+  ///
+  /// The server works these out itself (`lute/book/series.py:
+  /// series_neighbours`) and writes them into the reading page as hidden
+  /// inputs, so the client inherits the same order the web reader's
+  /// end-of-book arrows use (non-archived first, then natural title
+  /// order).  Null at the start / end of the set.
+  final int? seriesPrevBookId;
+  final int? seriesNextBookId;
+
   PageData({
     required this.bookId,
     required this.currentPage,
@@ -86,6 +106,9 @@ class PageData {
     this.pageCueMap = const [],
     this.furiganaLangId,
     this.furiganaScript,
+    this.seriesTag,
+    this.seriesPrevBookId,
+    this.seriesNextBookId,
   });
 
   /// A book has playable audio when it has an uploaded audio file
@@ -129,6 +152,9 @@ class PageData {
     List<int>? pageCueMap,
     int? furiganaLangId,
     String? furiganaScript,
+    String? seriesTag,
+    int? seriesPrevBookId,
+    int? seriesNextBookId,
   }) {
     return PageData(
       bookId: bookId ?? this.bookId,
@@ -149,6 +175,9 @@ class PageData {
       pageCueMap: pageCueMap ?? this.pageCueMap,
       furiganaLangId: furiganaLangId ?? this.furiganaLangId,
       furiganaScript: furiganaScript ?? this.furiganaScript,
+      seriesTag: seriesTag ?? this.seriesTag,
+      seriesPrevBookId: seriesPrevBookId ?? this.seriesPrevBookId,
+      seriesNextBookId: seriesNextBookId ?? this.seriesNextBookId,
     );
   }
 

@@ -80,4 +80,25 @@ class AppLocalizationsKo extends AppLocalizations {
   @override
   String get settingsUiLanguageDesc =>
       '앱 인터페이스에 사용할 언어입니다. 이 기기에만 저장되며 웹 설정 페이지와 독립적입니다.';
+
+  @override
+  String get readerPrevChapter => '이전 장';
+
+  @override
+  String get readerNextChapter => '다음 장';
+
+  @override
+  String get readerEndOfChapter => '이 장의 끝';
+
+  @override
+  String get readerEndOfBook => '이 책의 끝';
+
+  @override
+  String get readerContents => '목차';
+
+  @override
+  String get readerChaptersLoading => '장을 불러오는 중…';
+
+  @override
+  String get readerChaptersUnavailable => '오프라인에서는 장 목록을 불러올 수 없습니다';
 }
