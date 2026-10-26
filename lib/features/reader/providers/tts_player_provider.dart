@@ -8,6 +8,7 @@ import '../../../core/services/playback_foreground_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import '../../../shared/utils/tts_language_mapper.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
+import '../models/loop_mode.dart';
 import 'current_book_provider.dart';
 
 /// A raw sentence of the page, as gathered by the reader.  The provider
@@ -78,9 +79,12 @@ class TTSPlayerState {
     return '书的语言未解析，朗读按回退语言 ${languageTag ?? defaultTtsLanguageTag}';
   }
 
-  /// Loop the sentence the playhead is on, restarting it when it ends.
-  /// Mirrors the web player's Loop button.
-  final bool loopMode;
+  /// 循环键的三态：关 / 单句循环 / 整本连续朗读。
+  ///
+  /// [LoopMode.sentence] 重播当前句；[LoopMode.all] 正常往后念，读到本页
+  /// 最后一句时请 reader 翻页接着念（书末回到第 1 页），见
+  /// [onRequestNextPage]。
+  final LoopMode loopMode;
 
   /// Stop at the end of every sentence, rewound to that sentence's start so
   /// pressing play reads it again.  Mirrors the web player's Auto-pause button.
@@ -101,7 +105,7 @@ class TTSPlayerState {
     this.languageResolved = true,
     this.languageNoticeDismissed = false,
     this.fallbackNotice,
-    this.loopMode = false,
+    this.loopMode = LoopMode.off,
     this.autoPauseMode = false,
     this.playbackRate = 1.0,
   });
@@ -148,7 +152,7 @@ class TTSPlayerState {
     bool? languageNoticeDismissed,
     String? fallbackNotice,
     bool clearFallbackNotice = false,
-    bool? loopMode,
+    LoopMode? loopMode,
     bool? autoPauseMode,
     double? playbackRate,
   }) {
@@ -204,6 +208,13 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
 
   Timer? _positionTimer;
   StreamSubscription<PlayerState>? _serviceStateSubscription;
+
+  /// 整本连续朗读（[LoopMode.all]）读到本页最后一句时，由 reader 装上：
+  /// 翻到下一页（书末回第 1 页）并把新页的句子交给播放器。
+  ///
+  /// 播放器不持有书的页码 —— 翻页、保存进度、页面转场都在 reader 里。返回
+  /// false 表示没有可去的一页（还没加载页 / 加载失败），此时按整页读完收尾。
+  Future<bool> Function()? onRequestNextPage;
 
   /// 本地引擎的错误流订阅 —— 它不在 [playerStateStream] 上，见
   /// [_subscribeToService] 与 [OnDeviceTTSService.engineErrorStream]。
@@ -543,17 +554,17 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
     }
   }
 
-  /// Turn single-sentence looping on or off.
+  /// 循环键：点一下走一格 off → 单句 → 整本 → off。
   ///
   /// Web behaviour, kept deliberately: turning loop **on** while the player
   /// sits paused at the end of a sentence (the auto-pause case) starts the
   /// loop straight away rather than waiting for another press of play --
   /// "press loop to keep looping".  Turning it off never pauses.
-  Future<void> toggleLoopMode() async {
-    final newLoop = !state.loopMode;
-    state = state.copyWith(loopMode: newLoop);
+  Future<void> cycleLoopMode() async {
+    final next = state.loopMode.next;
+    state = state.copyWith(loopMode: next);
 
-    if (newLoop &&
+    if (next.isOn &&
         state.status == TTSPlayerStatus.paused &&
         state.currentSnippet != null) {
       await play();
@@ -564,6 +575,12 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   /// matching the web player (`media-player-base.js`, `ttsAdvance`).
   void toggleAutoPauseMode() {
     state = state.copyWith(autoPauseMode: !state.autoPauseMode);
+  }
+
+  /// 自动暂停键在循环开着时被压制（loop wins）。此时点它 = 关掉循环、
+  /// 打开自动暂停 —— 用户按的是"我要单句停"，不是"再叠一层"。
+  void setAutoPauseOverLoop() {
+    state = state.copyWith(loopMode: LoopMode.off, autoPauseMode: true);
   }
 
   /// Nudge the speaking rate by [delta], or jump straight to [rate].
@@ -1158,14 +1175,17 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
 
     // Loop beats auto-pause when both are on: the sentence repeats instead of
     // stopping.  Same precedence as the web player.
-    if (state.loopMode &&
+    //
+    // 只有"单句循环"在这里回卷；整本循环（[LoopMode.all]）照常往后念，
+    // 见下面的 canGoNext / onRequestNextPage。
+    if (state.loopMode == LoopMode.sentence &&
         state.currentSnippet != null &&
         _shouldReplayCurrentForLoop()) {
       unawaited(_replayCurrentForLoop());
       return;
     }
 
-    if (state.autoPauseMode) {
+    if (!state.loopMode.isOn && state.autoPauseMode) {
       // Stop at the end of this sentence and rewind to its start, so pressing
       // play reads it again.  Clearing _advanceOnComplete is what makes that
       // press a fresh start rather than a continuation.
@@ -1196,6 +1216,9 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
             : TTSPlayerStatus.loading,
       );
       unawaited(_speakCurrent());
+    } else if (state.loopMode == LoopMode.all && onRequestNextPage != null) {
+      // 整本连续朗读：本页最后一句念完，翻页接着念。
+      unawaited(_continueOnNextPage());
     } else {
       _positionTimer?.cancel();
       _advanceOnComplete = false;
@@ -1214,6 +1237,60 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         PlaybackForegroundService.release(PlaybackForegroundService.tts),
       );
     }
+  }
+
+  /// 整本连续朗读（[LoopMode.all]）翻页续播。
+  ///
+  /// 播放器只知道"这一页"的句子表，翻页/进度/转场都在 reader 里，所以这里
+  /// 把"下一页"委托给 [onRequestNextPage]，它装好新页的句子后返回 true。
+  /// 换页期间用户可能关掉循环或按停 —— `loadPage` 会把状态重置成 idle，
+  /// 因此回来先看 [TTSPlayerState.hasSnippets] 与循环档位再决定是否开口。
+  Future<void> _continueOnNextPage() async {
+    final request = onRequestNextPage;
+    if (request == null) return;
+
+    _positionTimer?.cancel();
+    _advanceOnComplete = false;
+    _speakStartedAt = null;
+    // 旧页的句子表马上作废：先落一个"正在换页"的状态，别让播放条停在
+    // 末句上（否则看起来像读完了）。
+    state = state.copyWith(
+      currentIndex: -1,
+      positionInSnippet: Duration.zero,
+      status: TTSPlayerStatus.loading,
+    );
+
+    var moved = false;
+    try {
+      moved = await request();
+    } catch (_) {
+      moved = false;
+    }
+
+    if (!ref.mounted || !moved || !state.hasSnippets) {
+      state = state.copyWith(
+        currentIndex: -1,
+        positionInSnippet: Duration.zero,
+        status: TTSPlayerStatus.idle,
+      );
+      unawaited(
+        PlaybackForegroundService.release(PlaybackForegroundService.tts),
+      );
+      return;
+    }
+
+    // 换页途中循环被关掉 / 换成单句：新页照常装着，但不自动开口 —— 用户
+    // 的按键意图优先于这条自动翻页链路。
+    if (state.loopMode != LoopMode.all) {
+      state = state.copyWith(
+        currentIndex: -1,
+        positionInSnippet: Duration.zero,
+        status: TTSPlayerStatus.idle,
+      );
+      return;
+    }
+
+    await play(tickPosition: _tickPosition);
   }
 
   void _startPositionTimer() {

@@ -22,6 +22,7 @@ A Flutter mobile frontend for Lute v3 language learning server. Read books and l
 - ✅ Adding Books
 - ✅ Language Settings
 - ✅ Term Image Support 
+- ✅ Reader-mode EPUB (original book styling, look modes, zoom, scroll restore, fixed-layout chapters; rendered by the server's `/read/epub_render` page in a WebView)
 
 ## Platforms
 Native:

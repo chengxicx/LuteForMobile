@@ -2,6 +2,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'dart:convert';
 import 'package:html/dom.dart' as html;
 import '../../core/logger/api_logger.dart';
+import '../../features/reader/models/epub_chapter.dart';
 import '../../features/reader/models/text_item.dart';
 import '../../features/reader/models/paragraph.dart';
 import '../../features/reader/models/page_data.dart';
@@ -14,6 +15,7 @@ import '../../shared/models/language.dart';
 import '../../shared/models/language_card_settings.dart';
 import '../../features/terms/models/term.dart';
 import 'dictionary_service.dart';
+import 'local_dict.dart';
 
 class HtmlParser {
   final Function(String, int)? searchTermsProvider;
@@ -31,7 +33,6 @@ class HtmlParser {
     final title = _extractTitle(metadataDocument);
     final currentPage = _extractCurrentPage(metadataDocument);
     final pageCount = _extractPageCount(metadataDocument);
-    final paragraphs = _extractParagraphs(textDocument);
     final audioFilename = _extractAudioFilename(metadataDocument);
     final audioCurrentPos = _extractAudioCurrentPos(
       metadataDocument,
@@ -43,6 +44,11 @@ class HtmlParser {
     );
     final mangaPage = _extractManga(textDocument, currentPage);
     final pdfPage = _extractPdf(textDocument, currentPage);
+    // Reader-mode EPUB: the fragment carries no .textsentence spans (the
+    // WebView injects them), so its paragraphs are rebuilt from the token
+    // stream instead of the DOM.
+    final epub = _extractEpub(textDocument);
+    final paragraphs = epub?.paragraphs ?? _extractParagraphs(textDocument);
     // The LUTE_YT_DATA block (YouTube videoId + MP3 audioUrl) is part of
     // the page body (the youtube/audio player include), which can arrive in
     // the text or the metadata document depending on endpoint.  The bilibili
@@ -83,6 +89,7 @@ class HtmlParser {
       audioBookmarks: audioBookmarks,
       mangaPage: mangaPage,
       pdfPage: pdfPage,
+      epubChapter: epub?.chapter,
       youtube: youtube,
       bilibili: bilibili,
       cues: cues,
@@ -285,6 +292,106 @@ class HtmlParser {
   double _extractCqw(String style) {
     final match = RegExp('font-size\\s*:\\s*([0-9.]+)cqw').firstMatch(style);
     return match != null ? double.tryParse(match.group(1)!) ?? 0 : 0;
+  }
+
+  /// Extracts a reader-mode EPUB chapter from the page fragment served by
+  /// the web app (`read/epub_page.html`).
+  ///
+  /// Unlike manga/PDF the chapter is *not* rendered natively -- the reader
+  /// swaps in [EpubChapterView], a WebView loading /read/epub_render, which
+  /// mounts the word spans exactly like the web reader.  What the app needs
+  /// from this fragment is
+  ///
+  ///  * the chapter descriptor (stylesheet URLs, fixed-layout viewport), to
+  ///    switch the reader over and drive zoom buttons, and
+  ///  * the token stream (`#lute-epub-tokens`,
+  ///    `[text, wo_id, status, sentence, paragraph]`, wo_id 0 / status -1
+  ///    for non-words), rebuilt here as the same Paragraph/TextItem model a
+  ///    text page parses into -- so word counts, rest-known, status
+  ///    overlays and the word-id keyed term card all keep working.
+  ///
+  /// Returns null when the page is any other kind.
+  ({EpubChapterData chapter, List<Paragraph> paragraphs})? _extractEpub(
+    html.Document document,
+  ) {
+    final chapterEl = document.querySelector('#epub-chapter');
+    if (chapterEl == null) return null;
+
+    List<dynamic>? tokens;
+    final tokensNode = document.querySelector('#lute-epub-tokens');
+    if (tokensNode != null) {
+      try {
+        tokens = jsonDecode(tokensNode.text) as List<dynamic>?;
+      } catch (_) {
+        tokens = null;
+      }
+    }
+
+    final paragraphs = <Paragraph>[];
+    final items = <TextItem>[];
+    int? currentSentence;
+    int order = 0;
+
+    void flushSentence() {
+      if (items.isEmpty) return;
+      paragraphs.add(Paragraph(id: paragraphs.length, textItems: List.of(items)));
+      items.clear();
+    }
+
+    for (final raw in tokens ?? const <dynamic>[]) {
+      if (raw is! List || raw.length < 3) continue;
+      final text = raw[0]?.toString() ?? '';
+      final wid = (raw[1] is num) ? (raw[1] as num).toInt() : 0;
+      final status = (raw[2] is num) ? (raw[2] as num).toInt() : -1;
+      final sentence =
+          raw.length > 3 && raw[3] is num ? (raw[3] as num).toInt() : 0;
+      final paragraphId =
+          raw.length > 4 && raw[4] is num ? (raw[4] as num).toInt() : 0;
+
+      final isWord = wid > 0;
+      if (currentSentence != null && sentence != currentSentence) {
+        flushSentence();
+      }
+      currentSentence = sentence;
+      items.add(
+        TextItem(
+          text: text,
+          statusClass: isWord
+              ? (status >= 0 ? 'status$status' : 'status0')
+              : '',
+          wordId: isWord ? wid : null,
+          sentenceId: sentence,
+          paragraphId: paragraphId,
+          isStartOfSentence: items.isEmpty,
+          order: order++,
+        ),
+      );
+    }
+    flushSentence();
+
+    // A fixed-layout chapter declares its pixel viewport on the wrapper
+    // (recorded at import from the chapter's own viewport meta).
+    final fixedBody = chapterEl.querySelector('.epub-body[data-epub-viewport]');
+    double? viewportWidth;
+    double? viewportHeight;
+    var fixedLayout = false;
+    if (fixedBody != null) {
+      final vp = (fixedBody.attributes['data-epub-viewport'] ?? '').split('x');
+      viewportWidth = vp.isNotEmpty ? double.tryParse(vp[0].trim()) : null;
+      viewportHeight = vp.length > 1 ? double.tryParse(vp[1].trim()) : null;
+      fixedLayout = viewportWidth != null && viewportHeight != null;
+    }
+
+    return (
+      chapter: EpubChapterData(
+        cssUrl: chapterEl.attributes['data-epub-css'] ?? '',
+        origCssUrl: chapterEl.attributes['data-epub-orig-css'] ?? '',
+        fixedLayout: fixedLayout,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+      ),
+      paragraphs: paragraphs,
+    );
   }
 
   /// Extracts YouTube video data from the page metadata.  The web player
@@ -1025,8 +1132,21 @@ class HtmlParser {
       }
     }
 
+    // The server's own copy of the term text.  It equals `text` unless the
+    // user re-cased the word in the editor, and it is what tells
+    // `/read/edit_term` that this is an *edit* rather than a duplicate new
+    // term.  See `TermForm.toFormData`.
+    final originalTextInput = document.querySelector(
+      'input[name="original_text"]',
+    );
+    final originalTextValue = originalTextInput?.attributes['value']?.trim();
+    final originalText = (originalTextValue == null || originalTextValue.isEmpty)
+        ? (parsedTermId != null && term.isNotEmpty ? term : null)
+        : originalTextValue;
+
     return TermForm(
       term: term,
+      originalText: originalText,
       translation: translation,
       termId: parsedTermId,
       languageId: languageId,
@@ -1218,6 +1338,24 @@ class HtmlParser {
         .toList();
   }
 
+  /// 池下拉框里当前选中文件的展示名（服务端给的 `label`，形如
+  /// `もじ辞書 · 120,000 entries · 12 MB`），取 `·` 前的标题部分。
+  ///
+  /// 本地词典的文本输入框里只有文件名，直接把文件名当名字既难认、又不稳
+  /// （非 ASCII 的 mdx 名在池里是 mangled 的 ASCII 替身）。
+  String? _localDictionaryLabel(html.Element entry) {
+    final select = entry.querySelector('select[name*="dicturi"]');
+    if (select == null) return null;
+    for (final option in select.querySelectorAll('option')) {
+      if (!option.attributes.containsKey('selected')) continue;
+      final title = option.text.split('·').first.trim();
+      if (title.isEmpty) return null;
+      if (title.startsWith('(')) return null; // "(not installed) ..."
+      return title;
+    }
+    return null;
+  }
+
   List<DictionarySource> parseLanguageDictionaries(String htmlContent) {
     final document = html_parser.parse(htmlContent);
     final dictionaries = <DictionarySource>[];
@@ -1243,9 +1381,29 @@ class HtmlParser {
       if (!isActive) continue;
       if (usefor != 'terms') continue;
 
-      String displayName = _extractDictionaryName(uri);
+      final isLocal =
+          _getSelectedOptionValue(
+            entry.querySelector('select[name*="dicttype"]'),
+          ) ==
+          'localdict';
+      // 本地词典的 uri 是池里的 .db 文件名；类型下拉缺失时按形状兜底。
+      final local = isLocal || looksLikeLocalDictFile(uri);
 
-      dictionaries.add(DictionarySource(name: displayName, urlTemplate: uri));
+      String displayName;
+      if (local) {
+        displayName =
+            _localDictionaryLabel(entry) ?? localDictFallbackName(uri);
+      } else {
+        displayName = _extractDictionaryName(uri);
+      }
+
+      dictionaries.add(
+        DictionarySource(
+          name: displayName,
+          urlTemplate: uri,
+          isLocal: local,
+        ),
+      );
     }
 
     return dictionaries;
@@ -1276,9 +1434,28 @@ class HtmlParser {
       if (!isActive) continue;
       if (usefor != 'sentences') continue;
 
-      String displayName = _extractDictionaryName(uri);
+      final isLocal =
+          _getSelectedOptionValue(
+            entry.querySelector('select[name*="dicttype"]'),
+          ) ==
+          'localdict';
+      final local = isLocal || looksLikeLocalDictFile(uri);
 
-      dictionaries.add(DictionarySource(name: displayName, urlTemplate: uri));
+      String displayName;
+      if (local) {
+        displayName =
+            _localDictionaryLabel(entry) ?? localDictFallbackName(uri);
+      } else {
+        displayName = _extractDictionaryName(uri);
+      }
+
+      dictionaries.add(
+        DictionarySource(
+          name: displayName,
+          urlTemplate: uri,
+          isLocal: local,
+        ),
+      );
     }
 
     return dictionaries;
@@ -1338,8 +1515,11 @@ class HtmlParser {
 
       final cleanHost = host.split('.').take(2).join('.');
       final words = cleanHost.split('.');
+      // 本地词典的模板是裸文件名，Uri.parse 得到空 host；这里要是直接取
+      // w[0] 就会 RangeError（以前被外层 catch 兜成 "Dictionary"）。
+      if (words.isEmpty || words.first.isEmpty) return 'Dictionary';
       final formattedWords = words
-          .map((w) => w[0].toUpperCase() + w.substring(1))
+          .map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1))
           .toList();
       if (formattedWords.length >= 2) {
         return formattedWords.join(' ');

@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/dictionary_service.dart';
+import '../../../core/network/session_manager.dart';
+import '../../../core/dict/dict_repository.dart';
 import '../../settings/models/ai_settings.dart';
 import '../../settings/providers/ai_settings_provider.dart';
 import '../../../core/providers/ai_provider.dart';
 import '../providers/current_book_provider.dart';
+import '../../../shared/providers/network_providers.dart';
 import '../../../shared/theme/theme_extensions.dart';
 
 enum DictionaryTabType { dictionary, ai }
@@ -17,6 +20,9 @@ enum AITabType { translation, virtualDictionary }
 
 class DictionaryView extends ConsumerStatefulWidget {
   final String term;
+
+  /// 词条读音；本机词典里很多词条是按假名读音建键的，带上它能命中更多。
+  final String? reading;
   final String? sentence;
   final List<DictionarySource> dictionaries;
   final int languageId;
@@ -28,6 +34,7 @@ class DictionaryView extends ConsumerStatefulWidget {
   const DictionaryView({
     super.key,
     required this.term,
+    this.reading,
     this.sentence,
     required this.dictionaries,
     required this.languageId,
@@ -58,12 +65,19 @@ class _DictionaryViewState extends ConsumerState<DictionaryView> {
   bool _hasFetchedVirtualDict = false;
   final Set<int> _preloadedPages = {};
   bool _isPreloading = false;
+  bool _loginNoticeShown = false;
+
+  /// 本地词典（服务器词典池里那几本）在本机池里的查询结果，按 page index。
+  /// 命中就直接渲染文本，不再请求服务器——断网也能看。
+  Map<int, PoolLookupResult> _localLookups = const {};
+  bool _localLookupsDone = false;
 
   @override
   void initState() {
     super.initState();
     _pageController = PageController(initialPage: 0);
     _loadInitialPage();
+    _resolveLocalLookups();
   }
 
   @override
@@ -94,6 +108,39 @@ class _DictionaryViewState extends ConsumerState<DictionaryView> {
 
     setState(() {
       _hasLoaded = true;
+    });
+  }
+
+  /// 先把"本地词典"在本机池里查一遍，决定每页是本地渲染还是回落服务器。
+  ///
+  /// 设置页把池里的 `.db` 下载到本机后，查词完全不需要网络：词典键查询是
+  /// 毫秒级的。以前这里一律走服务器 `/read/localdict`（把渲染好的 HTML 塞进
+  /// WebView），断网或服务端抖动时就是一块黑屏 / Cloudflare 错误页。
+  Future<void> _resolveLocalLookups() async {
+    final localIndexes = <int>[
+      for (var i = 0; i < widget.dictionaries.length; i++)
+        if (widget.dictionaries[i].isLocalDictionary) i,
+    ];
+    if (localIndexes.isEmpty) return;
+
+    final repo = ref.read(dictRepositoryProvider);
+    final results = <int, PoolLookupResult>{};
+    for (final i in localIndexes) {
+      try {
+        results[i] = await repo.lookupInPool(
+          filename: widget.dictionaries[i].urlTemplate,
+          term: widget.term,
+          reading: widget.reading,
+        );
+      } catch (_) {
+        results[i] = const PoolLookupResult(available: false);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _localLookups = results;
+      _localLookupsDone = true;
     });
   }
 
@@ -865,38 +912,238 @@ class _DictionaryViewState extends ConsumerState<DictionaryView> {
     DictionarySource dictionary,
     int index,
   ) {
-    final url = widget.dictionaryService.buildUrl(
-      widget.term,
-      dictionary.urlTemplate,
+    // 本地词典：设置页下载进本机池的那一本直接查本机 sqlite，断网也能看。
+    // 只有"本机没有这本词典"（还没下载 / 文件坏了）时才回落服务器渲染的
+    // HTML——那时和在 Web 端看词典是一样的。
+    if (dictionary.isLocalDictionary) {
+      if (!_localLookupsDone) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      final local = _localLookups[index];
+      if (local != null && local.available) {
+        return _buildLocalGlossPage(context, local.gloss);
+      }
+    }
+
+    // 本地词典的模板是服务器池里的 .db 文件名，必须换成服务端的查询路由；
+    // 直接把它塞给 WebUri 会变成 http://<文件名>/（ERR_NAME_NOT_RESOLVED）。
+    final serverUrl = ref.read(apiServiceProvider).baseUrl;
+    final url = widget.dictionaryService.buildDictionaryUrl(
+      term: widget.term,
+      dictionary: dictionary,
+      languageId: widget.languageId,
+      serverUrl: serverUrl,
     );
 
     return LayoutBuilder(
       builder: (context, constraints) {
         return SizedBox(
           height: constraints.maxHeight,
-          child: InAppWebView(
-            initialUrlRequest: URLRequest(url: WebUri(url)),
-            initialSettings: InAppWebViewSettings(
-              sharedCookiesEnabled: true,
-              cacheEnabled: true,
-              javaScriptEnabled: true,
-              userAgent:
-                  'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+          child: _RemoteDictWebView(
+            url: url,
+            // 凭证只发给自己的服务器：在线词典（jisho / weblio / 有道…）
+            // 是第三方站点，绝不能带上 Basic Auth 与会话 cookie。
+            headers: dictionary.isLocalDictionary
+                ? SessionManager.authHeaders()
+                : null,
+            settings: DictionaryService.webviewSettings(
+              localDictionary: dictionary.isLocalDictionary,
             ),
-            gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
-              Factory(() => VerticalDragGestureRecognizer()),
-            },
-            onWebViewCreated: (controller) {
+            onCreated: (controller) {
               _webviewControllers[dictionary.hashCode] = controller;
+              // 上面的 header 只作用于首个请求：本地词典页里的交叉引用
+              // （← /read/localdict/... 链接）是 WebView 自己发起的后续
+              // 导航，带不上自定义 header，多用户模式下会被 302 到 /login。
+              // 把会话 cookie 写进 WebView 的 cookie store 才能一路可用。
+              if (dictionary.isLocalDictionary) {
+                unawaited(DictionaryService.installSessionCookie(serverUrl));
+              }
             },
             onLoadStop: (controller, url) {
               if (index == _currentPage) {
                 _preloadAdjacentPages();
               }
+              if (url != null && url.path.contains('/login')) {
+                _reportLoginRequired();
+              }
             },
           ),
         );
       },
+    );
+  }
+
+  /// 本机词典释义：纯文本按行渲染（`.db` 里的释义本来就是剥过 HTML 的）。
+  Widget _buildLocalGlossPage(BuildContext context, String? gloss) {
+    final text = gloss?.trim() ?? '';
+    if (text.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Not in the installed dictionary.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: context.appColorScheme.text.primary.withValues(
+                alpha: 0.6,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      child: Text(
+        text,
+        style: Theme.of(
+          context,
+        ).textTheme.bodyMedium?.copyWith(height: 1.55),
+      ),
+    );
+  }
+
+  /// 本地词典页被登录门禁重定向时给一次提示，而不是让用户盯着登录页。
+  void _reportLoginRequired() {
+    if (_loginNoticeShown || !mounted) return;
+    _loginNoticeShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Server login required for local dictionaries. '
+            'Log in under Settings > Server.',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    });
+  }
+}
+
+/// 需要联网的词典页（在线词典，以及本机没下载的本地词典）。
+///
+/// 加载失败时必须自己说明白：WebView 默认给的是"黑屏"（还没画出内容就断了）
+/// 或者满屏 Cloudflare / 浏览器的英文错误页，用户看到的就是"词典是个黑框"。
+/// 这里垫一层自己的底色，并在主文档出错时盖一张可读的失败提示 + 重试。
+class _RemoteDictWebView extends StatefulWidget {
+  const _RemoteDictWebView({
+    required this.url,
+    required this.headers,
+    required this.settings,
+    this.onCreated,
+    this.onLoadStop,
+  });
+
+  final String url;
+  final Map<String, String>? headers;
+  final InAppWebViewSettings settings;
+  final void Function(InAppWebViewController)? onCreated;
+  final void Function(InAppWebViewController, WebUri?)? onLoadStop;
+
+  @override
+  State<_RemoteDictWebView> createState() => _RemoteDictWebViewState();
+}
+
+class _RemoteDictWebViewState extends State<_RemoteDictWebView> {
+  InAppWebViewController? _controller;
+  String? _error;
+
+  void _fail(String message) {
+    if (!mounted || _error == message) return;
+    setState(() => _error = message);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // 底色：WebView 还没画出第一帧、或者加载被打断时，露出来的是这个
+        // 而不是平台视图的黑。
+        Positioned.fill(
+          child: ColoredBox(color: context.appColorScheme.background.surface),
+        ),
+        InAppWebView(
+          initialUrlRequest: URLRequest(
+            url: WebUri(widget.url),
+            headers: widget.headers,
+          ),
+          initialSettings: widget.settings,
+          gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+            Factory(() => VerticalDragGestureRecognizer()),
+          },
+          onWebViewCreated: (controller) {
+            _controller = controller;
+            widget.onCreated?.call(controller);
+          },
+          onLoadStop: (controller, url) {
+            if (_error != null) setState(() => _error = null);
+            widget.onLoadStop?.call(controller, url);
+          },
+          onReceivedError: (controller, request, error) {
+            if (request.isForMainFrame != true) return;
+            // CANCELLED 是自己发起的跳转/重新加载打断的，不是失败。
+            if (error.type == WebResourceErrorType.CANCELLED) return;
+            _fail(error.description);
+          },
+          onReceivedHttpError: (controller, request, response) {
+            if (request.isForMainFrame != true) return;
+            final status = response.statusCode ?? 0;
+            if (status < 400) return;
+            _fail('HTTP $status');
+          },
+        ),
+        if (_error != null) Positioned.fill(child: _buildError(context)),
+      ],
+    );
+  }
+
+  Widget _buildError(BuildContext context) {
+    final colors = context.appColorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return ColoredBox(
+      color: colors.background.surface,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.cloud_off,
+                size: 40,
+                color: colors.text.primary.withValues(alpha: 0.5),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Dictionary could not be loaded',
+                textAlign: TextAlign.center,
+                style: textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: textTheme.bodySmall?.copyWith(
+                  color: colors.text.primary.withValues(alpha: 0.6),
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () {
+                  setState(() => _error = null);
+                  _controller?.reload();
+                },
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

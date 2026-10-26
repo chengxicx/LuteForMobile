@@ -89,6 +89,7 @@ class SettingsNotifier extends Notifier<Settings> {
   static const String _keyBackgroundPlayback = 'background_playback';
   // App 本机偏好。与 Web settings 表的 ui_language 同值域但**互不同步**。
   static const String _keyUiLanguage = 'ui_language';
+  static const String _keyEpubLookMode = 'epub_look_mode';
 
   @override
   Settings build() {
@@ -168,6 +169,11 @@ class SettingsNotifier extends Notifier<Settings> {
     // 这个键，一律按"开"处理。
     final backgroundPlayback = prefs.getBool(_keyBackgroundPlayback) ?? true;
     final uiLanguage = prefs.getString(_keyUiLanguage) ?? 'en';
+    // epub 外观：老安装没有这个键 → 原书外观（web 端的默认值）。
+    final storedEpubLook = prefs.getString(_keyEpubLookMode) ?? 'original';
+    final epubLookMode = Settings.epubLookModes.contains(storedEpubLook)
+        ? storedEpubLook
+        : 'original';
 
     final currentBookId = prefs.getInt(_keyCurrentBookId);
     final currentBookLangId = prefs.getInt(_keyCurrentBookLangId);
@@ -213,6 +219,7 @@ class SettingsNotifier extends Notifier<Settings> {
       orientationLock: orientationLock,
       backgroundPlayback: backgroundPlayback,
       uiLanguage: uiLanguage,
+      epubLookMode: epubLookMode,
     );
 
     // 启动即应用方向锁：设置是在 build() 的异步加载里到位的，
@@ -471,6 +478,15 @@ class SettingsNotifier extends Notifier<Settings> {
     state = state.copyWith(furiganaEnabled: enabled);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyFuriganaEnabled, enabled);
+  }
+
+  /// 切换 reader-mode EPUB 的外观（原书/夜间/主题）。与 web 端阅读菜单
+  /// 相互独立，只存本机。非法值按原样忽略（保持当前外观）。
+  Future<void> updateEpubLookMode(String mode) async {
+    if (!Settings.epubLookModes.contains(mode)) return;
+    state = state.copyWith(epubLookMode: mode);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyEpubLookMode, mode);
   }
 
   Future<void> updateOrientationLock(OrientationLock lock) async {

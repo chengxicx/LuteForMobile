@@ -24,6 +24,7 @@ import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/cache/providers/term_cache_provider.dart';
 import '../../../core/cache/providers/tooltip_cache_provider.dart';
 import '../../../core/cache/providers/page_cache_provider.dart';
+import 'epub_offline_provider.dart';
 import '../../../features/terms/providers/terms_provider.dart';
 import '../../../shared/providers/app_startup_providers.dart';
 import '../../../shared/providers/server_status_provider.dart';
@@ -920,19 +921,38 @@ class ReaderNotifier extends Notifier<ReaderState> {
 
     final termIds = <int>{};
     final pageCache = ref.read(pageCacheServiceProvider);
+    final epubStore = ref.read(epubOfflineStoreProvider);
     final current = state.pageData;
     var touchedCurrentPage = false;
+    var createdTermOnThisPage = false;
+
+    // The epub offline pack pages embed the same pre-sync statuses the
+    // page cache does; drop them alongside so the next prefetch re-fetches.
+    Future<void> dropEpubPage(int bookId, int page) async {
+      try {
+        await epubStore.removePages(bookId, [page]);
+      } catch (e) {
+        ApiLogger.logError('outboxSyncedEpubPack', e);
+      }
+    }
 
     for (final intent in sent) {
       switch (intent) {
         case TermEditIntent i:
           termIds.add(i.termId);
-        case TermCreateIntent _:
-          // The server assigns the id, so no cached page can hold this term
-          // yet -- there is nothing to invalidate for it.
-          break;
+        case TermCreateIntent i:
+          // The server owns this term now, so the page's markup changed under
+          // us: the words it covers are one span now, not several.
+          // [_mergePageStatuses] only repaints statuses onto spans that
+          // already exist, so it can never express that -- the page has to be
+          // replaced.  Only worth chasing when the reader is still looking at
+          // those words.
+          if (current != null && pageShowsText(current, i.text)) {
+            createdTermOnThisPage = true;
+          }
         case PageDoneIntent i:
           await pageCache.removeFromCache(i.bookId, i.pageNum);
+          await dropEpubPage(i.bookId, i.pageNum);
           if (current != null &&
               current.bookId == i.bookId &&
               current.currentPage == i.pageNum) {
@@ -948,6 +968,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
       // that matters.  A miss here costs one refresh, never a wrong colour.
       if (current != null) {
         await pageCache.removeFromCache(current.bookId, current.currentPage);
+        await dropEpubPage(current.bookId, current.currentPage);
         touchedCurrentPage = true;
       }
 
@@ -964,8 +985,56 @@ class ReaderNotifier extends Notifier<ReaderState> {
       await ref.read(sentenceReaderProvider.notifier).clearCacheForTermChange();
     }
 
-    if (touchedCurrentPage) {
+    if (createdTermOnThisPage && current != null) {
+      // The cached copy predates the term, so drop it first -- otherwise the
+      // next page turn resurrects the old two-word markup.
+      await pageCache.removeFromCache(current.bookId, current.currentPage);
+      await dropEpubPage(current.bookId, current.currentPage);
+      await refreshCurrentPageAfterTermCreate();
+    } else if (touchedCurrentPage) {
       await refreshCurrentPageStatuses();
+    }
+  }
+
+  /// Replace the page on screen with the server's copy, in place.
+  ///
+  /// For a term that was just *created*: the page's HTML has changed shape,
+  /// which [_mergePageStatuses] cannot express.  Nothing here goes through
+  /// `isLoading`, so the page never blanks and the scroll position survives
+  /// (the widget key does not change) -- the new term simply appears where the
+  /// reader left off, instead of the whole page reloading under a spinner.
+  Future<void> refreshCurrentPageAfterTermCreate() async {
+    final before = state.pageData;
+    if (before == null) return;
+
+    state = state.copyWith(isBackgroundRefreshing: true);
+    try {
+      final freshPage = await _repository.getPage(
+        bookId: before.bookId,
+        pageNum: before.currentPage,
+        mode: ContentMode.refresh,
+        useCache: false,
+        forceRefresh: true,
+      );
+
+      // The reader may have turned the page while we waited; a result that
+      // arrives late belongs to a page that is no longer on screen.
+      final now = state.pageData;
+      if (freshPage == null ||
+          now == null ||
+          now.bookId != before.bookId ||
+          now.currentPage != before.currentPage) {
+        state = state.copyWith(isBackgroundRefreshing: false);
+        return;
+      }
+
+      state = state.copyWith(
+        isBackgroundRefreshing: false,
+        pageData: _overlayPendingStatuses(freshPage),
+      );
+    } catch (e) {
+      ApiLogger.logError('refreshCurrentPageAfterTermCreate', e);
+      state = state.copyWith(isBackgroundRefreshing: false);
     }
   }
 
@@ -1094,6 +1163,47 @@ class ReaderNotifier extends Notifier<ReaderState> {
     } finally {
       state = state.copyWith(isTermFormLoading: false);
     }
+  }
+
+  /// 断网 / 请求失败时用来兜底的词条表单。
+  ///
+  /// 词卡的内容一直是服务器给的（`getTermForm` 要一次往返），断网时那边
+  /// 直接抛异常、上层拿到 null 就什么也不弹 —— 长按和多选在飞行模式下
+  /// 都像是"没反应"。这里用页面本身 + 词条缓存拼一张表单出来，至少让
+  /// 卡片照常弹出：词、状态、缓存里的释义/读音都在，词典区本来就走本机
+  /// 词典池，断网照样能查。
+  ///
+  /// [termId] 为空 = 新词（多选拼出来的那种）。
+  Future<TermForm> buildLocalTermFormFallback({
+    required int languageId,
+    required String text,
+    int? termId,
+    String? statusClass,
+  }) async {
+    String? translation;
+    String? romanization;
+    if (termId != null) {
+      try {
+        final cached = await ref.read(termCacheServiceProvider).getTerm(termId);
+        translation = cached?.translation;
+        romanization = cached?.romanization;
+      } catch (e) {
+        ApiLogger.logError(
+          'buildLocalTermFormFallback',
+          e,
+          details: 'termId=$termId',
+        );
+      }
+    }
+
+    return buildOfflineTermForm(
+      languageId: languageId,
+      text: text,
+      termId: termId,
+      statusClass: statusClass,
+      translation: translation,
+      romanization: romanization,
+    );
   }
 
   Future<TermForm?> fetchTermFormById(int termId) async {
@@ -1432,6 +1542,75 @@ class ReaderNotifier extends Notifier<ReaderState> {
     final cacheService = ref.read(pageCacheServiceProvider);
     await cacheService.clearAllCache();
   }
+}
+
+/// Does [page]'s text contain [text]?
+///
+/// Decides whether a term that just reached the server is even on the page
+/// being read -- see `handleOutboxSynced`.  Whitespace is ignored on both
+/// sides: the term is the concatenation of the selected word spans, while the
+/// page text is joined span by span and can differ in the blanks between
+/// paragraphs.
+bool pageShowsText(PageData page, String text) {
+  final needle = text.replaceAll(RegExp(r'\s+'), '');
+  if (needle.isEmpty) return false;
+
+  final buffer = StringBuffer();
+  for (final paragraph in page.paragraphs) {
+    for (final item in paragraph.textItems) {
+      buffer.write(item.text);
+    }
+  }
+  final manga = page.mangaPage;
+  if (manga != null) {
+    for (final block in manga.blocks) {
+      for (final line in block.lineItems) {
+        for (final item in line) {
+          buffer.write(item.text);
+        }
+      }
+    }
+  }
+
+  return buffer.toString().replaceAll(RegExp(r'\s+'), '').contains(needle);
+}
+
+/// 用「页面 + 本机词条缓存」拼一张词条表单，供断网时开卡使用。
+///
+/// 词卡的内容一直是服务器给的（`getTermForm` 要一次往返），断网时请求抛
+/// 异常、上层拿到 null 就什么也不弹 —— 长按和多选在飞行模式下都像是"没
+/// 反应"。这张表只保证卡片能开、词和状态对得上；释义/读音来自 [termCache]，
+/// 词典区本来就走本机词典池，断网照样能查。
+///
+/// [termId] 为空 = 还没建过的新词（多选拼出来的那种）。
+TermForm buildOfflineTermForm({
+  required int languageId,
+  required String text,
+  int? termId,
+  String? statusClass,
+  String? translation,
+  String? romanization,
+}) {
+  // status0 = 页面上的"还没定过状态"。0 不是 Lute 的合法词条状态（1~5 /
+  // 98 / 99），表单里摆一个 0 会让状态选择器整排都不亮，所以退回 learning 1。
+  final rawStatus = RegExp(r'(\d+)').firstMatch(statusClass ?? '')?.group(1);
+  final status = (rawStatus == null || rawStatus == '0') ? '1' : rawStatus;
+  return TermForm(
+    term: text,
+    translation: (translation?.trim().isNotEmpty ?? false)
+        ? translation!.trim()
+        : null,
+    romanization: (romanization?.trim().isNotEmpty ?? false)
+        ? romanization!.trim()
+        : null,
+    termId: termId,
+    languageId: languageId,
+    status: status,
+    parents: const [],
+    // 有 termId 说明服务器上本来就有这条词，只是这会儿拿不到完整表单；
+    // 没有 id 的是还没建过的新词。
+    syncStatus: termId != null,
+  );
 }
 
 final readerRepositoryProvider = Provider<ReaderRepository>((ref) {

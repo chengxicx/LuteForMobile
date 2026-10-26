@@ -24,6 +24,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:song_mobile/core/network/tts_service.dart';
 import 'package:song_mobile/core/providers/tts_provider.dart';
+import 'package:song_mobile/features/reader/models/loop_mode.dart';
 import 'package:song_mobile/features/reader/providers/tts_player_provider.dart';
 import 'package:song_mobile/features/settings/models/tts_settings.dart';
 import 'package:song_mobile/features/settings/providers/tts_settings_provider.dart';
@@ -210,12 +211,12 @@ void main() {
 
     final notifier = container.read(ttsPlayerProvider.notifier);
     notifier.loadPage(_page(['あ', 'い', 'う']));
-    await notifier.toggleLoopMode();
+    await notifier.cycleLoopMode();
     await notifier.play();
     await Future<void>.delayed(const Duration(milliseconds: 1100));
 
     final state = container.read(ttsPlayerProvider);
-    expect(state.loopMode, isTrue);
+    expect(state.loopMode, LoopMode.sentence);
     expect(
       fake.spoken.length,
       greaterThanOrEqualTo(2),
@@ -290,12 +291,12 @@ void main() {
     final notifier = container.read(ttsPlayerProvider.notifier);
     notifier.loadPage(_page(['あ', 'い', 'う']));
     notifier.toggleAutoPauseMode();
-    await notifier.toggleLoopMode();
+    await notifier.cycleLoopMode();
     await notifier.play();
     await Future<void>.delayed(const Duration(milliseconds: 1100));
 
     final state = container.read(ttsPlayerProvider);
-    expect(state.loopMode, isTrue);
+    expect(state.loopMode, LoopMode.sentence);
     expect(state.autoPauseMode, isTrue);
     expect(
       state.status,
@@ -328,7 +329,7 @@ void main() {
       reason: 'precondition: auto-pause has fired',
     );
 
-    await notifier.toggleLoopMode();
+    await notifier.cycleLoopMode();
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(
@@ -351,7 +352,7 @@ void main() {
 
     final notifier = container.read(ttsPlayerProvider.notifier);
     notifier.loadPage(_page(['」', 'あ', 'い']));
-    await notifier.toggleLoopMode();
+    await notifier.cycleLoopMode();
     await notifier.play();
     await Future<void>.delayed(const Duration(milliseconds: 600));
 
@@ -492,7 +493,7 @@ void main() {
       reason: 'precondition: still reading the first sentence',
     );
 
-    await notifier.toggleLoopMode();
+    await notifier.cycleLoopMode();
     await notifier.next();
     await Future<void>.delayed(const Duration(milliseconds: 300));
 
@@ -517,13 +518,13 @@ void main() {
 
     final notifier = container.read(ttsPlayerProvider.notifier);
     notifier.loadPage(_page(['あ', 'い']));
-    await notifier.toggleLoopMode();
+    await notifier.cycleLoopMode();
     notifier.toggleAutoPauseMode();
 
     notifier.loadPage(_page(['う', 'え']));
 
     final state = container.read(ttsPlayerProvider);
-    expect(state.loopMode, isTrue);
+    expect(state.loopMode, LoopMode.sentence);
     expect(state.autoPauseMode, isTrue);
     expect(state.snippets, hasLength(2));
   });

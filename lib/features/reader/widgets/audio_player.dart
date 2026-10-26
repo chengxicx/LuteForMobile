@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../settings/models/tts_settings.dart';
 import '../../settings/providers/tts_settings_provider.dart';
+import '../models/loop_mode.dart';
 import '../providers/audio_player_provider.dart';
 import '../providers/player_mode_provider.dart';
 import 'player/player_card.dart';
@@ -161,6 +162,8 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
     TTSProvider ttsProvider,
   ) {
     final notifier = ref.read(audioPlayerProvider.notifier);
+    // 循环开着时自动暂停被压制（loop wins）—— 键不能继续亮着"我在生效"。
+    final loopOn = state.loopMode.isOn;
 
     // 槽位顺序由 PlayerAuxRow 固定，与 TTS 播放条完全一致：
     // 倍速 → 循环 → 自动暂停 → AB → 跟读 → 切换播放器。
@@ -171,24 +174,34 @@ class _AudioPlayerWidgetState extends ConsumerState<AudioPlayerWidget> {
         onIncrease: () => _stepSpeed(1),
         onReset: () => notifier.setPlaybackSpeed(1.0),
       ),
-      // 循环用 loop 图标，与 AB 键的 repeat 系区分（两个 repeat 并排难分辨）；
-      // 图标不随开关变（换图标是 TTS 条原先的做法），开没开由 active 的
-      // 实心圆底表达，两条播放条同一套。
+      // 循环三态：单句（repeat_one，带 1）→ 整首音频（loop）→ 关。开没开
+      // 由 active 的实心圆底表达，是哪一档由图标形状表达；与 AB 键的
+      // repeat 系区分仍然成立（AB 是文字标签，且与它之间隔着一个自动暂停键）。
       loop: PlayerIconButton(
-        icon: Icons.loop,
-        active: state.loopMode,
-        tooltip: state.loopMode ? 'Loop sentence on' : 'Loop sentence off',
-        onPressed: notifier.toggleLoopMode,
+        icon: state.loopMode == LoopMode.sentence
+            ? Icons.repeat_one
+            : Icons.loop,
+        active: loopOn,
+        tooltip: switch (state.loopMode) {
+          LoopMode.off => 'Loop off: tap for single-sentence loop',
+          LoopMode.sentence => 'Single-sentence loop: tap for whole-track loop',
+          LoopMode.all => 'Whole-track loop: tap to turn off',
+        },
+        onPressed: notifier.cycleLoopMode,
       ),
       autoPause: PlayerIconButton(
-        icon: state.autoPauseMode
+        icon: state.autoPauseMode && !loopOn
             ? Icons.pause_circle
             : Icons.pause_circle_outline,
-        active: state.autoPauseMode,
-        tooltip: state.autoPauseMode
+        active: state.autoPauseMode && !loopOn,
+        tooltip: loopOn
+            ? 'Auto-pause is overridden by loop: tap to stop looping and pause per sentence'
+            : state.autoPauseMode
             ? 'Auto-pause at each sentence: on'
             : 'Auto-pause at each sentence: off',
-        onPressed: notifier.toggleAutoPauseMode,
+        onPressed: loopOn
+            ? notifier.setAutoPauseOverLoop
+            : notifier.toggleAutoPauseMode,
       ),
       // AB 复读：文字三态，一眼可辨 ——
       // 熄灭 "AB"(无底) → 标 A "A"(点亮实心圆) → 循环中 "AB"(点亮实心圆)。

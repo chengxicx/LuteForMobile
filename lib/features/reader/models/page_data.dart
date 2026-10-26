@@ -1,3 +1,4 @@
+import 'epub_chapter.dart';
 import 'paragraph.dart';
 import 'manga_page.dart';
 import 'pdf_page.dart';
@@ -23,6 +24,7 @@ class PageData {
   final List<double>? audioBookmarks;
   final MangaPageData? mangaPage;
   final PdfPageData? pdfPage;
+  final EpubChapterData? epubChapter;
   final YoutubeData? youtube;
   final BilibiliData? bilibili;
 
@@ -77,6 +79,7 @@ class PageData {
     this.audioBookmarks,
     this.mangaPage,
     this.pdfPage,
+    this.epubChapter,
     this.youtube,
     this.bilibili,
     this.cues = const [],
@@ -96,6 +99,8 @@ class PageData {
   bool get isManga => mangaPage != null;
 
   bool get isPdf => pdfPage != null;
+
+  bool get isEpub => epubChapter != null;
 
   bool get isYoutube => youtube != null;
 
@@ -117,6 +122,7 @@ class PageData {
     List<double>? audioBookmarks,
     MangaPageData? mangaPage,
     PdfPageData? pdfPage,
+    EpubChapterData? epubChapter,
     YoutubeData? youtube,
     BilibiliData? bilibili,
     List<YoutubeCue>? cues,
@@ -136,6 +142,7 @@ class PageData {
       audioBookmarks: audioBookmarks ?? this.audioBookmarks,
       mangaPage: mangaPage ?? this.mangaPage,
       pdfPage: pdfPage ?? this.pdfPage,
+      epubChapter: epubChapter ?? this.epubChapter,
       youtube: youtube ?? this.youtube,
       bilibili: bilibili ?? this.bilibili,
       cues: cues ?? this.cues,

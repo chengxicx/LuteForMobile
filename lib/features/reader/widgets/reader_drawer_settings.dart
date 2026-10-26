@@ -52,17 +52,25 @@ class ReaderDrawerSettings extends ConsumerWidget {
             _buildPageNumbersToggle(context, ref, settings),
             const SizedBox(height: 16),
             _buildFuriganaToggle(context, ref, settings),
+            const SizedBox(height: 16),
+            _buildEpubLookSelector(),
           ],
           const SizedBox(height: 16),
+          // 播放条总开关：以前只在有声书（有 MP3）上出现，纯文本书只有朗读
+          // 条、反而没有关掉它的入口。现在这是"所有播放条"的总开关 —— MP3
+          // 条和 TTS 条都看 settings.showAudioPlayer。
           Consumer(
             builder: (context, ref, _) {
-              final reader = ref.watch(readerProvider);
-              if (reader.pageData?.hasAudio == true) {
-                return Column(
-                  children: [_buildAudioPlayerToggle(context, ref, settings)],
-                );
+              final pageData = ref.watch(
+                readerProvider.select((s) => s.pageData),
+              );
+              if (pageData != null &&
+                  (pageData.isManga ||
+                      pageData.isPdf ||
+                      pageData.isVideoBook)) {
+                return const SizedBox.shrink();
               }
-              return const SizedBox.shrink();
+              return _buildPlayerToggle(context, ref, settings);
             },
           ),
           const SizedBox(height: 24),
@@ -389,7 +397,11 @@ class ReaderDrawerSettings extends ConsumerWidget {
     );
   }
 
-  Widget _buildAudioPlayerToggle(
+  /// 播放条总开关（MP3 条 / TTS 朗读条共用）。
+  ///
+  /// 开关是"显示"语义：关掉 = 全部播放条都不出现（正在播的 MP3 会重置、
+  /// 朗读条停止装配），书照常读，句子高亮也跟着停。
+  Widget _buildPlayerToggle(
     BuildContext context,
     WidgetRef ref,
     dynamic settings,
@@ -397,7 +409,7 @@ class ReaderDrawerSettings extends ConsumerWidget {
     return Row(
       children: [
         const Text(
-          'Show Audio Player',
+          'Show Player',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         const Spacer(),
@@ -512,6 +524,52 @@ class ReaderDrawerSettings extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  /// Reader-mode EPUB 书的外观选择（原书 / 夜间 / 跟随主题），对应 web 端
+  /// 阅读菜单的三个外观。只在正在读 epub 书时出现；选择存本机（与 web 端
+  /// 互不同步），EpubChapterView 监听设置变化即时推给页内。
+  Widget _buildEpubLookSelector() {
+    return Consumer(
+      builder: (context, ref, _) {
+        final isEpub = ref.watch(
+          readerProvider.select((s) => s.pageData?.epubChapter != null),
+        );
+        if (!isEpub) return const SizedBox.shrink();
+        final look = ref.watch(
+          settingsProvider.select((s) => s.epubLookMode),
+        );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'EPUB Look',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final mode in const [
+                  ('original', 'Original'),
+                  ('night', 'Night'),
+                  ('theme', 'Theme'),
+                ])
+                  ChoiceChip(
+                    label: Text(mode.$2),
+                    selected: look == mode.$1,
+                    onSelected: (_) {
+                      ref
+                          .read(settingsProvider.notifier)
+                          .updateEpubLookMode(mode.$1);
+                    },
+                  ),
+              ],
+            ),
+          ],
+        );
+      },
     );
   }
 

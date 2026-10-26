@@ -1971,6 +1971,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
   Widget _buildDictionaryView(BuildContext context) {
     return DictionaryView(
       term: widget.termForm.term,
+      reading: widget.termForm.romanization,
       sentence: widget.sentence,
       dictionaries: _dictionaries,
       languageId: widget.termForm.languageId,

@@ -15,6 +15,16 @@ class ApiService {
   static const String _defaultTermImageSearchParams =
       'q=[LUTE]&form=HDRSC2&first=1&tsc=ImageHoverTitle';
 
+  /// Asks the term form endpoints for their AJAX answer.
+  ///
+  /// Without it `/read/edit_term/<id>` renders the whole form page for both
+  /// outcomes, so a validation failure and a save are the same HTTP 200 with
+  /// no way to tell them apart.  With it the server answers
+  /// `{"status":"ok", ...}` or `{"status":"invalid", "html": ...}`.
+  static const Map<String, dynamic> _ajaxFormHeaders = {
+    'X-Requested-With': 'XMLHttpRequest',
+  };
+
   /// Marks a request that must fail fast when the server is unreachable,
   /// instead of being buffered by [QueuedDioInterceptor].
   ///
@@ -354,6 +364,25 @@ class ApiService {
     );
   }
 
+  /// The standalone EPUB chapter page the mobile WebView renders
+  /// (`/read/epub_render`), fetched with the pack's canonical query so
+  /// the stored HTML is always the rewriteable original-look variant.
+  Future<Response<String>> getEpubRenderPage(int bookId, int pageNum) async {
+    return await _dio.get<String>(
+      '/read/epub_render/$bookId/$pageNum?look=original&furigana=0&triple=1',
+      options: Options(extra: _noQueue),
+    );
+  }
+
+  /// A binary asset for the offline pack (image / font / stylesheet)
+  /// addressed by its server path, query string included.
+  Future<Response<List<int>>> downloadAsset(String path) async {
+    return await _dio.get<List<int>>(
+      path,
+      options: Options(extra: _noQueue, responseType: ResponseType.bytes),
+    );
+  }
+
   Future<Response<String>> postPageDone(
     int bookId,
     int pageNum,
@@ -415,14 +444,18 @@ class ApiService {
     bool bypassQueue = false,
   }) async {
     final encodedText = Uri.encodeComponent(text);
-    return await _dio.post<String>(
-      '/read/termform/$langId/$encodedText',
+    final endpoint = '/read/termform/$langId/$encodedText';
+    final response = await _dio.post<String>(
+      endpoint,
       data: data,
       options: Options(
         contentType: Headers.formUrlEncodedContentType,
+        headers: _ajaxFormHeaders,
         extra: bypassQueue ? _bypassQueue : null,
       ),
     );
+    _ensureTermSaved(response, endpoint);
+    return response;
   }
 
   Future<Response<String>> editTerm(
@@ -430,14 +463,49 @@ class ApiService {
     dynamic data, {
     bool bypassQueue = false,
   }) async {
-    return await _dio.post<String>(
-      '/read/edit_term/$termId',
+    final endpoint = '/read/edit_term/$termId';
+    final response = await _dio.post<String>(
+      endpoint,
       data: data,
       options: Options(
         contentType: Headers.formUrlEncodedContentType,
+        headers: _ajaxFormHeaders,
         extra: bypassQueue ? _bypassQueue : null,
       ),
     );
+    _ensureTermSaved(response, endpoint);
+    return response;
+  }
+
+  /// Fail loudly when the server answered "I did not save this".
+  ///
+  /// `handle_term_form` re-renders the form with error banners instead of
+  /// returning an error status, so before this check a rejected save was
+  /// indistinguishable from a successful one.  The outbox took that as
+  /// confirmation, dropped the intent, and the optimistic status it had been
+  /// painting on the page went with it -- an offline edit that "synced" and
+  /// then quietly reverted.
+  ///
+  /// Anything that is not the AJAX JSON shape is left alone: an older server
+  /// answering with HTML keeps the previous best-effort behaviour rather than
+  /// failing every save.
+  static void _ensureTermSaved(Response<String> response, String endpoint) {
+    final body = response.data;
+    if (body == null || body.trimLeft().isEmpty) return;
+    if (!body.trimLeft().startsWith('{')) return;
+
+    Object? decoded;
+    try {
+      decoded = jsonDecode(body);
+    } catch (_) {
+      return;
+    }
+    if (decoded is! Map<String, dynamic>) return;
+
+    final status = decoded['status'];
+    if (status == null || status == 'ok') return;
+
+    throw TermFormRejectedException(endpoint);
   }
 
   Future<Response<String>> saveTermImageFromUrl(
@@ -1380,4 +1448,20 @@ class ApiService {
     }
     return null;
   }
+}
+
+/// Thrown when `/read/edit_term` or `/read/termform` answered
+/// `{"status":"invalid"}`: the server looked at the form and refused it.
+///
+/// Kept as its own type so the outbox can treat the rejection as *permanent*
+/// -- the same payload will be refused again, so retrying it forever only
+/// hides the failure -- while still leaving the intent visible for the user
+/// to inspect, retry or discard.
+class TermFormRejectedException implements Exception {
+  const TermFormRejectedException(this.endpoint);
+
+  final String endpoint;
+
+  @override
+  String toString() => 'Server rejected the term form ($endpoint).';
 }

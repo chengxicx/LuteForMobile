@@ -144,4 +144,51 @@ void main() {
       expect(name, '${'x' * 80}.db');
     });
   });
+
+  // 双词选中拼出来的词用零宽空格当分隔符（"香山​さん​に"），词典里当然
+  // 没有这种键；词头本身也可能埋 U+200B（MOJi 的读法注释）。查询链必须先
+  // 洗掉零宽字符，否则就是"明明装了词典却查不到"。
+  group('零宽字符', () {
+    test('normalizeWord 洗掉 ZWSP/ZWJ/BOM 并 trim', () {
+      expect(DictRepository.normalizeWord('\u200b香山\u200bさん'), '香山さん');
+      expect(DictRepository.normalizeWord('  たのしい \u200d'), 'たのしい');
+      expect(DictRepository.normalizeWord('\ufeff語'), '語');
+    });
+
+    test('候选链里不再带零宽空格', () {
+      expect(
+        DictRepository.lookupCandidates('香山\u200bさん\u200bに', null),
+        ['香山さんに'],
+      );
+      expect(
+        DictRepository.lookupCandidates('\u200bお久しぶり', 'おひさしぶり'),
+        ['お久しぶり', 'おひさしぶり', 'ひさしぶり'],
+      );
+    });
+
+    test('只有零宽字符的词：没有候选，不会拿空串去查', () {
+      expect(DictRepository.lookupCandidates('\u200b\u200b', '\u200b'), isEmpty);
+    });
+  });
+
+  // 共享时代旧库（active.db / ja_zh_shogakukan_v2.db）是日汉词典。英文书
+  // 没选词典时回落它们，查 take 会命中 テイク【take】⇒テーク 这种日文词条
+  // （2026-10-26 实测）；回落必须限定日语书。
+  group('legacySharedServes', () {
+    test('日语的各种写法都回落', () {
+      expect(DictRepository.legacySharedServes('Japanese'), isTrue);
+      expect(DictRepository.legacySharedServes('japanese'), isTrue);
+      expect(DictRepository.legacySharedServes('日本語'), isTrue);
+      expect(DictRepository.legacySharedServes('日语'), isTrue);
+      expect(DictRepository.legacySharedServes(' Japanese '), isTrue);
+    });
+
+    test('其他语言与空值不回落', () {
+      expect(DictRepository.legacySharedServes('English'), isFalse);
+      expect(DictRepository.legacySharedServes('Korean'), isFalse);
+      expect(DictRepository.legacySharedServes('汉语'), isFalse);
+      expect(DictRepository.legacySharedServes(''), isFalse);
+      expect(DictRepository.legacySharedServes(null), isFalse);
+    });
+  });
 }

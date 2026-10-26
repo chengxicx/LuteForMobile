@@ -76,6 +76,14 @@ class Settings {
   /// （用户 2026-10-14 要求）；与学习内容的 languageFilter 也是两回事。
   final String uiLanguage;
 
+  /// Reader-mode EPUB 书的外观：'original'（原书纸张）/ 'night'（夜间）/
+  /// 'theme'（跟随主题）。与 web 端阅读菜单的三个外观对应，但只存本机
+  /// （SharedPreferences 键 `epub_look_mode`），互不同步。默认原书外观。
+  final String epubLookMode;
+
+  /// [epubLookMode] 的合法值集合，加载与写入时据此校正。
+  static const Set<String> epubLookModes = {'original', 'night', 'theme'};
+
   static const String termuxUrl = 'http://127.0.0.1:5001';
 
   const Settings({
@@ -121,6 +129,7 @@ class Settings {
     this.orientationLock = OrientationLock.portrait,
     this.backgroundPlayback = true,
     this.uiLanguage = 'en',
+    this.epubLookMode = 'original',
   });
 
   Settings copyWith({
@@ -169,6 +178,7 @@ class Settings {
     OrientationLock? orientationLock,
     bool? backgroundPlayback,
     String? uiLanguage,
+    String? epubLookMode,
   }) {
     return Settings(
       localUrl: localUrl ?? this.localUrl,
@@ -234,6 +244,7 @@ class Settings {
       orientationLock: orientationLock ?? this.orientationLock,
       backgroundPlayback: backgroundPlayback ?? this.backgroundPlayback,
       uiLanguage: uiLanguage ?? this.uiLanguage,
+      epubLookMode: epubLookMode ?? this.epubLookMode,
     );
   }
 
@@ -329,7 +340,8 @@ class Settings {
         other.eInkMode == eInkMode &&
         other.orientationLock == orientationLock &&
         other.backgroundPlayback == backgroundPlayback &&
-        other.uiLanguage == uiLanguage;
+        other.uiLanguage == uiLanguage &&
+        other.epubLookMode == epubLookMode;
   }
 
   @override
@@ -375,6 +387,7 @@ class Settings {
     orientationLock,
     backgroundPlayback,
     uiLanguage,
+    epubLookMode,
   ]);
 
   bool isValidServerUrl(String url) {

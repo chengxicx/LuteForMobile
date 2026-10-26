@@ -74,6 +74,23 @@ class PoolDict {
   double get sizeMb => sizeBytes / (1024 * 1024);
 }
 
+/// 本机词典池按文件名查询的结果。
+///
+/// 与 [DictRepository.lookupWithReading] 的 `String?` 不同，这里要把"本机
+/// 没有这本词典"和"词典有、但没这个词条"分开：前者可以回落服务器渲染的
+/// 词典页，后者不该再联网（联网也还是查不到）。
+class PoolLookupResult {
+  const PoolLookupResult({required this.available, this.gloss});
+
+  /// 本机池里有这本词典（能离线回答，包括"查不到"）。
+  final bool available;
+
+  /// 命中的释义；null = 没这个词条。
+  final String? gloss;
+
+  bool get hit => gloss != null;
+}
+
 /// 本地词典（阶段 3）：SQLite 两表结构（terms/entries），来源两种——
 ///  1. 从服务器词典池选一本下载（GET /dict/status 列表 → 静态地址下载，
 ///     见 ServerDictionary.urlFor）；
@@ -87,9 +104,10 @@ class PoolDict {
 /// 兼容旧版"按语言分库"时代：升级前下载/导入生成的 `active_<langId>.db`
 /// 会在设置页打开时被**收养**进池（改名 `legacy_lang_<langId>.db` 并设为
 /// 该语言的选用词典，见 [adoptLegacyPerLangDicts]），行为连续；更早的
-/// 单词典时代共享库（`active.db` / `ja_zh_shogakukan_v2.db`，仓库层不知道
-/// 它属于哪门语言）不迁移，作为**查询回落**：某语言没有选用词典时回落
-/// 旧库。
+/// 单词典时代共享库（`active.db` / `ja_zh_shogakukan_v2.db`，仓库层不知
+/// 道它属于哪门语言）不迁移，作为**查询回落**——但它们是日汉词典，只有
+/// 日语书才回落（见 [lookupWithReading] 的 languageName 参数）；其他语言
+/// 未选用词典时如实返回"未安装"，而不是静默查出日文词条。
 ///
 /// 查询链：词条原文 → 读音 → 去掉开头的敬语前缀（お/ご）。词典键多数是
 /// 假名读音（日汉词典典型结构），活用形还原（楽しかっ→たのしい）待做。
@@ -466,51 +484,107 @@ class DictRepository {
   /// 按候选词链查询释义（已剥 HTML 的纯文本，带换行）。查不到返回 null。
   ///
   /// [langId] 决定查哪个语言的词典：该语言选用的池内词典 → 旧版 per-lang
-  /// 库 → 旧版共享库（见类注释）。langId 为 null（正文缺语言信息）时
-  /// 无法路由，直接返回 null。
+  /// 库（见类注释）。langId 为 null（正文缺语言信息）时无法路由，直接返回
+  /// null。
+  ///
+  /// 更早的共享时代旧库（active.db / ja_zh_shogakukan_v2.db）是**日汉**
+  /// 词典：只有 [languageName] 是日语的书才回落它们——否则英文等语言没
+  /// 选词典时会静默查出 テイク【take】 这种日文词条（见 2026-10-26 的
+  /// 英文词典排查）。非日语没有词典就返回 null，显示"未选用词典"。
   Future<String?> lookupWithReading(
     String term,
     String? reading, {
     int? langId,
+    String? languageName,
   }) async {
     if (langId == null) return null;
     final candidates = lookupCandidates(term, reading);
     if (candidates.isEmpty) return null;
     try {
-      final db = await _openFor(langId);
-      for (final word in candidates) {
-        final rows = await db.query(
-          'terms',
-          columns: ['eid'],
-          where: 'word = ?',
-          whereArgs: [word],
-          limit: 1,
-        );
-        if (rows.isEmpty) continue;
-        final defs = await db.query(
-          'entries',
-          columns: ['def'],
-          where: 'eid = ?',
-          whereArgs: [rows.first['eid']],
-          limit: 1,
-        );
-        if (defs.isEmpty) continue;
-        final def = defs.first['def'];
-        if (def is! String || def.isEmpty) return null;
-        // 与 web 阅读页同一规则：卡片头部已显示所查的词，释义开头那行
-        // 纯复述词头的（含【读音】注释）删掉。以查询词 [term] 为准，
-        // 与命中用的候选词无关（读音命中的词条首行不匹配即原样保留）。
-        return stripDuplicateHeadword(def, term);
-      }
-      return null;
+      final db = await _openFor(langId, languageName: languageName);
+      return await _queryTerm(db, candidates, term);
     } catch (e) {
       return null;
     }
   }
 
+  /// 按**池内文件名**查询，与服务器 `/read/localdict/<db>/<text>` 的"按文件
+  /// 查"一一对应。
+  ///
+  /// 这是词典面板离线可用的关键：设置页下载进本机池的那一本，查词时直接
+  /// 命中本机 sqlite，不必再向服务器要渲染好的 HTML。返回值区分两件事——
+  /// [PoolLookupResult.available] 为 false 表示"本机没有这本词典"（调用方
+  /// 可以回落服务器），为 true 而 [PoolLookupResult.gloss] 是 null 表示
+  /// "词典在、但没这个词条"（就该显示查不到，不该再联网）。
+  Future<PoolLookupResult> lookupInPool({
+    required String filename,
+    required String term,
+    String? reading,
+  }) async {
+    final name = p.basename(filename);
+    if (!name.toLowerCase().endsWith('.db')) {
+      return const PoolLookupResult(available: false);
+    }
+    File file;
+    try {
+      file = await _poolFile(name);
+    } catch (_) {
+      return const PoolLookupResult(available: false);
+    }
+    if (!file.existsSync()) return const PoolLookupResult(available: false);
+
+    final candidates = lookupCandidates(term, reading);
+    // 词洗完是空的（只剩零宽字符）：词典在，只是没法查。
+    if (candidates.isEmpty) return const PoolLookupResult(available: true);
+    try {
+      final gloss = await _queryTerm(await _openPath(file), candidates, term);
+      return PoolLookupResult(available: true, gloss: gloss);
+    } catch (_) {
+      // 池里文件打不开（下了一半、不是 app 词典格式）：当作没装，回落服务器。
+      return const PoolLookupResult(available: false);
+    }
+  }
+
+  /// 候选词逐个查 terms → entries；命中即返回剥掉重复词头后的释义。
+  ///
+  /// 与 web 阅读页同一规则：卡片头部已显示所查的词，释义开头那行纯复述
+  /// 词头的（含【读音】注释）删掉。以查询词 [term] 为准，与命中用的候选
+  /// 词无关（读音命中的词条首行不匹配即原样保留）。
+  Future<String?> _queryTerm(
+    Database db,
+    List<String> candidates,
+    String term,
+  ) async {
+    for (final word in candidates) {
+      final rows = await db.query(
+        'terms',
+        columns: ['eid'],
+        where: 'word = ?',
+        whereArgs: [word],
+        limit: 1,
+      );
+      if (rows.isEmpty) continue;
+      final defs = await db.query(
+        'entries',
+        columns: ['def'],
+        where: 'eid = ?',
+        whereArgs: [rows.first['eid']],
+        limit: 1,
+      );
+      if (defs.isEmpty) continue;
+      final def = defs.first['def'];
+      if (def is! String || def.isEmpty) return null;
+      return stripDuplicateHeadword(def, term);
+    }
+    return null;
+  }
+
   /// 解析 [langId] 应使用的词典文件：该语言选用的池内词典 → 旧版 per-lang
-  /// 库 → 旧版共享库 → 更早的 legacy 库。都没有则返回 null（词典未安装）。
-  Future<File?> _resolveDictFile(int langId) async {
+  /// 库。都没有则返回 null（词典未安装）。
+  ///
+  /// 共享时代旧库（active.db / ja_zh_shogakukan_v2.db）只在
+  /// [languageName] 为日语时才作最后回落（见 lookupWithReading）。
+  Future<File?> _resolveDictFile(int langId, {String? languageName}) async {
     final prefs = await SharedPreferences.getInstance();
     final sel = prefs.getString(selectionKey(langId));
     if (sel != null && sel.isNotEmpty) {
@@ -519,17 +593,30 @@ class DictRepository {
     }
     final perLang = await _activeFile(langId);
     if (perLang.existsSync()) return perLang;
+    if (!legacySharedServes(languageName)) return null;
     final dir = await _dictDir();
     final shared = File(p.join(dir.path, _legacySharedName));
     if (shared.existsSync()) return shared;
     return _legacyFile();
   }
 
+  /// 共享时代旧库（active.db / ja_zh_shogakukan_v2.db）是日汉词典，
+  /// 只服务日语书：其他语言未选用词典时不能静默回落它们。
+  static bool legacySharedServes(String? languageName) {
+    final name = (languageName ?? '').trim().toLowerCase();
+    return name.contains('jap') || name.contains('日本語') || name.contains('日语');
+  }
+
   /// 单槽打开缓存：阅读一次只查一本书的语言，同路径复用连接，跨语言
   /// 切换（阅读中不会发生）时重开一次。
-  Future<Database> _openFor(int langId) async {
-    final file = await _resolveDictFile(langId);
+  Future<Database> _openFor(int langId, {String? languageName}) async {
+    final file = await _resolveDictFile(langId, languageName: languageName);
     if (file == null) throw const FileSystemException('词典未下载');
+    return _openPath(file);
+  }
+
+  /// 按文件打开（走同一个单槽缓存，按路径判重）。
+  Future<Database> _openPath(File file) async {
     final existing = _db;
     if (existing != null && _openedPath == file.path) {
       return Future.value(existing);
@@ -577,12 +664,21 @@ class DictRepository {
     } catch (_) {}
   }
 
+  /// 词典里绝不会出现的零宽字符：双词选中拼词时会插入 U+200B 当分隔符，
+  /// 词头本身也可能埋 U+200B 控制版式（MOJi 的读法注释里就有）。带着它们
+  /// 查词必然是"有词条却查不到"，所以候选词先洗一遍。
+  static final RegExp _zeroWidth = RegExp('[\u200b\u200c\u200d\ufeff]');
+
+  /// 洗掉零宽字符并 trim（词条显示仍用原文，只在本仓库的查询链里洗）。
+  static String normalizeWord(String word) =>
+      word.replaceAll(_zeroWidth, '').trim();
+
   /// 查询候选词：词条原文 → 读音 → 去掉开头的敬语前缀（お/ご）。
   /// 词典键是假名读音且不带敬语（おひさしぶり 在键里是 ひさしぶり）。
   static List<String> lookupCandidates(String term, String? reading) {
     final list = <String>[];
     void add(String word) {
-      final w = word.trim();
+      final w = normalizeWord(word);
       if (w.isNotEmpty && !list.contains(w)) list.add(w);
     }
 

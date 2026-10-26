@@ -17,6 +17,10 @@ class TextDisplay extends StatefulWidget {
   final void Function(TextItem)? onLongPress;
   final VoidCallback? onMultiTermSelectionStart;
   final void Function(List<TextItem>)? onMultiTermSelectionComplete;
+
+  /// 多选被取消（长按/拖动被系统打断）。外层据此复位"正在多选"的标记 ——
+  /// 不复位的话翻页手势与点击都会被它一直挡住，整页看起来像卡死。
+  final VoidCallback? onMultiTermSelectionCancel;
   final void Function(TextItem)? onTripleTap;
   final bool enableTripleTap;
   final int doubleTapTimeout;
@@ -67,6 +71,7 @@ class TextDisplay extends StatefulWidget {
     this.onLongPress,
     this.onMultiTermSelectionStart,
     this.onMultiTermSelectionComplete,
+    this.onMultiTermSelectionCancel,
     this.onTripleTap,
     this.enableTripleTap = false,
     this.doubleTapTimeout = 300,
@@ -110,6 +115,7 @@ class TextDisplay extends StatefulWidget {
     void Function(TextItem)? onLongPressStart,
     void Function(TextItem, Offset)? onLongPressMoveUpdate,
     void Function(TextItem)? onLongPressEnd,
+    VoidCallback? onLongPressCancel,
     void Function(TextItem)? onTripleTap,
     bool enableTripleTap = false,
     int doubleTapTimeout = 300,
@@ -333,6 +339,10 @@ class TextDisplay extends StatefulWidget {
             onLongPressEnd: onLongPressEnd != null
                 ? (_) => onLongPressEnd(item)
                 : null,
+            // 长按/拖动被系统取消（另一个手势赢、路由变化、窗口失焦…）时
+            // 不会有 onLongPressEnd，选词状态必须在这里收尾 —— 见
+            // _TextDisplayState._handleSelectionCancel。
+            onLongPressCancel: onLongPressCancel,
             child: textWidget,
           ),
         ),
@@ -396,7 +406,11 @@ class _TextDisplayState extends State<TextDisplay> {
 
   void _handleTap(TextItem item, BuildContext context) {
     if (_selectionStartItem != null) {
-      return;
+      // 残留的多选起点。长按/拖动被系统取消时 onLongPressEnd 不会来，起点
+      // 留在字段里会把**之后所有点击**都吞掉（`return` 在这里），外层
+      // `_isMultiTermSelecting` 也没人复位 → 翻页与点词全部失效，整页看
+      // 起来就是卡死。这里先收尾，再按一次正常点击处理。
+      _handleSelectionCancel();
     }
     if (_lastTappedItem == item &&
         _tripleTapTimer != null &&
@@ -556,7 +570,11 @@ class _TextDisplayState extends State<TextDisplay> {
     _clearHitTestCache();
     final start = _selectionStartItem;
     final current = _selectionCurrentItem ?? item;
-    if (start == null) return;
+    // 起点没了（取消过一次）却还收到 end：只做收尾，不弹词卡。
+    if (start == null) {
+      _handleSelectionCancel();
+      return;
+    }
 
     final selectedItems = _selectedItems(start, current);
     HapticFeedback.selectionClick();
@@ -572,6 +590,25 @@ class _TextDisplayState extends State<TextDisplay> {
 
     if (selectedItems.length == 1) {
       widget.onLongPress?.call(selectedItems.first);
+    }
+  }
+
+  /// 收尾一次（可能被取消的）选词：清本地选中态，并让外层复位"正在多选"。
+  ///
+  /// 这是长按手势**没有正常结束**时唯一的出口 —— 手势被取消、被别的手势
+  /// 抢走、或者路由变化都会走到这里。
+  void _handleSelectionCancel() {
+    _clearHitTestCache();
+    final wasSelecting =
+        _selectionStartItem != null || _selectionCurrentItem != null;
+    if (_selectionStartItem != null || _selectionCurrentItem != null) {
+      setState(() {
+        _selectionStartItem = null;
+        _selectionCurrentItem = null;
+      });
+    }
+    if (wasSelecting) {
+      widget.onMultiTermSelectionCancel?.call();
     }
   }
 
@@ -662,6 +699,7 @@ class _TextDisplayState extends State<TextDisplay> {
       onLongPressMoveUpdate: (item, globalPosition) =>
           _handleSelectionMove(item, globalPosition),
       onLongPressEnd: (item) => _handleSelectionEnd(item),
+      onLongPressCancel: _handleSelectionCancel,
       onTripleTap: (item) => widget.onTripleTap?.call(item),
       highlightedWordId: widget.highlightedWordId,
       highlightedParagraphId: widget.highlightedParagraphId,

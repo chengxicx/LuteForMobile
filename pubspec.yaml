@@ -16,7 +16,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while the build-number is used as the build suffix.
-version: 1.3.9+46
+version: 1.4.8+66
 
 environment:
   sdk: ^3.10.0
@@ -51,6 +51,11 @@ dependencies:
   path_provider: ^2.1.5
   path: ^1.9.1
   sqflite: ^2.4.2
+  # Local-book EPUB import (offline reading without the server): unzip
+  # the package and parse container.xml/OPF. Both were already in the
+  # dependency tree; promoted to direct.
+  archive: ^4.3.0
+  xml: ^6.6.1
 
   # UI/UX Packages
   cached_network_image: ^3.3.1

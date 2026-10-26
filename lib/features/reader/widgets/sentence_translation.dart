@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,8 @@ import '../../settings/providers/ai_settings_provider.dart';
 import '../../../core/providers/ai_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../core/network/dictionary_service.dart';
+import '../../../core/network/session_manager.dart';
+import '../../../shared/providers/network_providers.dart';
 import '../providers/sentence_tts_provider.dart';
 import '../providers/current_book_provider.dart';
 
@@ -741,25 +744,36 @@ class _SentenceTranslationWidgetState
       return _buildAIContent(context);
     }
 
-    final url = widget.dictionaryService.buildUrl(
-      widget.sentence,
-      dictionary.urlTemplate,
+    // 本地词典的模板是服务器池里的 .db 文件名，必须换成服务端的查询路由
+    // （直接把文件名交给 WebUri 会变成 http://<文件名>/）。
+    final serverUrl = ref.read(apiServiceProvider).baseUrl;
+    final url = widget.dictionaryService.buildDictionaryUrl(
+      term: widget.sentence,
+      dictionary: dictionary,
+      languageId: widget.languageId,
+      serverUrl: serverUrl,
     );
 
     return InAppWebView(
-      initialUrlRequest: URLRequest(url: WebUri(url)),
-      initialSettings: InAppWebViewSettings(
-        sharedCookiesEnabled: true,
-        cacheEnabled: true,
-        javaScriptEnabled: true,
-        userAgent:
-            'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      initialUrlRequest: URLRequest(
+        url: WebUri(url),
+        // 凭证只发给自己的服务器，第三方在线词典不带。
+        headers: dictionary.isLocalDictionary
+            ? SessionManager.authHeaders()
+            : null,
+      ),
+      initialSettings: DictionaryService.webviewSettings(
+        localDictionary: dictionary.isLocalDictionary,
       ),
       gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
         Factory(() => VerticalDragGestureRecognizer()),
       },
       onWebViewCreated: (controller) {
         _webviewControllers[dictionary.hashCode] = controller;
+        // 首个请求带 header，页内后续导航只能靠 cookie store。
+        if (dictionary.isLocalDictionary) {
+          unawaited(DictionaryService.installSessionCookie(serverUrl));
+        }
       },
       onLoadStop: (controller, url) {
         if (index == _currentPage) {

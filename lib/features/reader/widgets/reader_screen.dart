@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:audioplayers/audioplayers.dart' hide PlayerMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -34,6 +35,7 @@ import '../models/term_form.dart';
 import '../models/page_data.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
+import '../providers/epub_offline_provider.dart';
 import '../providers/furigana_provider.dart';
 import '../providers/audio_player_provider.dart';
 import '../providers/player_mode_provider.dart';
@@ -45,8 +47,10 @@ import '../../grammar/providers/sentence_grammar_provider.dart';
 import '../../grammar/widgets/sentence_grammar_screen.dart';
 import '../utils/playing_line.dart';
 import '../utils/player_lifecycle.dart';
+import '../utils/app_bar_layout.dart';
 import '../widgets/term_tooltip.dart';
 import 'text_display.dart';
+import 'page_nav.dart';
 import 'term_form.dart';
 import 'sentence_translation.dart';
 import 'book_completion_celebration_dialog.dart';
@@ -56,6 +60,7 @@ import 'audio_player.dart';
 import 'package:song_mobile/app.dart';
 import 'manga_page_view.dart';
 import 'pdf_page_view.dart';
+import 'epub_chapter_view.dart';
 import 'youtube_player_view.dart';
 import 'tts_player_widget.dart';
 import '../../shadowing/models/shadowing_sentence.dart';
@@ -309,7 +314,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       final settings = ref.read(settingsProvider);
       if (_showTtsPlayer(pageData, settings)) {
         final tts = ref.read(ttsPlayerProvider);
-        if (tts.loopMode || tts.autoPauseMode) {
+        if (tts.loopMode.isOn || tts.autoPauseMode) {
           final canMove = action == HardwareKeyAction.previous
               ? tts.canGoPrevious
               : tts.canGoNext;
@@ -325,7 +330,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           pageData.hasAudio &&
           ref.read(playerModeProvider) == PlayerMode.mp3) {
         final audio = ref.read(audioPlayerProvider);
-        if (audio.loopMode || audio.autoPauseMode) {
+        if (audio.loopMode.isOn || audio.autoPauseMode) {
           // 与 goToPrevious/NextSegment 的"相邻句"判定同源：自动暂停停在
           // 句首时，上一句要求 800ms 之外还有更早的边界。顶住了就回落为翻页。
           final canMove = action == HardwareKeyAction.previous
@@ -482,6 +487,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_handleScrollPosition);
 
+    // 整本连续朗读（循环键第二档）读到本页最后一句时，播放器请这里翻页。
+    ref.read(ttsPlayerProvider.notifier).onRequestNextPage =
+        _advancePageForContinuousReading;
+
     Future.delayed(Duration.zero, _loadLanguageMapping);
     Future.delayed(Duration.zero, _loadStatsIfNeeded);
     // 开书静默同步词库（服务端 hash 没变时只有一次几十字节的请求）：
@@ -504,6 +513,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     _scrollController.removeListener(_handleScrollPosition);
     _scrollController.dispose();
     _hardwareKeyFocus.dispose();
+    // 播放器持有的是 method 引用，不摘掉的话离开阅读页后仍在自动翻页。
+    final ttsNotifier = ref.read(ttsPlayerProvider.notifier);
+    if (ttsNotifier.onRequestNextPage == _advancePageForContinuousReading) {
+      ttsNotifier.onRequestNextPage = null;
+    }
     ref.read(audioPlayerProvider.notifier).reset();
     super.dispose();
   }
@@ -827,12 +841,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final cues = pageData.cues;
     if (cues.isEmpty) return -1;
     return ref.watch(
-      audioPlayerProvider.select(
-        (player) => PlayingLine.cueIndexAt(
+      audioPlayerProvider.select((player) {
+        // 不播放就没有"正在唱的这一句"：暂停、停止、播完都把高亮撤掉。
+        // 播放器的 position 在这几种状态下仍停在原处，只按 position 取 cue
+        // 会让整页一直亮着那一行 —— 看起来像还在放。
+        if (player.playerState != PlayerState.playing) return -1;
+        return PlayingLine.cueIndexAt(
           cues,
           player.position.inMilliseconds / 1000.0,
-        ),
-      ),
+        );
+      }),
     );
   }
 
@@ -978,30 +996,24 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     });
   }
 
-  Future<void> reloadPage({bool forceFresh = false}) async {
+  /// Re-enter the page the reader is on (bottom bar's "Reader", server change).
+  ///
+  /// Deliberately cache-first.  There used to be a `forceFresh` variant that
+  /// wiped the book's page cache and re-fetched the page; its only user was
+  /// the new-term save path, where it could not change anything -- a new term
+  /// is queued in the outbox, so the server's copy was identical.  All it did
+  /// was blank the reader behind a spinner.  A created term now refreshes the
+  /// page silently once it actually syncs (`handleOutboxSynced`).
+  Future<void> reloadPage() async {
     final pageData = ref.read(readerProvider).pageData;
     if (pageData != null) {
       setState(() {
         _pageKey = ValueKey('${pageData!.bookId}-${pageData!.currentPage}');
         _isLastPageMarkedDone = false;
       });
-      if (forceFresh) {
-        // Forcing a fresh load with no server to load from would throw away a
-        // perfectly good page and replace it with a full-page error.  This is
-        // reached after creating a term, which is now queued rather than
-        // posted, so the page simply catches up when the term syncs.
-        if (!ServerStatusManager.isReachable) return;
-        await ref
-            .read(readerProvider.notifier)
-            .clearPageCacheForBook(pageData.bookId);
-      }
       await ref
           .read(readerProvider.notifier)
-          .loadPage(
-            bookId: pageData.bookId,
-            pageNum: pageData.currentPage,
-            useCache: !forceFresh,
-          );
+          .loadPage(bookId: pageData.bookId, pageNum: pageData.currentPage);
 
       final langId = _findLangId(pageData);
 
@@ -1192,6 +1204,32 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
     });
 
+    // 播放条总开关关掉时，正在播的东西也要停：抽屉里一关，MP3 条和朗读条
+    // 一起消失，否则就是"看不见的播放器还在念"。
+    ref.listen<bool>(
+      settingsProvider.select((s) => s.showAudioPlayer),
+      (previous, next) {
+        if (previous == true && next == false) {
+          unawaited(ref.read(audioPlayerProvider.notifier).pause());
+          _stopStaleTtsPlayer();
+          return;
+        }
+        if (previous == false && next == true) {
+          // 重新打开：把装配标记清掉，让当前页的播放条重装一遍。模式不重置
+          // —— `_loadAudioIfNeeded` 会把模式拉回 MP3，切到 TTS 的用户会被
+          // 一开一关踢回去。
+          final pageData = ref.read(readerProvider).pageData;
+          if (pageData == null) return;
+          _lastTtsPageKey = null;
+          _loadTtsIfNeeded(pageData);
+          if (ref.read(playerModeProvider) == PlayerMode.mp3) {
+            _lastAudioBookId = null;
+            _loadAudioIfNeeded();
+          }
+        }
+      },
+    );
+
     if (textSettings.fullscreenMode && !_lastFullscreenMode) {
       _lastFullscreenMode = true;
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -1379,6 +1417,46 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   ) {
     final settings = ref.read(settingsProvider);
 
+    // 这一排按钮在「加载中 → 首屏到达」之间不能挪位置，所以槽位一律用
+    // 加载前就已知的信息决定：
+    //  * 总页数 —— 书架里的 [Book.totalPages] 一开始就有；页面数据没到时
+    //    `pageData` 可能是 null，也可能只是只有一页的占位，
+    //  * 播放条开关 —— 有没有上传音频 / 配没配 TTS，书本身就说得清。
+    // 否则页码导航和播放条开关会在首屏到达时凭空出现，把左边那排图标整体
+    // 往左挤（用户看到的「加载书时按钮位置会变」）。
+    final book = ref.watch(currentBookProvider).book;
+    // 换书加载时 `pageData` 可能还是上一本书的残留（标题、页数都是别人的）。
+    // 拿它的页数预留槽位，新书页数更少时箭头又会往里缩 —— 所以只有确认这份
+    // 页面数据就是当前这本书的，才采信它。
+    final pageDataMatchesBook = pageDataBelongsToBook(
+      pageBookId: pageData?.bookId,
+      bookId: book?.id,
+    );
+    final currentPageData = pageDataMatchesBook ? pageData : null;
+    final totalPages = appBarReservedPageCount(
+      pageCount: currentPageData?.pageCount ?? 0,
+      bookPageCount: book?.totalPages ?? 0,
+    );
+    // 加载中按书的类型猜播放条槽位：这几类书根本没有常显的播放条，
+    // 留个空槽反而更怪。
+    const noPlayerBarTypes = {
+      'manga',
+      'pdf',
+      'youtube',
+      'bilibili',
+      'video',
+      'series',
+    };
+    final playerSlotWhileLoading =
+        book != null &&
+        settings.showAudioPlayer &&
+        !noPlayerBarTypes.contains(book.bookType.trim().toLowerCase()) &&
+        (book.hasAudio ||
+            ref.read(ttsSettingsProvider).provider != TTSProvider.none);
+    final playerSlotVisible = currentPageData != null
+        ? _playerAvailable(currentPageData, settings)
+        : playerSlotWhileLoading;
+
     if (fullscreenMode) {
       final topPadding = MediaQuery.of(context).padding.top;
       return PreferredSize(
@@ -1394,11 +1472,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           height: _isUiVisible ? kToolbarHeight + topPadding : 0,
           child: AppBar(
             leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
-            title: Text(pageData?.title ?? 'Reader'),
+            title: Text(pageData?.title ?? book?.title ?? 'Reader'),
             actions: [
               OutboxStatusIndicator(serverReachable: serverReachable),
               _buildBooksButton(),
-              if (_playerAvailable(pageData, settings))
+              if (playerSlotVisible)
                 _buildPlayerToggleButton(pageData, settings),
               if (pageData?.isManga == true)
                 IconButton(
@@ -1417,42 +1495,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 onPressed: _openReaderDrawer,
               ),
               _buildGrammarButton(),
-              if (pageData != null && pageData.pageCount > 1)
-                Padding(
-                  padding: const EdgeInsets.only(right: 16),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.chevron_left),
-                        onPressed: pageData!.currentPage > 1
-                            ? () => _loadPageWithoutMarkingRead(
-                                pageData!.currentPage - 1,
-                              )
-                            : null,
-                        tooltip: 'Previous page',
-                      ),
-                      if (settings.showPageNumbers)
-                        GestureDetector(
-                          onDoubleTap: () => _showPageNavigationSlider(),
-                          onLongPress: () => _showPageNavigationSlider(),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8.0,
-                            ),
-                            child: Text(pageData.pageIndicator),
-                          ),
-                        ),
-                      IconButton(
-                        icon: const Icon(Icons.chevron_right),
-                        onPressed: pageData!.currentPage < pageData.pageCount
-                            ? () => _loadPageWithoutMarkingRead(
-                                pageData!.currentPage + 1,
-                              )
-                            : null,
-                        tooltip: 'Next page',
-                      ),
-                    ],
-                  ),
+              if (totalPages > 1)
+                PageNav(
+                  pageData: currentPageData,
+                  totalPages: totalPages,
+                  showNumbers: settings.showPageNumbers,
+                  onGoToPage: _loadPageWithoutMarkingRead,
+                  onOpenSlider: _showPageNavigationSlider,
                 ),
             ],
           ),
@@ -1462,11 +1511,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     return AppBar(
       leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
-      title: Text(pageData?.title ?? 'Reader'),
+      title: Text(pageData?.title ?? book?.title ?? 'Reader'),
       actions: [
         OutboxStatusIndicator(serverReachable: serverReachable),
         _buildBooksButton(),
-        if (_playerAvailable(pageData, settings))
+        if (playerSlotVisible)
           _buildPlayerToggleButton(pageData, settings),
         if (pageData?.isManga == true)
           IconButton(
@@ -1496,40 +1545,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           onPressed: _openReaderDrawer,
         ),
         _buildGrammarButton(),
-        if (pageData != null && pageData.pageCount > 1)
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.chevron_left),
-                  onPressed: pageData!.currentPage > 1
-                      ? () => _loadPageWithoutMarkingRead(
-                          pageData!.currentPage - 1,
-                        )
-                      : null,
-                  tooltip: 'Previous page',
-                ),
-                if (settings.showPageNumbers)
-                  GestureDetector(
-                    onDoubleTap: () => _showPageNavigationSlider(),
-                    onLongPress: () => _showPageNavigationSlider(),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                      child: Text(pageData.pageIndicator),
-                    ),
-                  ),
-                IconButton(
-                  icon: const Icon(Icons.chevron_right),
-                  onPressed: pageData!.currentPage < pageData.pageCount
-                      ? () => _loadPageWithoutMarkingRead(
-                          pageData!.currentPage + 1,
-                        )
-                      : null,
-                  tooltip: 'Next page',
-                ),
-              ],
-            ),
+        if (totalPages > 1)
+          PageNav(
+            pageData: currentPageData,
+            totalPages: totalPages,
+            showNumbers: settings.showPageNumbers,
+            onGoToPage: _loadPageWithoutMarkingRead,
+            onOpenSlider: _showPageNavigationSlider,
           ),
       ],
     );
@@ -1842,13 +1864,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     // felt.  Only a sentence change, or the player starting/stopping, may
     // rebuild.  Nothing is marked while the player is idle or failed --
     // there is no line being read then.
+    // 只有真正在朗读时才标句子：暂停（含自动暂停停在句尾）、空闲、报错都
+    // 不标 —— 位置还停在那一句上，但那句已经不在出声了。
     final ttsSentenceId = ref.watch(
       ttsPlayerProvider.select((player) {
         switch (player.status) {
           case TTSPlayerStatus.playing:
           case TTSPlayerStatus.loading:
-          case TTSPlayerStatus.paused:
             return player.currentSnippet?.sentenceId;
+          case TTSPlayerStatus.paused:
           case TTSPlayerStatus.idle:
           case TTSPlayerStatus.error:
             return null;
@@ -1898,6 +1922,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         _handleLongPress(item);
       },
       onMultiTermSelectionStart: _handleMultiTermSelectionStart,
+      onMultiTermSelectionCancel: _handleMultiTermSelectionCancel,
       onMultiTermSelectionComplete: (selectedItems) {
         unawaited(_handleMultiTermSelectionComplete(selectedItems));
       },
@@ -1925,6 +1950,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     final mangaPage = pageData.mangaPage;
     final pdfPage = pageData.pdfPage;
+    final epubChapter = pageData.epubChapter;
     final content = mangaPage != null
         ? MangaPageView(
             key: _pageKey,
@@ -1967,6 +1993,42 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             },
             onLongPress: (item) {
               _handleLongPress(item);
+            },
+          )
+        : epubChapter != null
+        ? EpubChapterView(
+            key: _pageKey,
+            bookId: pageData.bookId,
+            pageNum: pageData.currentPage,
+            serverUrl: settings.serverUrl,
+            chapter: epubChapter,
+            paragraphs: pageData.paragraphs,
+            look: settings.epubLookMode,
+            furiganaEnabled: furiganaActive(
+              pageData,
+              enabled: settings.furiganaEnabled,
+            ),
+            enableTripleTap: settings.enableTripleTapToMarkKnown,
+            localServer: ref.watch(epubLocalServerProvider),
+            onOnlineChapterLoaded: () {
+              // Online and authenticated: grow the offline pack with
+              // this chapter and the next one, quietly.
+              ref
+                  .read(epubOfflinePrefetchProvider)
+                  .prefetchNearby(
+                    bookId: pageData.bookId,
+                    page: pageData.currentPage,
+                    pageCount: pageData.pageCount,
+                  );
+            },
+            onTap: (item, context) {
+              _handleTap(item, context);
+            },
+            onDoubleTap: (item) {
+              _handleDoubleTap(item);
+            },
+            onTripleTap: (item) {
+              _handleTripleTap(item);
             },
           )
         : textDisplay;
@@ -2199,7 +2261,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       if (tooltip != null && mounted) {
         // 本地词典（阶段3a）：SQLite 毫秒级查询，弹出前一次带入（卡片单帧
         // 绘制，墨水屏不重绘）。按当前书的语言查对应词典库；该语言没装
-        // 专属词典时回落到旧版共享库。查询链：原文 → 读音 → 去敬语前缀。
+        // 专属词典时，只有日语书才回落旧版共享日汉库（其他语言如实显示
+        // 未选用）。查询链：原文 → 读音 → 去敬语前缀。
         String? dictGloss;
         try {
           dictGloss = await ref
@@ -2208,6 +2271,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 tooltip.term,
                 tooltip.romanization,
                 langId: item.langId,
+                languageName: ref.read(currentBookProvider).languageName,
               );
         } catch (_) {
           dictGloss = null;
@@ -2439,13 +2503,36 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           .read(readerProvider.notifier)
           .fetchTermFormById(wordId);
       // Superseded while we waited: a later long press already owns the sheet.
-      if (termForm == null || !mounted || seq != _termFormSeq) return;
+      if (!mounted || seq != _termFormSeq) return;
+      final readerStatus = RegExp(
+        r'status(\d+)',
+      ).firstMatch(item.statusClass)?.group(1);
+      if (termForm == null) {
+        // 断网：服务器表单拿不到，但词卡不能因此不开。用本机缓存拼一张，
+        // 并**关掉关闭即保存** —— 这张表的字段是残的（没有标签/图片/父词），
+        // 自动保存会把服务器的完整词条覆盖成残缺版本。
+        final fallback = await ref
+            .read(readerProvider.notifier)
+            .buildLocalTermFormFallback(
+              languageId:
+                  item.langId ?? ref.read(currentBookProvider).langId ?? 0,
+              text: item.displayText,
+              termId: wordId,
+              statusClass: item.statusClass,
+            );
+        if (!mounted || seq != _termFormSeq) return;
+        _showTermForm(
+          fallback,
+          sentence: _extractSentence(item),
+          initialReaderStatus: readerStatus,
+          autoSaveOnClose: false,
+        );
+        return;
+      }
       _showTermForm(
         termForm,
         sentence: _extractSentence(item),
-        initialReaderStatus: RegExp(
-          r'status(\d+)',
-        ).firstMatch(item.statusClass)?.group(1),
+        initialReaderStatus: readerStatus,
       );
     } catch (e) {
       ApiLogger.logError('_openTermForm', e, details: 'wordId=$wordId');
@@ -2456,6 +2543,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     TermTooltipClass.close();
     setState(() {
       _isMultiTermSelecting = true;
+    });
+  }
+
+  /// 多选被取消：复位标记。
+  ///
+  /// `_isMultiTermSelecting` 卡在 true 时，[_canSwipePages] 会一直返回 false
+  /// —— 手势翻页、点按翻页、实体键翻页全部失效，页面看起来完全没反应。
+  void _handleMultiTermSelectionCancel() {
+    if (!_isMultiTermSelecting) return;
+    setState(() {
+      _isMultiTermSelecting = false;
     });
   }
 
@@ -2478,15 +2576,29 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final langId = selectedItems.first.langId;
     if (langId == null) return;
 
-    final termText = selectedItems.map((item) => item.text).join().trim();
+    // 多选拼词时词间会夹 U+200B（零宽空格），带它去查必然"有词条查不到"；
+    // displayText 已经把这个字符洗掉了。
+    final termText = selectedItems.map((item) => item.displayText).join().trim();
     if (termText.isEmpty) return;
 
     final termForm = await ref
         .read(readerProvider.notifier)
         .fetchTermForm(langId, termText);
-    if (termForm != null && mounted) {
-      _showTermForm(termForm, sentence: _extractSentence(selectedItems.first));
-    }
+    if (!mounted) return;
+    // 断网时 `fetchTermForm` 拿不到东西（它要一次往返），以前这里直接收工
+    // —— 多选之后什么都不弹，看着像手势没生效。用本地兜底表单把卡片开
+    // 出来：词就是选中的那串字，释义位空着，词典区走本机词典池。
+    final form =
+        termForm ??
+        await ref
+            .read(readerProvider.notifier)
+            .buildLocalTermFormFallback(
+              languageId: langId,
+              text: termText,
+              statusClass: selectedItems.first.statusClass,
+            );
+    if (!mounted) return;
+    _showTermForm(form, sentence: _extractSentence(selectedItems.first));
   }
 
   void _handleTripleTap(TextItem item) async {
@@ -2563,9 +2675,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     TermForm termForm, {
     String? sentence,
     String? initialReaderStatus,
+    bool autoSaveOnClose = true,
   }) {
     _currentTermForm = termForm;
-    bool _shouldAutoSaveOnClose = true;
+    bool _shouldAutoSaveOnClose = autoSaveOnClose;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -2592,9 +2705,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 ref.read(readerProvider.notifier).saveTerm(updatedForm).then((
                   success,
                 ) {
-                  if (success && mounted && updatedForm.termId == null) {
-                    reloadPage(forceFresh: true);
-                  } else if (!success && mounted) {
+                  // A brand-new term is only *queued* at this point (see
+                  // `saveTerm`): the server does not have it, so re-fetching
+                  // the page here came back identical -- after wiping the whole
+                  // book's page cache and blanking the reader behind a
+                  // spinner.  The page updates itself, silently, when the
+                  // create actually lands (see `handleOutboxSynced`).
+                  if (!success && mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Failed to save term')),
                     );
@@ -2639,9 +2756,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                                 updatedForm.termId!,
                                 updatedForm.status,
                               );
-                        } else {
-                          await reloadPage(forceFresh: true);
                         }
+                        // New terms land in the outbox, so there is nothing to
+                        // re-fetch yet -- see the note in `onPopInvoked`.
                         Navigator.of(context).pop();
                       } else {
                         if (mounted) {
@@ -2955,6 +3072,42 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         );
 
     ref.read(statsProvider.notifier).loadStats();
+  }
+
+  /// 整本连续朗读（循环键第二档）：读完本页最后一句，翻到下一页接着念；
+  /// 书末回到第 1 页。
+  ///
+  /// 播放器只持有当前页的句子表，页码 / 进度 / pageKey 都在这里，所以翻页
+  /// 由 reader 这一侧做，装好新页的句子后返回 true 让播放器开口。
+  Future<bool> _advancePageForContinuousReading() async {
+    if (!mounted) return false;
+    final pageData = ref.read(readerProvider).pageData;
+    if (pageData == null || pageData.pageCount <= 1) return false;
+
+    // TTS 条已经不是当前播放条（用户切回 MP3 / 关掉播放条）：不再自动翻页，
+    // 否则会翻着页却没声音。
+    if (!_showTtsPlayer(pageData, ref.read(settingsProvider))) return false;
+
+    final nextPage = pageData.currentPage < pageData.pageCount
+        ? pageData.currentPage + 1
+        : 1;
+
+    // 与手动往下翻同一条语义：这一页已经念完了。
+    unawaited(
+      ref
+          .read(readerProvider.notifier)
+          .markPageRead(pageData.bookId, pageData.currentPage),
+    );
+
+    await _loadPageWithoutMarkingRead(nextPage);
+    if (!mounted) return false;
+
+    final newPage = ref.read(readerProvider).pageData;
+    if (newPage == null || newPage.currentPage != nextPage) return false;
+
+    // 新页的句子表交给播放器（按"书-页"去重，page listener 已经装过时是空操作）。
+    _loadTtsIfNeeded(newPage);
+    return ref.read(ttsPlayerProvider).hasSnippets;
   }
 
   Future<void> _markPageKnown() async {

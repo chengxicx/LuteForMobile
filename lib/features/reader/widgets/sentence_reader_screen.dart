@@ -1557,13 +1557,35 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           .read(readerProvider.notifier)
           .fetchTermFormById(wordId);
       // Superseded while we waited: a later long press already owns the sheet.
-      if (termForm == null || !mounted || seq != _termFormSeq) return;
+      if (!mounted || seq != _termFormSeq) return;
+      final readerStatus = RegExp(
+        r'status(\d+)',
+      ).firstMatch(item.statusClass)?.group(1);
+      if (termForm == null) {
+        // 断网时服务器表单拿不到，卡片仍要开；这张表字段是残的，所以关闭
+        // 时不自动保存（否则会把服务器上的完整词条覆盖成残缺版）。
+        final fallback = await ref
+            .read(readerProvider.notifier)
+            .buildLocalTermFormFallback(
+              languageId:
+                  item.langId ?? ref.read(currentBookProvider).langId ?? 0,
+              text: item.displayText,
+              termId: wordId,
+              statusClass: item.statusClass,
+            );
+        if (!mounted || seq != _termFormSeq) return;
+        _showTermForm(
+          fallback,
+          sentence: _extractSentence(item),
+          initialReaderStatus: readerStatus,
+          autoSaveOnClose: false,
+        );
+        return;
+      }
       _showTermForm(
         termForm,
         sentence: _extractSentence(item),
-        initialReaderStatus: RegExp(
-          r'status(\d+)',
-        ).firstMatch(item.statusClass)?.group(1),
+        initialReaderStatus: readerStatus,
       );
     } catch (e) {
       return;
@@ -1596,15 +1618,26 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     final langId = selectedItems.first.langId;
     if (langId == null) return;
 
-    final termText = selectedItems.map((item) => item.text).join().trim();
+    // 同阅读页：拼词时夹带的 U+200B 会毁掉查询，用 displayText 洗掉。
+    final termText = selectedItems.map((item) => item.displayText).join().trim();
     if (termText.isEmpty) return;
 
     final termForm = await ref
         .read(readerProvider.notifier)
         .fetchTermForm(langId, termText);
-    if (termForm != null && mounted) {
-      _showTermForm(termForm, sentence: _extractSentence(selectedItems.first));
-    }
+    if (!mounted) return;
+    // 与阅读页同一处理：断网时 `fetchTermForm` 返回 null，以前就什么都不弹。
+    final form =
+        termForm ??
+        await ref
+            .read(readerProvider.notifier)
+            .buildLocalTermFormFallback(
+              languageId: langId,
+              text: termText,
+              statusClass: selectedItems.first.statusClass,
+            );
+    if (!mounted) return;
+    _showTermForm(form, sentence: _extractSentence(selectedItems.first));
   }
 
   void _triggerWordGlow() {
@@ -1696,10 +1729,11 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     TermForm termForm, {
     String? sentence,
     String? initialReaderStatus,
+    bool autoSaveOnClose = true,
   }) {
     _currentTermForm = termForm;
     _isDictionaryOpen = false;
-    bool _shouldAutoSaveOnClose = true;
+    bool _shouldAutoSaveOnClose = autoSaveOnClose;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,

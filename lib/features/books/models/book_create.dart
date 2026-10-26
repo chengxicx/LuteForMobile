@@ -11,6 +11,11 @@ class BookCreateRequest {
   final String? textFilePath;
   final String? audioFilePath;
 
+  /// Server-side import type (lute /book/new form's "Type").  The
+  /// local-book upgrade flow sets this to 'epub' so the uploaded file
+  /// imports as a reader-mode book; absent keeps the server default.
+  final String? bookType;
+
   const BookCreateRequest({
     required this.languageId,
     required this.title,
@@ -21,6 +26,7 @@ class BookCreateRequest {
     this.thresholdPageTokens = 250,
     this.textFilePath,
     this.audioFilePath,
+    this.bookType,
   });
 
   Map<String, dynamic> toFormFields() {
@@ -40,6 +46,7 @@ class BookCreateRequest {
       'book_tags': encodedTags,
       'split_by': splitBy,
       'threshold_page_tokens': thresholdPageTokens.toString(),
+      if (bookType != null && bookType!.isNotEmpty) 'book_type': bookType!,
     };
   }
 

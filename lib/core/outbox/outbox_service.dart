@@ -2,6 +2,7 @@ import 'package:dio/dio.dart' show DioException;
 import 'package:flutter/foundation.dart';
 
 import '../cache/cache_logger.dart';
+import '../network/api_service.dart' show TermFormRejectedException;
 import '../network/content_service.dart';
 import '../network/session_manager.dart';
 import 'models/pending_intent.dart';
@@ -272,6 +273,14 @@ class OutboxService {
     } on ServerLoginRequiredException {
       // The server answered; it just wants a re-login.  Never permanent.
       return _Outcome.needsLogin;
+    } on TermFormRejectedException catch (e) {
+      // The server read the form and refused it: the payload itself is
+      // wrong, so replaying it would fail identically forever.  Mark it
+      // failed right away so it stays in the outbox list for the user to
+      // see and act on, instead of being reported as synced -- which is how
+      // an offline status change used to disappear on the next sync.
+      CacheLogger.logError('outbox replay rejected', e);
+      return _Outcome.permanent;
     } on DioException catch (e) {
       final attempts = intent.attempts + 1;
       return isPermanentFailure(e.response?.statusCode, attempts: attempts)

@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'html_parser.dart';
+import 'local_dict.dart';
+import 'session_manager.dart';
 
 enum AIType { translation, virtualDictionary }
 
@@ -10,7 +12,8 @@ enum AIType { translation, virtualDictionary }
 bool sameDictionaries(List<DictionarySource> a, List<DictionarySource> b) {
   if (a.length != b.length) return false;
   String sig(DictionarySource d) =>
-      '${d.name}\u0000${d.urlTemplate}\u0000${d.isAI}\u0000${d.aiType}';
+      '${d.name}\u0000${d.urlTemplate}\u0000${d.isAI}\u0000${d.aiType}'
+      '\u0000${d.isLocal}';
   for (var i = 0; i < a.length; i++) {
     if (sig(a[i]) != sig(b[i])) return false;
   }
@@ -23,17 +26,35 @@ class DictionarySource {
   final bool isAI;
   final AIType? aiType;
 
+  /// 本地（服务器词典池）词典：此时 [urlTemplate] 是池里的 `.db` 文件名，
+  /// 不是 URL，必须走 `/read/localdict/...` 查询（见 `local_dict.dart`）。
+  final bool isLocal;
+
   const DictionarySource({
     required this.name,
     required this.urlTemplate,
     this.isAI = false,
     this.aiType,
+    this.isLocal = false,
   });
 
+  /// 老缓存里没有 `isLocal` 字段，靠模板形状兜底识别。
+  bool get isLocalDictionary => isLocal || looksLikeLocalDictFile(urlTemplate);
+
   factory DictionarySource.fromJson(Map<String, dynamic> json) {
+    final urlTemplate = json['urlTemplate'] as String? ?? '';
+    final isLocal =
+        json['isLocal'] as bool? ?? looksLikeLocalDictFile(urlTemplate);
+    var name = json['name'] as String? ?? '';
+    // 旧版本把本地词典的名字解析成了兜底的 "Dictionary"（文件名当 URL 解析
+    // 会抛错），这里按文件名重建一个可读的名字，免得用户看到的表头全是
+    // "Dictionary"。
+    if (isLocal && (name.isEmpty || name == 'Dictionary')) {
+      name = localDictFallbackName(urlTemplate);
+    }
     return DictionarySource(
-      name: json['name'] as String? ?? '',
-      urlTemplate: json['urlTemplate'] as String? ?? '',
+      name: name,
+      urlTemplate: urlTemplate,
       isAI: json['isAI'] as bool? ?? false,
       aiType: json['aiType'] != null
           ? AIType.values.firstWhere(
@@ -41,6 +62,7 @@ class DictionarySource {
               orElse: () => AIType.translation,
             )
           : null,
+      isLocal: isLocal,
     );
   }
 
@@ -50,6 +72,7 @@ class DictionarySource {
       'urlTemplate': urlTemplate,
       'isAI': isAI,
       'aiType': aiType?.toString(),
+      'isLocal': isLocal,
     };
   }
 }
@@ -72,6 +95,29 @@ class DictionaryService {
         .replaceAll('[LUTE]', encodedTerm)
         .replaceAll('{term}', encodedTerm)
         .replaceAll('{sentence}', encodedTerm);
+  }
+
+  /// 词典弹窗里该为 [dictionary] 加载哪个地址。
+  ///
+  /// 在线词典就是把词填进模板；本地词典的模板是服务器池里的文件名，得换成
+  /// 服务端的查询路由，否则 WebView 会拿文件名当域名去解析
+  /// （`net::ERR_NAME_NOT_RESOLVED`）。[serverUrl] 由调用方从设置里取，
+  /// 服务层本身不持有配置。
+  String buildDictionaryUrl({
+    required String term,
+    required DictionarySource dictionary,
+    required int languageId,
+    required String serverUrl,
+  }) {
+    if (dictionary.isLocalDictionary) {
+      return buildLocalDictUrl(
+        serverUrl: serverUrl,
+        languageId: languageId,
+        fileName: dictionary.urlTemplate,
+        term: term,
+      );
+    }
+    return buildUrl(term, dictionary.urlTemplate);
   }
 
   Future<List<DictionarySource>> getDictionariesForLanguage(
@@ -311,8 +357,57 @@ class DictionaryService {
     return '${dictionaryName}_${term.hashCode}';
   }
 
+  /// 词典 WebView 的渲染设置。
+  ///
+  /// [localDictionary] 为真时**必须**关掉 wide viewport：服务端
+  /// `read/localdict.html` 没有 `<meta name=viewport>`，Android WebView 默认
+  /// 按 980px 宽布局再整体缩放到控件宽度（400dp 左右），15px 的字实际只剩
+  /// 约 6dp —— 手机上就是"字很小看不清"。关掉后布局宽度 = 控件宽度，
+  /// 字号回到正常的 15px。第三方词典页自带 viewport meta，保持默认行为。
+  static InAppWebViewSettings webviewSettings({
+    required bool localDictionary,
+  }) {
+    return InAppWebViewSettings(
+      sharedCookiesEnabled: true,
+      cacheEnabled: true,
+      javaScriptEnabled: true,
+      userAgent:
+          'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      useWideViewPort: !localDictionary,
+      loadWithOverviewMode: !localDictionary,
+    );
+  }
+
   InAppWebViewController? getCachedWebview(String cacheKey) {
     return _webviewCache[cacheKey];
+  }
+
+  /// 把 App 的多用户会话 cookie 写进 WebView 的 cookie store。
+  ///
+  /// 词典弹窗里只有首个请求能带上自定义 header（`URLRequest.headers`）；
+  /// 服务器页面自己发起的后续导航（本地词典的交叉引用、主题 CSS 之外的
+  /// 子资源）带不上，多用户模式下会被 302 到 /login。cookie 装进 store
+  /// 后这段链路才是通的。
+  static Future<void> installSessionCookie(String serverUrl) async {
+    final cookie = SessionManager.sessionCookie;
+    if (cookie == null || cookie.isEmpty) return;
+    final separator = cookie.indexOf('=');
+    if (separator <= 0) return;
+    final uri = Uri.tryParse(serverUrl);
+    if (uri == null || uri.host.isEmpty) return;
+    try {
+      await CookieManager.instance().setCookie(
+        url: WebUri(serverUrl),
+        name: cookie.substring(0, separator),
+        value: cookie.substring(separator + 1),
+        path: '/',
+        domain: uri.host,
+        isSecure: uri.scheme == 'https',
+        isHttpOnly: true,
+      );
+    } catch (_) {
+      // 装 cookie 失败只影响页内跳转，首个请求仍有 Authorization/Cookie header。
+    }
   }
 
   void cacheWebview(String cacheKey, InAppWebViewController controller) {

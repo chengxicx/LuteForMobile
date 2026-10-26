@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../features/settings/models/tts_settings.dart';
 import '../../../features/settings/providers/tts_settings_provider.dart';
+import '../models/loop_mode.dart';
 import '../providers/player_mode_provider.dart';
 import '../providers/tts_player_provider.dart';
 import 'player/player_card.dart';
@@ -119,6 +120,8 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
     bool isEdgeTts,
   ) {
     final notifier = ref.read(ttsPlayerProvider.notifier);
+    // 循环开着时自动暂停被压制（loop wins）—— 键不能继续亮着"我在生效"。
+    final loopOn = state.loopMode.isOn;
 
     // 槽位顺序由 PlayerAuxRow 固定，与 MP3 播放条完全一致：
     // 倍速 → 循环 → 自动暂停 → 音色(占 MP3 条 AB 的槽位) → 跟读 → 切换播放器。
@@ -131,22 +134,35 @@ class _TTSPlayerWidgetState extends ConsumerState<TTSPlayerWidget> {
             notifier.nudgePlaybackRate(TTSPlayerNotifier.playbackRateStep),
         onReset: notifier.resetPlaybackRate,
       ),
-      // 与 MP3 条同一个 loop 图标；开关不换图标，靠 active 的实心圆底表达。
+      // 循环三态：单句（repeat_one，带 1）→ 整本连续朗读（loop，读完本页
+      // 自动翻页，书末回到第 1 页）→ 关。开没开由实心圆底表达，是哪一档
+      // 由图标形状表达。
       loop: PlayerIconButton(
-        icon: Icons.loop,
-        active: state.loopMode,
-        tooltip: state.loopMode ? 'Loop sentence on' : 'Loop sentence off',
-        onPressed: notifier.toggleLoopMode,
+        icon: state.loopMode == LoopMode.sentence
+            ? Icons.repeat_one
+            : Icons.loop,
+        active: loopOn,
+        tooltip: switch (state.loopMode) {
+          LoopMode.off => 'Loop off: tap for single-sentence loop',
+          LoopMode.sentence =>
+            'Single-sentence loop: tap to read on through the book',
+          LoopMode.all => 'Reading on through the book: tap to turn off',
+        },
+        onPressed: notifier.cycleLoopMode,
       ),
       autoPause: PlayerIconButton(
-        icon: state.autoPauseMode
+        icon: state.autoPauseMode && !loopOn
             ? Icons.pause_circle
             : Icons.pause_circle_outline,
-        active: state.autoPauseMode,
-        tooltip: state.autoPauseMode
+        active: state.autoPauseMode && !loopOn,
+        tooltip: loopOn
+            ? 'Auto-pause is overridden by loop: tap to stop looping and pause per sentence'
+            : state.autoPauseMode
             ? 'Auto-pause at each sentence: on'
             : 'Auto-pause at each sentence: off',
-        onPressed: notifier.toggleAutoPauseMode,
+        onPressed: loopOn
+            ? notifier.setAutoPauseOverLoop
+            : notifier.toggleAutoPauseMode,
       ),
       shadowing: widget.onShadowing == null
           ? null

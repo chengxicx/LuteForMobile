@@ -34,6 +34,20 @@ class SearchResultTerm {
 
 class TermForm {
   final String term;
+
+  /// The text the server has on file, from the edit form's hidden
+  /// `original_text` input.
+  ///
+  /// `/read/edit_term/<id>` posts a *whole* term, and `TermForm.validate_text`
+  /// branches on this field: empty means "this is a new term", so the server
+  /// looks for a duplicate and rejects the save with "Term already exists"
+  /// when it finds one -- which it always does for an edit.  Leaving it out
+  /// therefore turned every save into a validation failure that still
+  /// answered HTTP 200, so the outbox recorded it as sent and the colour it
+  /// was protecting disappeared.  Null only for terms that have no server
+  /// row yet.
+  final String? originalText;
+
   final String? translation;
   final int? termId;
   final int languageId;
@@ -49,6 +63,7 @@ class TermForm {
 
   TermForm({
     required this.term,
+    this.originalText,
     this.translation,
     this.termId,
     required this.languageId,
@@ -65,6 +80,7 @@ class TermForm {
 
   TermForm copyWith({
     String? term,
+    String? originalText,
     String? translation,
     int? termId,
     int? languageId,
@@ -81,6 +97,7 @@ class TermForm {
   }) {
     return TermForm(
       term: term ?? this.term,
+      originalText: originalText ?? this.originalText,
       translation: translation ?? this.translation,
       termId: termId ?? this.termId,
       languageId: languageId ?? this.languageId,
@@ -98,6 +115,14 @@ class TermForm {
 
   Map<String, dynamic> toFormData() {
     final data = {
+      // Both of these are validated server-side by `TermForm`:
+      // `validate_language_id` refuses an empty language, and
+      // `validate_text` treats an empty `original_text` as "new term" and
+      // rejects the save as a duplicate.  Omitting them made every edit fail
+      // validation while still answering 200, which is exactly how an
+      // offline status change used to evaporate on the next sync.
+      'language_id': languageId.toString(),
+      'original_text': originalText ?? (termId != null ? term : ''),
       'text': term,
       'translation': translation ?? '',
       'status': status,

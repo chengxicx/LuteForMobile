@@ -5,6 +5,7 @@ import '../../../shared/widgets/loading_indicator.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../local_books/widgets/local_books_shelf_section.dart';
 import '../providers/books_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/book.dart';
@@ -158,6 +159,9 @@ class _BooksScreenState extends ConsumerState<BooksScreen> {
                 onFilterSelected: () =>
                     setState(() => _filtersExpanded = false),
               ),
+            // 本地书（免服务器导入的 epub）横条：无书时折叠成一行导入
+            // 入口，不影响服务器书架。
+            const LocalBooksShelfSection(),
             Expanded(child: _buildBody(context, state, settings)),
           ],
         ),

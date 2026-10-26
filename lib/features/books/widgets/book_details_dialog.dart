@@ -4,6 +4,8 @@ import '../../../core/network/content_service.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../reader/providers/epub_offline_provider.dart';
+import '../../reader/services/epub_offline_store.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/book.dart';
 import '../providers/books_provider.dart';
@@ -29,6 +31,15 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
   late Book _displayBook;
   bool _isRefreshingStats = false;
 
+  // ---- offline pack (reader-mode epub only) ----
+  EpubPackManifest? _pack;
+  bool _packKnown = false;
+  bool _downloadingPack = false;
+  int _packPagesDone = 0;
+  bool _cancelPackDownload = false;
+
+  bool get _isEpub => _displayBook.bookType == 'epub';
+
   @override
   void initState() {
     super.initState();
@@ -37,6 +48,74 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     if (settings.alwaysRefreshBookDetails) {
       _refreshBookStatsInBackground(widget.book.id);
     }
+    if (_isEpub) {
+      _loadPackState();
+    }
+  }
+
+  Future<void> _loadPackState() async {
+    final pack = await ref.read(epubOfflineStoreProvider).manifestFor(
+      _displayBook.id,
+    );
+    if (!mounted) return;
+    setState(() {
+      _pack = pack;
+      _packKnown = true;
+      _packPagesDone = pack?.pageTimestamps.length ?? 0;
+    });
+  }
+
+  Future<void> _downloadPack() async {
+    if (_downloadingPack) return;
+    setState(() {
+      _downloadingPack = true;
+      _cancelPackDownload = false;
+      _packPagesDone = _pack?.pageTimestamps.length ?? 0;
+    });
+    try {
+      final manifest = await ref
+          .read(epubOfflinePrefetchProvider)
+          .downloadPack(
+            bookId: _displayBook.id,
+            title: _displayBook.title,
+            pageCount: _displayBook.totalPages,
+            onProgress: (progress) {
+              if (mounted) {
+                setState(() => _packPagesDone = progress.pagesDone);
+              }
+            },
+            shouldCancel: () => _cancelPackDownload,
+          );
+      if (!mounted) return;
+      setState(() => _pack = manifest);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Offline pack download failed: '
+              '${e.toString().replaceFirst('Exception: ', '')}',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        await _loadPackState();
+        if (mounted) setState(() => _downloadingPack = false);
+      }
+    }
+  }
+
+  Future<void> _deletePack() async {
+    final confirmed = await _showConfirmDialog(
+      context,
+      'Delete Offline Pack',
+      'Delete the offline pack for "${_displayBook.title}"? The book itself stays on the server.',
+    );
+    if (!confirmed || !mounted) return;
+    await ref.read(epubOfflineStoreProvider).deletePack(_displayBook.id);
+    await _loadPackState();
   }
 
   Future<void> _refreshBookStatsInBackground(int bookId) async {
@@ -252,6 +331,10 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
                 'Last Read',
                 book.formattedLastReadExact ?? 'Never',
               ),
+              if (_isEpub) ...[
+                const SizedBox(height: 12),
+                _buildOfflinePackSection(context),
+              ],
               if (book.tags != null && book.tags!.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Padding(
@@ -352,6 +435,109 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
           style: Theme.of(
             context,
           ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500),
+        ),
+      ],
+    );
+  }
+
+  /// Offline-pack row for reader-mode EPUB books: download the whole
+  /// book (chapters, assets, furigana readings) for fully offline
+  /// reading, or drop it again.  The reading screen keeps caching the
+  /// current and next chapter on its own; this button is for the whole
+  /// book.
+  Widget _buildOfflinePackSection(BuildContext context) {
+    if (!_packKnown) {
+      return const LinearProgressIndicator(minHeight: 2);
+    }
+
+    final pageCount = _displayBook.totalPages;
+    final pack = _pack;
+    final packedPages = pack?.pageTimestamps.length ?? 0;
+
+    if (_downloadingPack) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.cloud_download,
+                size: 20,
+                color: context.appColorScheme.text.secondary,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Downloading offline pack '
+                  '($_packPagesDone/$pageCount chapters)',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              TextButton(
+                onPressed: () => _cancelPackDownload = true,
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: pageCount > 0 ? _packPagesDone / pageCount : null,
+            minHeight: 2,
+          ),
+        ],
+      );
+    }
+
+    if (pack == null || packedPages == 0) {
+      return Row(
+        children: [
+          Icon(
+            Icons.cloud_off_outlined,
+            size: 20,
+            color: context.appColorScheme.text.secondary,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Offline pack: not downloaded',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _downloadPack,
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text('Download'),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        Icon(
+          pack.complete
+              ? Icons.cloud_done_outlined
+              : Icons.cloud_download_outlined,
+          size: 20,
+          color: context.appColorScheme.text.secondary,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            'Offline pack: $packedPages/$pageCount chapters'
+            '${pack.complete ? '' : ' (incomplete)'}',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        TextButton.icon(
+          onPressed: _downloadPack,
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('Update'),
+        ),
+        TextButton.icon(
+          onPressed: _deletePack,
+          icon: const Icon(Icons.delete_outline, size: 18),
+          label: const Text('Delete'),
         ),
       ],
     );

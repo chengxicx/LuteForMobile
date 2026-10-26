@@ -9,6 +9,7 @@ import '../../../core/cache/providers/cache_manager_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../books/providers/books_provider.dart';
 import '../../reader/providers/audio_player_provider.dart';
+import '../../reader/providers/epub_offline_provider.dart';
 
 /// 把字节数写成用户看得懂的量级。
 String formatCacheBytes(int bytes) {
@@ -40,6 +41,7 @@ class StorageCacheSection extends ConsumerStatefulWidget {
 class _StorageCacheSectionState extends ConsumerState<StorageCacheSection> {
   int? _pageBytes;
   AudioCacheStats? _audioStats;
+  int? _epubPackBytes;
   bool _busy = false;
 
   @override
@@ -69,10 +71,14 @@ class _StorageCacheSectionState extends ConsumerState<StorageCacheSection> {
 
     final pageBytes = await ref.read(cacheManagerProvider).getPageCacheBytes();
     final audio = await ref.read(audioCacheServiceProvider).getStats();
+    final epubBytes = await ref
+        .read(epubOfflineStoreProvider)
+        .diskUsageBytes();
     if (!mounted) return;
     setState(() {
       _pageBytes = pageBytes;
       _audioStats = audio;
+      _epubPackBytes = epubBytes;
     });
   }
 
@@ -108,6 +114,20 @@ class _StorageCacheSectionState extends ConsumerState<StorageCacheSection> {
     // 已被删除的文件。
     ref.read(audioPlayerProvider.notifier).reset();
     await _run(() => ref.read(cacheManagerProvider).clearAudioCache());
+  }
+
+  Future<void> _clearEpubPacks() async {
+    final confirmed = await _confirm(
+      title: 'Clear EPUB offline packs',
+      message:
+          'All downloaded EPUB offline packs are removed. Books stay on the '
+          'server; offline reading needs the packs, so those books must be '
+          'downloaded again from their book details.',
+      confirmLabel: 'Clear',
+      destructive: true,
+    );
+    if (confirmed != true || !mounted) return;
+    await _run(() => ref.read(epubOfflineStoreProvider).deleteAll());
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -199,6 +219,18 @@ class _StorageCacheSectionState extends ConsumerState<StorageCacheSection> {
                         'shadowing',
               size: audio == null ? '…' : formatCacheBytes(audio.bytes),
               onClear: _busy ? null : _clearAudioCache,
+            ),
+            const Divider(height: 24),
+            _buildEntry(
+              context,
+              title: 'EPUB offline packs',
+              subtitle: _epubPackBytes == null
+                  ? 'Measuring…'
+                  : 'Chapters, images & readings · offline EPUB reading',
+              size: _epubPackBytes == null
+                  ? '…'
+                  : formatCacheBytes(_epubPackBytes!),
+              onClear: _busy ? null : _clearEpubPacks,
             ),
           ],
         ),

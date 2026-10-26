@@ -11,6 +11,7 @@ import '../../../core/cache/audio_cache_layout.dart';
 import '../../../core/services/playback_foreground_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import 'reader_provider.dart';
+import '../models/loop_mode.dart';
 import '../utils/pending_seek.dart';
 import '../utils/player_save_policy.dart';
 import '../../../features/settings/providers/settings_provider.dart';
@@ -34,7 +35,10 @@ class AudioPlayerState {
   final String? errorMessage;
   final bool isLoading;
   final double playbackSpeed;
-  final bool loopMode;
+
+  /// 循环键的三态：关 / 单句循环 / 整首音频循环。整首循环在
+  /// [onPlayerComplete] 里把播放头拉回 0s 继续。
+  final LoopMode loopMode;
   final bool autoPauseMode;
 
   /// AB 复读的当前状态与 A/B 两点（off 态下两者为 null）。
@@ -56,7 +60,7 @@ class AudioPlayerState {
     this.errorMessage,
     required this.isLoading,
     this.playbackSpeed = 1.0,
-    this.loopMode = false,
+    this.loopMode = LoopMode.off,
     this.autoPauseMode = false,
     this.abPhase = AbLoopPhase.off,
     this.abStart,
@@ -79,7 +83,7 @@ class AudioPlayerState {
     Object? errorMessage = _unset,
     bool? isLoading,
     double? playbackSpeed,
-    bool? loopMode,
+    LoopMode? loopMode,
     bool? autoPauseMode,
     AbLoopPhase? abPhase,
     Object? abStart = _unset,
@@ -266,6 +270,19 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     });
 
     _completeSubscription = _audioPlayer!.onPlayerComplete.listen((_) {
+      // 单曲循环：播完回到 0s 接着放。不上报 stopped —— 那会让播放条把
+      // 主控键变回播放箭头、位置归零，看起来像"放完了"，而实际还在响。
+      if (state.loopMode == LoopMode.all) {
+        _markSeekIssued(Duration.zero);
+        unawaited(_seekPlayer(Duration.zero));
+        unawaited(_audioPlayer?.resume().catchError((_) {}));
+        state = state.copyWith(
+          playerState: PlayerState.playing,
+          position: Duration.zero,
+        );
+        return;
+      }
+
       state = state.copyWith(
         playerState: PlayerState.stopped,
         position: Duration.zero,
@@ -376,7 +393,9 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
         // 跨过第一个句尾后，进度条/时间/句子高亮整整 12 秒不动，然后跳到
         // 13.149s。（`01091d5` 引入。）判定本身在 `segmentBoundaryAction`。
         final action = segmentBoundaryAction(
-          loopMode: state.loopMode,
+          // 只有"单句循环"才在这里回卷；整首循环是播放器的整体行为，
+          // 句边界照常播过去（见 onPlayerComplete）。
+          loopMode: state.loopMode == LoopMode.sentence,
           autoPauseMode: state.autoPauseMode,
         );
         if (action != SegmentBoundaryAction.keepPlaying) {
@@ -445,14 +464,16 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
     }
   }
 
-  Future<void> toggleLoopMode() async {
-    final newLoop = !state.loopMode;
-    state = state.copyWith(loopMode: newLoop);
+  /// 循环键：点一下走一格 off → 单句 → 整首 → off。
+  ///
+  /// Mirrors the web player: turning the loop on while the audio is
+  /// paused (e.g. auto-paused at the end of a sentence) resumes
+  /// playback so the sentence starts looping immediately.
+  Future<void> cycleLoopMode() async {
+    final next = state.loopMode.next;
+    state = state.copyWith(loopMode: next);
 
-    // Mirrors the web player: turning the loop on while the audio is
-    // paused (e.g. auto-paused at the end of a sentence) resumes
-    // playback so the sentence starts looping immediately.
-    if (newLoop &&
+    if (next.isOn &&
         state.playerState != PlayerState.playing &&
         state.duration > Duration.zero) {
       try {
@@ -465,6 +486,12 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
 
   void toggleAutoPauseMode() {
     state = state.copyWith(autoPauseMode: !state.autoPauseMode);
+  }
+
+  /// 自动暂停键在循环开着时被压制（loop wins）。此时点它 = 关掉循环、
+  /// 打开自动暂停 —— 用户按的是"我要单句停"，不是"再叠一层"。
+  void setAutoPauseOverLoop() {
+    state = state.copyWith(loopMode: LoopMode.off, autoPauseMode: true);
   }
 
   Future<void> loadAudio({
