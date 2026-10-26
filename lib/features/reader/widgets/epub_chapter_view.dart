@@ -70,11 +70,11 @@ class EpubChapterView extends StatefulWidget {
   /// background-cache this chapter and the next into the offline pack.
   final VoidCallback? onOnlineChapterLoaded;
 
-  /// Re-fetches the pack assets that are not content-addressed (the
-  /// per-user theme, styles.css) before a chapter is served from the
-  /// pack.  A WebView loading the pack cannot revalidate them, so
-  /// without this a theme change leaves the reader on the previous
-  /// palette -- dark chrome around a white sheet.
+  /// Re-fetches the pack's theme (the one asset that is per-user and not
+  /// content-addressed) before a chapter is served from the pack.  A
+  /// WebView loading the pack cannot revalidate it, so without this a
+  /// theme change leaves the reader on the previous palette -- dark
+  /// chrome around a white sheet.
   final Future<void> Function()? refreshPackAssets;
 
   /// Fired on every press that starts inside the chapter, before the page
@@ -87,6 +87,16 @@ class EpubChapterView extends StatefulWidget {
   /// Chromium, so the reader's own `onTapDown` never fires and a card left
   /// open stayed open until the 10 s timer.
   final VoidCallback? onPress;
+
+  /// Fired when a click lands on anything that is not a word -- the
+  /// chapter's own text container, an image, the gaps between lines.
+  ///
+  /// The reader uses it for the same thing its `GestureDetector.onTap`
+  /// does on the Flutter-rendered text: in fullscreen mode, a tap on empty
+  /// space brings the chrome back.  Only the page knows which of its
+  /// children is a word, so the chapter view wires a capture-phase click
+  /// listener into the document and reports the misses.
+  final VoidCallback? onBlankTap;
 
   /// Fired for a settled word tap.  The second argument is the *screen*
   /// rect the word card should hang off: only Chromium knows where the
@@ -111,6 +121,7 @@ class EpubChapterView extends StatefulWidget {
     this.onOnlineChapterLoaded,
     this.refreshPackAssets,
     this.onPress,
+    this.onBlankTap,
     required this.onTap,
     required this.onDoubleTap,
     this.onTripleTap,
@@ -221,11 +232,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
     Uri? local;
     try {
-      // The pack's theme and styles.css are refreshed first: they are
-      // served to a WebView, which cannot revalidate them, so a stale
-      // copy would paint the chapter on the previous palette.
+      // Only the theme is awaited, and only briefly.  It is a few KB and
+      // the palette is simply wrong without it; the pack's stylesheet and
+      // reader scripts are the caller's background job (~200 KB, which
+      // cost a measured 2.4 s of blank chapter on every cold open).
       await widget.refreshPackAssets?.call().timeout(
-        const Duration(seconds: 4),
+        const Duration(milliseconds: 1200),
       );
     } catch (_) {
       // Offline, or the refresh timed out: the packed copies still work.
@@ -357,6 +369,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       callback: (args) {
         final item = _itemForPayload(args);
         if (item != null) widget.onTripleTap?.call(item);
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubBlankTap',
+      callback: (args) {
+        if (mounted) widget.onBlankTap?.call();
       },
     );
     controller.addJavaScriptHandler(
@@ -508,6 +526,31 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // look=night.  Assert the reader's setting once per load; the chips
     // then apply instantly and a fresh chapter starts on the right look.
     await _pushLook();
+
+    // Report clicks that miss every word.  Wired here rather than in the
+    // page: a pack written before this existed has no such bridge, and its
+    // HTML is only replaced when the chapter is re-rendered.  Capture
+    // phase, so it runs before the page's own handler and does not depend
+    // on it; `__luteBlankTapWired` keeps a reload from stacking listeners.
+    try {
+      await controller.evaluateJavascript(
+        source: r"""
+(function () {
+  if (window.__luteBlankTapWired) return;
+  window.__luteBlankTapWired = true;
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    if (target && target.closest && target.closest('span.textitem.word')) return;
+    if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+      window.flutter_inappwebview.callHandler('luteEpubBlankTap');
+    }
+  }, true);
+})();
+""",
+      );
+    } catch (_) {
+      // The page may be mid-navigation; the next load retries.
+    }
 
     // The page reports readiness at DOMContentLoaded, i.e. before the
     // load event, so a live chapter has already lifted the veil here.

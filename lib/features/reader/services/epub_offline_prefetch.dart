@@ -53,36 +53,57 @@ class EpubOfflinePrefetch {
   /// `bookId_page` nearby pages already handled this session.
   final Set<String> _nearbyDone = {};
 
-  /// Pack assets re-fetched this session (see [refreshMutableAssets]).
-  bool _mutableAssetsRefreshed = false;
+  /// Static pack assets re-fetched this session (see
+  /// [refreshStaticAssets]).
+  bool _staticAssetsRefreshed = false;
 
-  /// Re-fetch the pack assets whose URL is stable but whose content is
-  /// not.
+  /// Re-fetch the user's theme, returning whether it changed.
   ///
-  /// A pack stores these under the bare path, so a copy written when the
-  /// pack was built outlives every server-side change -- and a WebView
-  /// loading the pack has no way to revalidate it.  Three things ride on
-  /// that: the per-user theme (the paper painted by the look classes),
-  /// styles.css (where those classes are defined at all) and
-  /// lute-epub-reader.js (which holds `setLook`, the function the app's
-  /// look chips call).  A stale js is why *Original / Night / Theme* did
-  /// nothing: the bridge call reached a page whose reader script had no
-  /// `setLook`, so the chips were accepted and silently dropped.
+  /// A pack stores `/theme/current` under a stable path, so a copy
+  /// written when the pack was built outlives every theme change -- and a
+  /// WebView loading the pack has no way to revalidate it.  That showed
+  /// up as a chapter painted on the previous palette (a white sheet under
+  /// the app's dark chrome).
   ///
-  /// Runs before a chapter is served from the pack, so the palette is
-  /// right on the first paint.  The theme is a few KB and is refreshed
-  /// every time; the rest are ~200 KB together, so once a session is
-  /// enough.
-  Future<void> refreshMutableAssets() async {
-    await _refreshAsset('theme/current');
-    if (_mutableAssetsRefreshed) return;
-    _mutableAssetsRefreshed = true;
-    await _refreshAsset('static/css/styles.css');
-    await _refreshAsset('static/js/lute-epub-reader.js');
-    await _refreshAsset('static/js/lute-furigana.js');
+  /// This is the one piece worth blocking the first paint on: it is a few
+  /// KB, and without it the chapter is simply wrong.  The caller gives it
+  /// a short leash; on a slow network the packed copy carries the open
+  /// and the next one gets the new bytes.
+  Future<bool> refreshTheme() async {
+    final bytes = await _fetchAsset('theme/current');
+    if (bytes == null) return false;
+    final packed = await store.readBytes('theme/current');
+    if (packed != null && _sameBytes(packed, bytes)) return false;
+    await store.writeBytes('theme/current', bytes);
+    return true;
   }
 
-  Future<void> _refreshAsset(String path) async {
+  /// Re-fetch the pack's stylesheet and reader scripts, once a session.
+  ///
+  /// These change only when the server is redeployed, and a WebView
+  /// cannot revalidate them -- a pack caught mid-deploy kept a reader
+  /// script with no `setLook`, so the app's *Original / Night / Theme*
+  /// chips were accepted and silently dropped.
+  ///
+  /// Deliberately not awaited by the caller: they are ~200 KB together,
+  /// and awaiting them put a measured 2.4 s of blank chapter in front of
+  /// every cold open (theme at :38.2, styles at :39.0, js at :40.6, and
+  /// the chapter only painted at :43.0).
+  Future<void> refreshStaticAssets() async {
+    if (_staticAssetsRefreshed) return;
+    _staticAssetsRefreshed = true;
+    for (final path in const [
+      'static/css/styles.css',
+      'static/js/lute-epub-reader.js',
+      'static/js/lute-furigana.js',
+    ]) {
+      final bytes = await _fetchAsset(path);
+      if (bytes != null) await store.writeBytes(path, bytes);
+    }
+  }
+
+  /// Fetch one asset, cache-busted.  Null on any failure.
+  Future<List<int>?> _fetchAsset(String path) async {
     try {
       // The mutable assets sit behind the CDN, which serves them with
       // `Cache-Control: immutable, max-age=1y`.  A refresh that asks for
@@ -93,13 +114,22 @@ class EpubOfflinePrefetch {
       final bust = DateTime.now().millisecondsSinceEpoch;
       final asset = await apiService.downloadAsset('/$path?_=$bust');
       final bytes = asset.data;
-      if (bytes == null || bytes.isEmpty) return;
-      await store.writeBytes(path, bytes);
+      if (bytes == null || bytes.isEmpty) return null;
+      return bytes;
     } on Exception catch (e) {
       // Offline, or a transient failure: the packed copy stays, which is
       // what the reader had anyway.
       ApiLogger.logError('epubOfflineRefresh', e, details: path);
+      return null;
     }
+  }
+
+  static bool _sameBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   bool get isRunning => _runningBooks.isNotEmpty;

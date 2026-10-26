@@ -2010,9 +2010,14 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             ),
             enableTripleTap: settings.enableTripleTapToMarkKnown,
             localServer: ref.watch(epubLocalServerProvider),
-            refreshPackAssets: () => ref
-                .read(epubOfflinePrefetchProvider)
-                .refreshMutableAssets(),
+            refreshPackAssets: () {
+              final prefetch = ref.read(epubOfflinePrefetchProvider);
+              // The stylesheet and reader scripts are ~200 KB and only
+              // change on a redeploy: refresh them behind the first paint
+              // instead of in front of it.
+              unawaited(prefetch.refreshStaticAssets());
+              return prefetch.refreshTheme();
+            },
             onOnlineChapterLoaded: () {
               // Online and authenticated: grow the offline pack with
               // this chapter and the next one, quietly.
@@ -2035,6 +2040,19 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             // it -- the press belongs to Chromium now -- a card stayed up
             // until its 10 s timer ran out.
             onPress: TermTooltipClass.close,
+            // ... and a click that hit no word does what the same click
+            // does on the text path: in fullscreen, bring the chrome back
+            // (or keep it up a while longer).  Paginated page turns are
+            // not mirrored here on purpose -- a chapter scrolls, so its
+            // thirds are not page-turning targets.
+            onBlankTap: () {
+              if (!textSettings.fullscreenMode) return;
+              if (!_isUiVisible) {
+                _showUi();
+              } else {
+                _resetHideTimer();
+              }
+            },
             onDoubleTap: (item) {
               _handleDoubleTap(item);
             },
