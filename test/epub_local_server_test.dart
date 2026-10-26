@@ -210,4 +210,45 @@ void main() {
       client.close();
     }
   });
+
+  test('the extension-less theme path is served as CSS, not octet-stream',
+      () async {
+    // Chromium refuses to *apply* a stylesheet whose Content-Type is
+    // application/octet-stream, and says nothing when it does: the
+    // chapter then renders on styles.css's base palette and the user's
+    // theme is invisible.  `theme/current` has no extension, so it hit
+    // exactly that.
+    await store.writeText('theme/current', 'body { color: #e5e5ea; }');
+
+    final base = await server.ensureStarted();
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(base.replace(path: '/theme/current'));
+      final response = await request.close();
+      expect(response.statusCode, 200);
+      expect(response.headers.contentType?.mimeType, 'text/css');
+      expect(await getBody(response), contains('#e5e5ea'));
+    } finally {
+      client.close();
+    }
+  });
+
+  test('an extension-less binary asset stays octet-stream', () async {
+    await store.writeBytes('static/epub/u1/img/blob', [1, 2, 3]);
+
+    final base = await server.ensureStarted();
+    final client = HttpClient();
+    try {
+      final request =
+          await client.getUrl(base.replace(path: '/static/epub/u1/img/blob'));
+      final response = await request.close();
+      expect(response.statusCode, 200);
+      expect(
+        response.headers.contentType?.mimeType,
+        'application/octet-stream',
+      );
+    } finally {
+      client.close();
+    }
+  });
 }

@@ -261,13 +261,31 @@ class EpubLocalServer {
       _safeRespond(request, HttpStatus.notFound);
       return;
     }
-    final dot = path.lastIndexOf('.');
-    final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
     response.statusCode = HttpStatus.ok;
-    response.headers.contentType = ContentType.parse(
-      _contentTypes[ext] ?? 'application/octet-stream',
-    );
+    response.headers.contentType = ContentType.parse(_contentTypeFor(path));
     response.add(bytes);
     await response.close();
+  }
+
+  /// Content type for one stored asset.
+  ///
+  /// A store path need not have an extension, and `theme/current` -- the
+  /// theme stylesheet, i.e. the one asset that decides the whole reading
+  /// palette -- is served from exactly that path.  A bare extension
+  /// lookup then hands it `application/octet-stream`, and Chromium
+  /// refuses to *apply* a stylesheet with that type without saying so:
+  /// `getComputedStyle` on the chapter silently falls back to
+  /// styles.css's own defaults (black ink, the base pastel status
+  /// chips, no `--paper-bg`), so the packed page ignored the user's
+  /// theme entirely while the same page loaded from the server -- where
+  /// Flask answers `text/css` -- looked right.  Anything under `theme/`
+  /// is CSS, extension or not.
+  static String _contentTypeFor(String path) {
+    final dot = path.lastIndexOf('.');
+    final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+    final known = _contentTypes[ext];
+    if (known != null) return known;
+    if (path.startsWith('theme/')) return 'text/css; charset=utf-8';
+    return 'application/octet-stream';
   }
 }
