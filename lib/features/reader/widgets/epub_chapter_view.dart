@@ -1,5 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -66,7 +70,30 @@ class EpubChapterView extends StatefulWidget {
   /// background-cache this chapter and the next into the offline pack.
   final VoidCallback? onOnlineChapterLoaded;
 
-  final void Function(TextItem item, BuildContext context) onTap;
+  /// Re-fetches the pack assets that are not content-addressed (the
+  /// per-user theme, styles.css) before a chapter is served from the
+  /// pack.  A WebView loading the pack cannot revalidate them, so
+  /// without this a theme change leaves the reader on the previous
+  /// palette -- dark chrome around a white sheet.
+  final Future<void> Function()? refreshPackAssets;
+
+  /// Fired on every press that starts inside the chapter, before the page
+  /// has decided what it meant.
+  ///
+  /// The reader uses it to dismiss the word card.  The Flutter-rendered
+  /// text path gets that for free -- its `GestureDetector.onTapDown` runs
+  /// on any press -- but nothing in Flutter sees a press that lands in the
+  /// chapter: the eager gesture recognizer hands the pointer straight to
+  /// Chromium, so the reader's own `onTapDown` never fires and a card left
+  /// open stayed open until the 10 s timer.
+  final VoidCallback? onPress;
+
+  /// Fired for a settled word tap.  The second argument is the *screen*
+  /// rect the word card should hang off: only Chromium knows where the
+  /// word sits inside the page (it is a `<span>` in a scrolled, zoomed
+  /// viewport), so the reader cannot derive it from the widget tree the
+  /// way it does for the Flutter-rendered text.
+  final void Function(TextItem item, Rect anchor) onTap;
   final void Function(TextItem item) onDoubleTap;
   final void Function(TextItem item)? onTripleTap;
 
@@ -82,6 +109,8 @@ class EpubChapterView extends StatefulWidget {
     required this.enableTripleTap,
     this.localServer,
     this.onOnlineChapterLoaded,
+    this.refreshPackAssets,
+    this.onPress,
     required this.onTap,
     required this.onDoubleTap,
     this.onTripleTap,
@@ -127,6 +156,27 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   double _lastScrollTop = 0;
   Timer? _scrollFlushTimer;
 
+  /// Where the last finger landed inside the chapter, in *screen*
+  /// coordinates.  A word tap reaches Dart only after the double-tap
+  /// window (~250 ms) and the payload carries no geometry, so this is
+  /// the only record of which spot the user pressed -- and it is what
+  /// anchors the word card.  Without it the reader fell back to the
+  /// whole view's rect: the card came up centred at the very top of the
+  /// chapter, nowhere near the word.
+  Offset? _lastPointerDown;
+
+  /// Anchor rect for the word card: a zero-size rect at the press point,
+  /// which [TermTooltipClass] expands into "card above the finger".  The
+  /// fallback (a scripted tap, or a tap that never produced a pointer
+  /// event) is the view's own box, i.e. the old behaviour.
+  Rect _tapAnchor() {
+    final at = _lastPointerDown;
+    if (at != null) return Rect.fromLTWH(at.dx, at.dy, 0, 0);
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null) return Rect.zero;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
   String get _scrollPrefsKey => 'epub_scroll_${widget.bookId}';
 
   @override
@@ -149,18 +199,37 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     setState(() => _chapterReady = true);
   }
 
-  /// Where the first navigation goes: the server when it is believed
-  /// reachable (today's behaviour), the local pack when it is not and
-  /// the pack has this chapter.  The offline decision needs one async
-  /// hop (server start + pack lookup), so the WebView is withheld until
-  /// it settles -- a blank beat offline beats a dead error page.
+  /// Where the first navigation goes.
+  ///
+  /// The offline pack wins whenever it holds this chapter, online or
+  /// not: it is the same document the server renders, read from disk, so
+  /// the chapter paints immediately instead of waiting out a server-side
+  /// render (a 380 KB chapter costs two to three seconds of that alone).
+  /// Two things keep that honest -- the pack is refreshed from the
+  /// server after the load ([_onLoadStop]), and the page's status
+  /// classes are re-asserted from the reader's model
+  /// ([_pushAllStatuses]), so a copy written before the latest status
+  /// changes cannot leave stale colours on screen.
+  ///
+  /// Without a packed copy the server URL is used as before, and a
+  /// main-frame failure still falls back to the pack.
   Future<void> _decideInitialUrl() async {
     final localServer = widget.localServer;
-    if (localServer == null || ServerStatusManager.isReachable) {
+    if (localServer == null) {
       if (mounted) setState(() => _decidingUrl = false);
       return;
     }
     Uri? local;
+    try {
+      // The pack's theme and styles.css are refreshed first: they are
+      // served to a WebView, which cannot revalidate them, so a stale
+      // copy would paint the chapter on the previous palette.
+      await widget.refreshPackAssets?.call().timeout(
+        const Duration(seconds: 4),
+      );
+    } catch (_) {
+      // Offline, or the refresh timed out: the packed copies still work.
+    }
     try {
       local = await localServer.localPageUrl(
         widget.bookId,
@@ -273,7 +342,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       handlerName: 'luteEpubWordTap',
       callback: (args) {
         final item = _itemForPayload(args);
-        if (item != null && mounted) widget.onTap(item, context);
+        if (item != null && mounted) widget.onTap(item, _tapAnchor());
       },
     );
     controller.addJavaScriptHandler(
@@ -356,13 +425,47 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     return map;
   }
 
+  /// Re-assert every word's status in the page from the reader's model.
+  ///
+  /// The page paints whatever status classes its HTML carried, and a
+  /// chapter served from the offline pack carries the ones it had when
+  /// the pack was written -- so a word marked known after that would
+  /// come back looking new.  One bulk push per load closes the gap; for
+  /// a freshly rendered server page it is a no-op rewrite of the same
+  /// classes.
+  Future<void> _pushAllStatuses(InAppWebViewController controller) async {
+    final map = _statusMap(widget.paragraphs);
+    if (map.isEmpty) return;
+    try {
+      await controller.evaluateJavascript(
+        source: 'window.LuteEpubBridge && '
+            'window.LuteEpubBridge.setStatuses(${jsonEncode(map)})',
+      );
+    } catch (_) {
+      // The page may be mid-navigation; the next load re-asserts.
+    }
+  }
+
+  /// Push the reader's look onto the page.
+  ///
+  /// Needed on every load, not just when the setting changes: the page's
+  /// boot code reads the look out of localStorage, and the pack's local
+  /// origin changes port with every launch, so a chapter that the app
+  /// served with look=night still starts as "original" (see
+  /// [_onLoadStop]).
+  Future<void> _pushLook() async {
+    await _runJs(
+      "window.LuteEpubBridge && window.LuteEpubBridge.setLook('${widget.look}')",
+    );
+  }
+
   @override
   void didUpdateWidget(EpubChapterView oldWidget) {
     super.didUpdateWidget(oldWidget);
 
     // Look / furigana / zoom-relevant settings changed: push them down.
     if (oldWidget.look != widget.look) {
-      _runJs("window.LuteEpubBridge && window.LuteEpubBridge.setLook('${widget.look}')");
+      _pushLook();
     }
     if (oldWidget.furiganaEnabled != widget.furiganaEnabled) {
       _runJs(
@@ -391,6 +494,21 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // reach the network.
     debugPrint('[epub-ready] load-stop host=${url?.host}');
 
+    // A packed copy carries the status classes it had when it was
+    // written; the reader's model is the authority.  One DOM pass, once
+    // per load -- the per-word bridge call would be thousands of
+    // subtree queries on a full chapter.
+    await _pushAllStatuses(controller);
+
+    // The page decides its look from its own localStorage, not from the
+    // class the document arrived with: `mount()` re-derives it, and the
+    // pack is served from `http://127.0.0.1:<random port>`, a brand-new
+    // origin every launch -- so the stored value is absent and the page
+    // boots as "original" even when the chapter was fetched with
+    // look=night.  Assert the reader's setting once per load; the chips
+    // then apply instantly and a fresh chapter starts on the right look.
+    await _pushLook();
+
     // The page reports readiness at DOMContentLoaded, i.e. before the
     // load event, so a live chapter has already lifted the veil here.
     // One that did not is a chapter rendered before the callback existed
@@ -409,9 +527,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       if (zoom is num && mounted) setState(() => _zoom = zoom.toDouble());
     } catch (_) {}
 
-    // The server's copy loaded: we are online and authenticated, so the
-    // pack can grow this chapter and the next one in the background.
-    if (url != null && url.host != '127.0.0.1') {
+    // Refresh the pack from the server.  This used to run only when the
+    // server had served the page; now the pack serves it too, and the
+    // pack has to keep up with the server (new statuses, text fixes) or
+    // it would stay at whatever it held when it was written.
+    if (url != null &&
+        (url.host != '127.0.0.1' || ServerStatusManager.isReachable)) {
       widget.onOnlineChapterLoaded?.call();
     }
 
@@ -499,20 +620,51 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
     return Stack(
       children: [
-        InAppWebView(
-          key: ValueKey('epub-webview-${widget.bookId}-${widget.pageNum}'),
-          initialUrlRequest: URLRequest(url: WebUri(_pageUrl)),
-          initialSettings: InAppWebViewSettings(
-            javaScriptEnabled: true,
-            // Zoom runs through the bridge (the page disables the
-            // viewport gesture so double-tap stays a status cycle).
-            supportZoom: false,
-            transparentBackground: true,
+        // Records where the finger came down -- the tap itself is settled
+        // by the page (double/triple-tap detection needs the click
+        // stream), so Dart never sees a GestureDetector callback inside
+        // the WebView.  A raw [Listener] sits on the hit-test path
+        // regardless of which recognizer wins the arena, which is what
+        // keeps the word card anchored under the finger.
+        Listener(
+          onPointerDown: (event) {
+            _lastPointerDown = event.position;
+            // Anything pressed inside the chapter dismisses an open word
+            // card -- including pressing another word, which re-opens the
+            // card a moment later from the page's own tap handler.
+            widget.onPress?.call();
+          },
+          child: InAppWebView(
+            key: ValueKey('epub-webview-${widget.bookId}-${widget.pageNum}'),
+            initialUrlRequest: URLRequest(url: WebUri(_pageUrl)),
+            initialSettings: InAppWebViewSettings(
+              javaScriptEnabled: true,
+              // Zoom runs through the bridge (the page disables the
+              // viewport gesture so double-tap stays a status cycle).
+              supportZoom: false,
+              transparentBackground: true,
+            ),
+            // A platform view only receives pointer events while *its* own
+            // gesture recognizers hold the arena (see
+            // render/rendering/platform_view.dart: "as long as the gesture
+            // arena is unresolved, the recognizer caches all pointer
+            // events").  The default set is empty, so nothing in Flutter
+            // ever claims the arena, and the cached sequence is replayed to
+            // Chromium only once the finger goes up.  Taps survived that
+            // (the page gets down+up in one go) and so did flings (the
+            // replay carries velocity), but a drag could not follow the
+            // finger: measured on the OnePlus, a 1600 px slow drag over 3 s
+            // moved the chapter 24 px, while a fast 1000 px swipe carried
+            // it hundreds.  Handing every pointer that starts inside the
+            // WebView straight to Chromium is what makes dragging scroll.
+            gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+              Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+            },
+            onWebViewCreated: _registerHandlers,
+            onLoadStop: _onLoadStop,
+            onReceivedError: _onReceivedError,
+            onReceivedHttpAuthRequest: _onReceivedHttpAuthRequest,
           ),
-          onWebViewCreated: _registerHandlers,
-          onLoadStop: _onLoadStop,
-          onReceivedError: _onReceivedError,
-          onReceivedHttpAuthRequest: _onReceivedHttpAuthRequest,
         ),
         // Zoom controls for fixed-layout chapters (fit-to-width pages
         // that cannot reflow); reflowing chapters read at the book's own

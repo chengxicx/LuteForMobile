@@ -1070,6 +1070,13 @@ class _RemoteDictWebViewState extends State<_RemoteDictWebView> {
             headers: widget.headers,
           ),
           initialSettings: widget.settings,
+          // Deliberately *not* eager: this WebView lives inside the tab
+          // PageView, and an eager recognizer would swallow the horizontal
+          // drag that switches dictionaries.  A vertical drag recognizer
+          // takes the arena team after touch slop (~18 px, invisible), which
+          // is enough to stop the platform view from buffering the whole
+          // gesture until the finger lifts; a horizontal drag still reaches
+          // the PageView.
           gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
             Factory(() => VerticalDragGestureRecognizer()),
           },

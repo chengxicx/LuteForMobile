@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -415,6 +418,18 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
                             supportZoom: false,
                             transparentBackground: true,
                           ),
+                          // Same reason as the server chapter view: a
+                          // platform view with no recognizer caches every
+                          // pointer event until the finger lifts, so a slow
+                          // drag scrolls one line at most.  Nothing else in
+                          // this screen competes for the gesture, so the
+                          // WebView can claim it at touch-down.
+                          gestureRecognizers:
+                              <Factory<OneSequenceGestureRecognizer>>{
+                                Factory<OneSequenceGestureRecognizer>(
+                                  () => EagerGestureRecognizer(),
+                                ),
+                              },
                           onWebViewCreated: _onWebViewCreated,
                           onLoadStop: _onLoadStop,
                         ),

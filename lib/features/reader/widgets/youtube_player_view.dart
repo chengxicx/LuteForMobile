@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart'
+    show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -395,6 +398,17 @@ class _YoutubePlayerViewState extends State<YoutubePlayerView> {
                   mediaPlaybackRequiresUserGesture: false,
                   transparentBackground: false,
                 ),
+                // Without a recognizer the platform view only receives the
+                // pointer sequence when the finger lifts, so taps on the
+                // player's own controls (YouTube overlay, dash.js `<video>`)
+                // land as a single replayed burst instead of a touch.  The
+                // video is a fixed header with nothing to scroll behind it,
+                // so claiming the gesture eagerly costs nothing here.
+                gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+                  Factory<OneSequenceGestureRecognizer>(
+                    () => EagerGestureRecognizer(),
+                  ),
+                },
                 onWebViewCreated: (controller) {
                   _controller = controller;
                   unawaited(_loadPlayerPage(controller));

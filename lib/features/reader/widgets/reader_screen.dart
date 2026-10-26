@@ -2010,6 +2010,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             ),
             enableTripleTap: settings.enableTripleTapToMarkKnown,
             localServer: ref.watch(epubLocalServerProvider),
+            refreshPackAssets: () => ref
+                .read(epubOfflinePrefetchProvider)
+                .refreshMutableAssets(),
             onOnlineChapterLoaded: () {
               // Online and authenticated: grow the offline pack with
               // this chapter and the next one, quietly.
@@ -2021,9 +2024,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                     pageCount: pageData.pageCount,
                   );
             },
-            onTap: (item, context) {
-              _handleTap(item, context);
+            onTap: (item, anchor) {
+              // The chapter view cannot hand over a word-shaped rect: the
+              // word is a span inside Chromium, so it reports where the
+              // finger landed instead.
+              _handleTap(item, context, anchor: anchor);
             },
+            // Mirrors this screen's own `onTapDown` on the text path: a
+            // press anywhere in the chapter drops an open card.  Without
+            // it -- the press belongs to Chromium now -- a card stayed up
+            // until its 10 s timer ran out.
+            onPress: TermTooltipClass.close,
             onDoubleTap: (item) {
               _handleDoubleTap(item);
             },
@@ -2204,9 +2215,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             height: 48,
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onVerticalDragStart: (_) {},
-              onVerticalDragUpdate: (_) {},
-              onVerticalDragEnd: (_) {},
+              // A reflowing EPUB chapter scrolls, and a thumb resting low
+              // on the screen is exactly where an upward scroll starts --
+              // which made these no-op handlers a dead zone: the bottom
+              // 48dp of the page could not be dragged, so a chapter that
+              // began just under the player looked impossible to scroll.
+              // Paginated content has nothing to scroll here anyway, so
+              // only it keeps the strip.
+              onVerticalDragStart: pageData.isEpub ? null : (_) {},
+              onVerticalDragUpdate: pageData.isEpub ? null : (_) {},
+              onVerticalDragEnd: pageData.isEpub ? null : (_) {},
               onTap: () {
                 if (textSettings.fullscreenMode && !_isUiVisible) {
                   _showUi();
@@ -2219,7 +2237,15 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     );
   }
 
-  void _handleTap(TextItem item, BuildContext context) async {
+  /// [anchor] is the screen rect the word card should hang off.  The
+  /// Flutter-rendered text passes the tapped cell's context, so the rect
+  /// is measured here; the EPUB chapter view has no widget per word and
+  /// passes the press point instead.
+  void _handleTap(
+    TextItem item,
+    BuildContext context, {
+    Rect? anchor,
+  }) async {
     if (item.isSpace) return;
 
     // Answer the finger before the network does.  The card cannot be shown
@@ -2236,7 +2262,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       final seq = ++_tooltipSeq;
 
       final renderBox = context.findRenderObject() as RenderBox;
-      final termRect = renderBox.localToGlobal(Offset.zero) & renderBox.size;
+      final termRect =
+          anchor ?? (renderBox.localToGlobal(Offset.zero) & renderBox.size);
 
       final termTooltip = await ref
           .read(readerProvider.notifier)

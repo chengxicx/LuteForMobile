@@ -29,6 +29,10 @@ class EpubOfflineProgress {
 /// Asset and reading failures are skipped (a missing image must not
 /// abort a 300-page book); only a page-HTML failure propagates.
 class EpubOfflinePrefetch {
+  /// How long a packed chapter page is considered current (see
+  /// [prefetchNearby]).
+  static const Duration packedPageTtl = Duration(hours: 6);
+
   final ApiService apiService;
   final ContentService contentService;
   final EpubOfflineStore store;
@@ -48,6 +52,55 @@ class EpubOfflinePrefetch {
 
   /// `bookId_page` nearby pages already handled this session.
   final Set<String> _nearbyDone = {};
+
+  /// Pack assets re-fetched this session (see [refreshMutableAssets]).
+  bool _mutableAssetsRefreshed = false;
+
+  /// Re-fetch the pack assets whose URL is stable but whose content is
+  /// not.
+  ///
+  /// A pack stores these under the bare path, so a copy written when the
+  /// pack was built outlives every server-side change -- and a WebView
+  /// loading the pack has no way to revalidate it.  Three things ride on
+  /// that: the per-user theme (the paper painted by the look classes),
+  /// styles.css (where those classes are defined at all) and
+  /// lute-epub-reader.js (which holds `setLook`, the function the app's
+  /// look chips call).  A stale js is why *Original / Night / Theme* did
+  /// nothing: the bridge call reached a page whose reader script had no
+  /// `setLook`, so the chips were accepted and silently dropped.
+  ///
+  /// Runs before a chapter is served from the pack, so the palette is
+  /// right on the first paint.  The theme is a few KB and is refreshed
+  /// every time; the rest are ~200 KB together, so once a session is
+  /// enough.
+  Future<void> refreshMutableAssets() async {
+    await _refreshAsset('theme/current');
+    if (_mutableAssetsRefreshed) return;
+    _mutableAssetsRefreshed = true;
+    await _refreshAsset('static/css/styles.css');
+    await _refreshAsset('static/js/lute-epub-reader.js');
+    await _refreshAsset('static/js/lute-furigana.js');
+  }
+
+  Future<void> _refreshAsset(String path) async {
+    try {
+      // The mutable assets sit behind the CDN, which serves them with
+      // `Cache-Control: immutable, max-age=1y`.  A refresh that asks for
+      // the bare path therefore stores the CDN's copy -- measured at ten
+      // hours old for the theme and twenty-one for styles.css -- and the
+      // pack keeps it until the next refresh, forever.  A cache-busting
+      // query makes every refresh a CDN miss, i.e. the origin's bytes.
+      final bust = DateTime.now().millisecondsSinceEpoch;
+      final asset = await apiService.downloadAsset('/$path?_=$bust');
+      final bytes = asset.data;
+      if (bytes == null || bytes.isEmpty) return;
+      await store.writeBytes(path, bytes);
+    } on Exception catch (e) {
+      // Offline, or a transient failure: the packed copy stays, which is
+      // what the reader had anyway.
+      ApiLogger.logError('epubOfflineRefresh', e, details: path);
+    }
+  }
 
   bool get isRunning => _runningBooks.isNotEmpty;
   bool isRunningFor(int bookId) => _runningBooks.contains(bookId);
@@ -137,6 +190,17 @@ class EpubOfflinePrefetch {
 
       for (final p in pages) {
         if (!_nearbyDone.add('$bookId-$p')) continue;
+        // A chapter packed within [packedPageTtl] is left alone: the old
+        // behaviour re-rendered and re-downloaded the open chapter (380
+        // KB here) on every single open, which is what "it loads every
+        // time" felt like.  Status colours do not need it either -- the
+        // reader pushes those down itself.
+        final packed = manifest.pageTimestamps[p];
+        if (packed != null &&
+            DateTime.now().millisecondsSinceEpoch - packed <
+                packedPageTtl.inMilliseconds) {
+          continue;
+        }
         try {
           await _fetchPageIntoPack(
             bookId: bookId,
