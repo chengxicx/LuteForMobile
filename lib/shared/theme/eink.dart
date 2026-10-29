@@ -20,34 +20,85 @@ final einkModeProvider = Provider<bool>(
 Duration einkDuration(Duration duration, {required bool eInk}) =>
     eInk ? Duration.zero : duration;
 
-/// 墨水屏状态底色（D2①：4 级灰底 + 未学加粗）。
+/// 墨水屏状态底色（Kaleido 3 浅彩方案，2026-10-30 起）。
 ///
-/// 彩色状态底在 Kaleido 3 上只有 150ppi，切到黑白模式后 16 灰阶里各种彩底
-/// 挤成一团难分彼此。这里把学习状态映射成 4 档灰底：1（新词）最深，
-/// 2/3/4 渐浅，5（已学）/ 98 / 99 无底色。深色主题用暗灰系反向渐变。
+/// 最早一版是 4 级灰底（D2①）：当时认为「彩色状态底在 Kaleido 3 上只有
+/// 150ppi，16 灰阶里各种彩底挤成一团难分彼此」。但灰阶方案的相邻档
+/// 对比度只有 1.18~1.25:1，真机同样难分；而 Leaf5C 是 Kaleido 3 **彩色**
+/// 屏，黑白 300ppi / 彩色 150ppi。帧缓冲实测（2026-10-30 色卡截图逐通道
+/// 零偏差）确认 App 端能精确渲染任何 sRGB 色板，于是改为「浅彩底 +
+/// 同色系深字」双编码，与服务器用户主题 Boox_Leaf5C.css 完全对齐
+/// （App 与 EPUB reader-mode 一套视觉语言）：
 ///
-/// 取值按 16 级灰阶校准（每级 255/17 ≈ 17）：浅色 1/2/3/4 分别落在
-/// 第 10/11/12/13 级，页底为第 15/16 级 —— 最早一版 status 2/3 用
-/// C8/DA，量化后挤进第 12/13 级，跟白底只差一两档，双击置 3 后基本
-/// 看不出来（2026-09-25 真机反馈）。现在各状态间隔至少 2 级灰。
+/// | status | 0(未学) | 1 | 2 | 3 | 4 | 5(已学) |
+/// | 底     | 无      | #f5d0d0 | #f5e6b8 | #cde8cd | #cdddf5 | #e2d0f5 |
+/// | 字     | #1a4f8b | #7c1d1d | #6b5a00 | #1a5c1a | #1a3d8b | #4a1a8b |
+///
+/// 浅彩（pastel）= 白光轻微着色，恰好在 150ppi 彩色滤光片的最佳表现区；
+/// 深色文字走黑白通道仍是 300ppi。彩底对黑字对比度 14.4~18.0，对同款
+/// 深字 5.5~8.0（均超 WCAG AA）；底色色相与文字色相是两条独立通道，
+/// 即使面板把颜色冲淡一半也仍可分。残留风险：黄/粉、蓝/紫两对色相在
+/// 面板上的真实可分性需真机肉眼验证（screencap 只能验证帧缓冲）。
+///
+/// 深色主题仍用暗灰系反向渐变（Kaleido 3 深底彩字效果差，墨水屏深色
+/// 模式本身也少用）。
 Color? einkStatusBackground(BuildContext context, String status) {
   final dark = Theme.of(context).brightness == Brightness.dark;
+  if (!dark) {
+    switch (status) {
+      case '1':
+        return const Color(0xFFF5D0D0);
+      case '2':
+        return const Color(0xFFF5E6B8);
+      case '3':
+        return const Color(0xFFCDE8CD);
+      case '4':
+        return const Color(0xFFCDDDF5);
+      case '5':
+        return const Color(0xFFE2D0F5);
+      default:
+        return null;
+    }
+  }
   switch (status) {
     case '1':
-      return dark ? const Color(0xFF5C5C5C) : const Color(0xFFA8A8A8);
+      return const Color(0xFF5C5C5C);
     case '2':
-      return dark ? const Color(0xFF464646) : const Color(0xFFBEBEBE);
+      return const Color(0xFF464646);
     case '3':
-      return dark ? const Color(0xFF343434) : const Color(0xFFCCCCCC);
+      return const Color(0xFF343434);
     case '4':
-      return dark ? const Color(0xFF262626) : const Color(0xFFE0E0E0);
+      return const Color(0xFF262626);
     default:
       return null;
   }
 }
 
-/// 灰阶下底色只剩深浅一个维度，新词（status 1）再加粗补一层区分。
-bool einkStatusBold(String status) => status == '1';
+/// 墨水屏状态文字色。浅色主题配同色系深字（与 [einkStatusBackground]
+/// 的浅彩底成对，见上表）；98/99 返回 null 落回正文色。深色主题返回
+/// null（沿用灰底 + 正文色）。
+Color? einkStatusText(BuildContext context, String status) {
+  if (Theme.of(context).brightness == Brightness.dark) return null;
+  switch (status) {
+    case '0':
+      return const Color(0xFF1A4F8B);
+    case '1':
+      return const Color(0xFF7C1D1D);
+    case '2':
+      return const Color(0xFF6B5A00);
+    case '3':
+      return const Color(0xFF1A5C1A);
+    case '4':
+      return const Color(0xFF1A3D8B);
+    case '5':
+      return const Color(0xFF4A1A8B);
+    default:
+      return null;
+  }
+}
+
+/// 未学（0/1）加粗：0 无底、靠深蓝粗体醒目；1 浅彩底再补一层保险。
+bool einkStatusBold(String status) => status == '0' || status == '1';
 
 /// 页面转场直接返回 child：默认转场是一段 300ms 的淡入/位移，在墨水屏上
 /// 就是十几次全屏刷新。

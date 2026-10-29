@@ -140,11 +140,12 @@ class TextDisplay extends StatefulWidget {
       textColor = context.getStatusTextColor(status);
       backgroundColor = context.getStatusBackgroundColor(status);
 
-      // 墨水屏（D2①）：彩底换 4 档灰底、文字回落正文色，新词加粗补区分。
-      // 彩色文字（text 模式的状态）在 16 灰阶下也是一滩灰，一并归一。
+      // 墨水屏（Kaleido 3 浅彩方案，2026-10-30 起）：状态词块用浅彩底 +
+      // 同色系深字双编码（对齐服务器 Boox_Leaf5C.css），未学 0/1 加粗。
+      // 旧版是 4 档灰底 + 文字回落正文色（见 eink.dart 顶部注释的来龙去脉）。
       if (context.eInk) {
         backgroundColor = einkStatusBackground(context, status);
-        textColor = null;
+        textColor = einkStatusText(context, status);
         statusBold = einkStatusBold(status);
       }
     }
