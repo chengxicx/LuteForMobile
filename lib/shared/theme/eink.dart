@@ -163,13 +163,26 @@ ThemeData applyEInkTheme(ThemeData base) {
     highlightColor: Colors.transparent,
     hoverColor: Colors.transparent,
     focusColor: Colors.transparent,
-    cardTheme: base.cardTheme.copyWith(elevation: 0),
+    cardTheme: base.cardTheme.copyWith(
+      elevation: 0,
+      color: light ? const Color(0xFFFFFFFF) : null,
+    ),
     scaffoldBackgroundColor: light ? const Color(0xFFFFFFFF) : null,
     canvasColor: light ? const Color(0xFFFFFFFF) : null,
     colorScheme: light
         ? base.colorScheme.copyWith(
             surface: const Color(0xFFFFFFFF),
             onSurface: const Color(0xFF000000),
+            // M3 的卡片/对话框/底部条读的是 surfaceContainer* 这一族，不是
+            // surface 本身。少写一个，列表里的书卡就还是 #fffbfe —— 真机
+            // 采样时它占了整屏 60%，是"背景不够白"的主要来源。
+            surfaceDim: const Color(0xFFFFFFFF),
+            surfaceBright: const Color(0xFFFFFFFF),
+            surfaceContainerLowest: const Color(0xFFFFFFFF),
+            surfaceContainerLow: const Color(0xFFFFFFFF),
+            surfaceContainer: const Color(0xFFFFFFFF),
+            surfaceContainerHigh: const Color(0xFFFFFFFF),
+            surfaceContainerHighest: const Color(0xFFFFFFFF),
           )
         : null,
     textTheme: light
