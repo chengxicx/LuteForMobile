@@ -492,6 +492,19 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
     }
 
+    // EPUB 页同理：token 流（#lute-epub-tokens）只有
+    // [text, wo_id, status, sentence, paragraph]，重建的 TextItem 全都
+    // langId=null。冷启动恢复阅读时书架还没到货，currentBookProvider 也是
+    // 空的 —— 两条取名路子都落空，播放器退回兜底语言码（默认 en）：日文
+    // 句子被送去英文语音，服务端 422（diag.log 里 /tts/en/<日文>），播放条
+    // 挂着「语言未解析」。而阅读页本来就把语言写在 LUTE_FURIGANA.langId 里
+    // （furigana 功能 2026-10-29 起就靠它），在线 /read 页与离线包 HTML 都有
+    // —— 在这里补一层兜底，EPUB 从此不依赖任何异步解析。
+    if (pageData.isEpub) {
+      final langId = pageData.furiganaLangId;
+      if (langId != null && langId != 0) return langId;
+    }
+
     return null;
   }
 
