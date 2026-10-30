@@ -63,6 +63,15 @@ body .lute-chapter-nav,
 body .lute-chapter-nav * {
   color: #000000 !important;
 }
+/* 章末块里「END OF CHAPTER」「7 / 24」和那条细线本来是靠 *透明度* 弱化的
+   （`.lute-nav-end{opacity:.62}`、`.lute-nav-sub{opacity:.62}`、
+   `.lute-nav-rule{opacity:.4}`），改颜色没用 —— 黑字压到 62% 就是灰。
+   墨水屏上这种弱化等于看不清，而它正是翻页的入口，所以透明度一并拉满。 */
+body .lute-chapter-nav .lute-nav-end,
+body .lute-chapter-nav .lute-nav-sub,
+body .lute-chapter-nav .lute-nav-rule {
+  opacity: 1 !important;
+}
 span.status0 {
   background-color: transparent !important;
   color: #1a4f8b !important;
