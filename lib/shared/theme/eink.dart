@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../features/settings/providers/settings_provider.dart';
+import 'app_theme.dart';
 
 // EInkScope / context.eInk 搬去了只依赖 material 的 eink_scope.dart（取色层
 // 要读它，不该顺带把 settings 整条依赖链拖进来）。这里 re-export，原有
@@ -117,6 +118,34 @@ class NoPageTransitionsBuilder extends PageTransitionsBuilder {
   }
 }
 
+/// 把自定义色板换成「纯白纸 + 纯黑墨」。
+///
+/// 与 `applyEInkTheme` 里的 scaffold/surface 覆盖是同一件事的两半：那一半管
+/// 走 Material `ThemeData` 的组件，这一半管直接读 `context.appColorScheme`
+/// 的组件（播放条卡面、词卡、句子翻译、容器底色…）。真机采样能直接看到差别
+/// —— 只改 ThemeData 时整屏还有 15% 的 `#fffbfe`。
+List<ThemeExtension<dynamic>> _eInkPaperExtensions(
+  Iterable<ThemeExtension<dynamic>> source,
+) {
+  return source.map<ThemeExtension<dynamic>>((ext) {
+    if (ext is! AppThemeColorExtension) return ext;
+    final scheme = ext.colorScheme;
+    return ext.copyWith(
+      colorScheme: scheme.copyWith(
+        background: scheme.background.copyWith(
+          background: const Color(0xFFFFFFFF),
+          surface: const Color(0xFFFFFFFF),
+          surfaceContainerHighest: const Color(0xFFFFFFFF),
+        ),
+        text: scheme.text.copyWith(
+          primary: const Color(0xFF000000),
+          headline: const Color(0xFF000000),
+        ),
+      ),
+    );
+  }).toList();
+}
+
 /// 墨水屏模式下的主题覆盖：扒掉一切会连续重绘的视觉效果。
 ///
 /// 水波纹（点击后 300ms 的扩散）、点击高亮、悬停色、卡片阴影 —— 在 LCD 上
@@ -149,6 +178,12 @@ ThemeData applyEInkTheme(ThemeData base) {
             displayColor: const Color(0xFF000000),
           )
         : null,
+    // 自定义色板（`context.appColorScheme`）单独换一份：播放条卡面、词卡、
+    // 各种 Container 直接读它，不经过 ThemeData，只改 surface 压不住 ——
+    // 真机采样里那 15% 的 #fffbfe 就是它。白纸要落在这一层才算白。
+    extensions: light
+        ? _eInkPaperExtensions(base.extensions.values)
+        : base.extensions.values.toList(),
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: NoPageTransitionsBuilder(),
