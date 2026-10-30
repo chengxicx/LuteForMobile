@@ -52,7 +52,14 @@ body .epub-body h6 {
   color: #000000 !important;
 }
 div#thetext .epub-body rt, body .epub-body rt {
-  color: #444444 !important;
+  color: #333333 !important;
+}
+/* 章末导航块是 App 注入的 chrome（"END OF CHAPTER / Prev / Next /
+   Contents"），样式在 styles.css 里用的是弱化的灰。墨水屏上弱化等于看不清，
+   而且它是翻页的主要入口，一并压黑。 */
+.lute-chapter-nav,
+.lute-chapter-nav * {
+  color: #000000 !important;
 }
 span.status0 {
   background-color: transparent !important;
