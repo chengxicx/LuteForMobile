@@ -16,6 +16,9 @@ import '../models/epub_chapter.dart';
 import '../models/paragraph.dart';
 import '../models/text_item.dart';
 import '../services/epub_local_server.dart';
+import '../../../shared/theme/theme_extensions.dart';
+import '../../../shared/theme/eink_scope.dart';
+import '../../../shared/theme/eink_paper.dart';
 
 /// Reader-mode EPUB chapter, rendered as the server's standalone page
 /// (`/read/epub_render/<bookId>/<page>`) in a WebView.
@@ -71,12 +74,17 @@ class EpubChapterView extends StatefulWidget {
   /// background-cache this chapter and the next into the offline pack.
   final VoidCallback? onOnlineChapterLoaded;
 
-  /// Re-fetches the pack's theme (the one asset that is per-user and not
-  /// content-addressed) before a chapter is served from the pack.  A
-  /// WebView loading the pack cannot revalidate it, so without this a
-  /// theme change leaves the reader on the previous palette -- dark
-  /// chrome around a white sheet.
-  final Future<void> Function()? refreshPackAssets;
+  /// Refreshes the pack's mutable assets in the background, returning the
+  /// fresh theme CSS when the packed copy was stale.
+  ///
+  /// A WebView loading the pack cannot revalidate it, so without this a
+  /// theme change would leave the reader on the previous palette -- dark
+  /// chrome around a white sheet.  It used to be *awaited* ahead of the
+  /// first navigation, which cost a measured 1.2 s of blank chapter on
+  /// every cold open; the open now paints from the on-disk copy and this
+  /// runs behind it, the fresh CSS (when there is any) hot-applied onto
+  /// the live page.
+  final Future<String?> Function()? refreshPackAssets;
 
   /// Fired on every press that starts inside the chapter, before the page
   /// has decided what it meant.
@@ -116,6 +124,27 @@ class EpubChapterView extends StatefulWidget {
   /// The Contents row was pressed.
   final VoidCallback? onOpenContents;
 
+  /// Lets the reader move this chapter from outside the WebView.
+  ///
+  /// On an e-ink device the page keys are the main way through a book, and
+  /// a chapter is one long scrolled document inside a platform view -- the
+  /// reader's own scroll controller knows nothing about it, and "one Lute
+  /// page per chapter" means the page-turn path does nothing here.
+  final EpubChapterScroll? scroll;
+
+  /// The book's language id, used to complete every word this view hands
+  /// back to the reader.
+  ///
+  /// The chapter's token stream (`#lute-epub-tokens`) carries no language:
+  /// it is `[text, wo_id, status, sentence, paragraph]`, so every [TextItem]
+  /// rebuilt from it has a null `langId` -- and a null `langId` is what
+  /// makes the local dictionary lookup answer nothing (`DictRepository`
+  /// cannot route to a dictionary file without it) and hides the
+  /// sentence-translation button on the word card.  One book is one
+  /// language, so the book's own id is the right answer for every word in
+  /// the chapter, and this is the one place where words leave the page.
+  final int? languageId;
+
   /// Reading text size, in the same logical pixels the Flutter-rendered
   /// text uses.  A chapter brings its own typography inside the WebView,
   /// so the reading pane's size control has to be pushed into the page
@@ -132,6 +161,28 @@ class EpubChapterView extends StatefulWidget {
   final void Function(TextItem item, Rect anchor) onTap;
   final void Function(TextItem item) onDoubleTap;
   final void Function(TextItem item)? onTripleTap;
+
+  /// Fired for a long press on a word -- the gesture that opens the term
+  /// edit form on the Flutter-rendered text.
+  ///
+  /// The page settles *clicks* (single / double / triple) but knows
+  /// nothing about a press that never turns into one, so this is wired
+  /// from the app side (see [_longPressScript]) the same way
+  /// [onBlankTap] is: a chapter rendered before the wiring existed -- every
+  /// chapter in an offline pack written earlier -- still gets it, without
+  /// re-rendering the book.
+  final void Function(TextItem item, Rect anchor)? onLongPress;
+
+  /// A long press that is *held* and then dragged is a multi-word
+  /// selection on the Flutter-rendered text, and it is one here too --
+  /// measured in the page by [_longPressScript], which is the only place
+  /// the finger's position is observable.  These three mirror the
+  /// callbacks [TextDisplay] hands its parent: the range is painted while
+  /// the finger moves and reported once, on release.
+  final VoidCallback? onMultiTermSelectionStart;
+  final void Function(List<TextItem> items, Rect anchor)?
+      onMultiTermSelectionComplete;
+  final VoidCallback? onMultiTermSelectionCancel;
 
   const EpubChapterView({
     super.key,
@@ -151,10 +202,16 @@ class EpubChapterView extends StatefulWidget {
     this.chapterNav,
     this.onChapterNav,
     this.onOpenContents,
+    this.scroll,
+    this.languageId,
     this.textSize = 18,
     required this.onTap,
     required this.onDoubleTap,
     this.onTripleTap,
+    this.onLongPress,
+    this.onMultiTermSelectionStart,
+    this.onMultiTermSelectionComplete,
+    this.onMultiTermSelectionCancel,
   });
 
   @override
@@ -195,6 +252,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   bool _decidingUrl = true;
   bool _fellBackToLocal = false;
 
+  /// Fresh theme CSS that landed while the page was still mounting (see
+  /// [_refreshPackInBackground]); applied at load stop.
+  String? _pendingThemeCss;
+
   /// Scroll offset to restore after the page loads (per book).
   double? _pendingScrollRestore;
   bool _restoredThisLoad = false;
@@ -202,6 +263,15 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// Latest reported scroll offset, flushed to prefs debounced.
   double _lastScrollTop = 0;
   Timer? _scrollFlushTimer;
+
+  /// A multi-word selection the page opened and has not reported back on.
+  ///
+  /// The reader holds its own `_isMultiTermSelecting` for the duration,
+  /// and it disables page swiping while it is set -- so every path out of
+  /// the gesture has to close it.  A press released where it started is
+  /// the awkward one: the page reports it as a plain long press, which
+  /// opens the term form and never reaches the selection's own callbacks.
+  bool _multiSelectActive = false;
 
   /// Where the last finger landed inside the chapter, in *screen*
   /// coordinates.  A word tap reaches Dart only after the double-tap
@@ -229,6 +299,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   @override
   void initState() {
     super.initState();
+    widget.scroll?._turn = _turnByScreen;
     _installSession();
     _loadSavedScroll();
     _decideInitialUrl();
@@ -260,24 +331,20 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   ///
   /// Without a packed copy the server URL is used as before, and a
   /// main-frame failure still falls back to the pack.
+  ///
+  /// Nothing here touches the network any more: the pack's asset refresh
+  /// used to be awaited first (theme only, 1.2 s leash) and on a cold
+  /// start that wait was paid on every open while the CDN handshake ran.
+  /// The navigation now starts from the on-disk state alone; the refresh
+  /// runs behind it and a changed theme is hot-applied when it lands.
   Future<void> _decideInitialUrl() async {
     final localServer = widget.localServer;
     if (localServer == null) {
       if (mounted) setState(() => _decidingUrl = false);
       return;
     }
+    unawaited(_refreshPackInBackground());
     Uri? local;
-    try {
-      // Only the theme is awaited, and only briefly.  It is a few KB and
-      // the palette is simply wrong without it; the pack's stylesheet and
-      // reader scripts are the caller's background job (~200 KB, which
-      // cost a measured 2.4 s of blank chapter on every cold open).
-      await widget.refreshPackAssets?.call().timeout(
-        const Duration(milliseconds: 1200),
-      );
-    } catch (_) {
-      // Offline, or the refresh timed out: the packed copies still work.
-    }
     try {
       local = await localServer.localPageUrl(
         widget.bookId,
@@ -292,6 +359,50 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _urlOverride = local?.toString();
       _decidingUrl = false;
     });
+  }
+
+  /// The pack's background refresh: static assets and theme, off the
+  /// critical path.  When the theme on the server differs from the
+  /// packed copy, its CSS is carried over to the loaded page -- either
+  /// right away, or held for [_onLoadStop] when the page is still
+  /// mounting (its own request may have reached the local server before
+  /// the file was swapped).
+  Future<void> _refreshPackInBackground() async {
+    String? css;
+    try {
+      css = await widget.refreshPackAssets?.call();
+    } catch (_) {
+      return; // Offline: the packed copies still work.
+    }
+    if (css == null || css.isEmpty || !mounted) return;
+    if (_pageReady) {
+      await _applyThemeCss(css);
+    } else {
+      _pendingThemeCss = css;
+    }
+  }
+
+  /// Swaps the page's theme stylesheet for the fresh CSS.
+  ///
+  /// The packed `<link>` is removed and the new rules appended as a
+  /// `<style>` -- later in the cascade than anything the page shipped
+  /// with, so the new palette wins without a reload (a reload would
+  /// re-mount the whole chapter, seconds on this device).
+  Future<void> _applyThemeCss(String css, [InAppWebViewController? page]) async {
+    final controller = page ?? _controller;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(
+        source: '(function(){var css=${jsonEncode(css)};'
+            'var link=document.querySelector(\'link[href*="theme/current"]\');'
+            'if(link&&link.parentNode){link.parentNode.removeChild(link);}'
+            'var style=document.createElement("style");'
+            'style.id="lute-theme-live";style.textContent=css;'
+            'document.head.appendChild(style);})()',
+      );
+    } catch (_) {
+      // Mid-navigation: the next load reads the swapped file anyway.
+    }
   }
 
   /// The server said unreachable but a navigation was already under
@@ -413,6 +524,42 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       },
     );
     controller.addJavaScriptHandler(
+      handlerName: 'luteEpubWordLongPress',
+      callback: (args) {
+        final item = _itemForPayload(args);
+        if (item != null && mounted) {
+          _closeMultiSelection();
+          widget.onLongPress?.call(item, _tapAnchor());
+        }
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubMultiSelectStart',
+      callback: (args) {
+        _multiSelectActive = true;
+        if (mounted) widget.onMultiTermSelectionStart?.call();
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubMultiSelectComplete',
+      callback: (args) {
+        _multiSelectActive = false;
+        final items = _itemsForPayloads(args);
+        if (items.isNotEmpty && mounted) {
+          widget.onMultiTermSelectionComplete?.call(items, _tapAnchor());
+        } else if (mounted) {
+          widget.onMultiTermSelectionCancel?.call();
+        }
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubMultiSelectCancel',
+      callback: (args) {
+        _multiSelectActive = false;
+        if (mounted) widget.onMultiTermSelectionCancel?.call();
+      },
+    );
+    controller.addJavaScriptHandler(
       handlerName: 'luteEpubBlankTap',
       callback: (args) {
         if (mounted) widget.onBlankTap?.call();
@@ -461,6 +608,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// word.  The paragraph list is the same token stream the page mounted,
   /// so the word id is the key; a stale list (a save raced the tap) falls
   /// back to a synthetic item so the term card still opens.
+  ///
+  /// Either way the item leaves with the book's language on it (see
+  /// [languageId]): the token stream has none, and without one the word
+  /// card cannot reach the local dictionary.
   TextItem? _itemForPayload(List<dynamic> args) {
     if (args.isEmpty || args.first is! Map) return null;
     final payload = (args.first as Map).cast<String, dynamic>();
@@ -469,7 +620,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
 
     for (final para in widget.paragraphs) {
       for (final item in para.textItems) {
-        if (item.wordId == wid) return item;
+        if (item.wordId == wid) return _withLanguage(item);
       }
     }
     return TextItem(
@@ -480,7 +631,62 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       paragraphId: (payload['paragraphId'] as num?)?.toInt() ?? 0,
       isStartOfSentence: false,
       order: (payload['order'] as num?)?.toInt() ?? 0,
+      langId: widget.languageId,
     );
+  }
+
+  /// Rebuild the items for a multi-word selection.
+  ///
+  /// The page sends one payload per word span inside the swept range.
+  /// `order` is the key: it is the token's index in the page, unique and
+  /// contiguous, and it is the same index the token stream was rebuilt
+  /// with -- so it resolves a payload against the reader's own model even
+  /// for a token that carries no word id (a save that raced the gesture,
+  /// a word the server has not persisted yet), which [_itemForPayload]
+  /// would drop.
+  List<TextItem> _itemsForPayloads(List<dynamic> args) {
+    if (args.isEmpty || args.first is! List) return const <TextItem>[];
+    final byOrder = <int, TextItem>{};
+    for (final para in widget.paragraphs) {
+      for (final item in para.textItems) {
+        byOrder.putIfAbsent(item.order, () => item);
+      }
+    }
+    final items = <TextItem>[];
+    for (final raw in args.first as List) {
+      if (raw is! Map) continue;
+      final payload = raw.cast<String, dynamic>();
+      final order = (payload['order'] as num?)?.toInt() ?? -1;
+      final known = byOrder[order];
+      if (known != null) {
+        items.add(_withLanguage(known));
+        continue;
+      }
+      final wid = (payload['wid'] as num?)?.toInt() ?? 0;
+      items.add(
+        TextItem(
+          text: payload['text']?.toString() ?? '',
+          statusClass: '',
+          wordId: wid > 0 ? wid : null,
+          sentenceId: (payload['sentenceId'] as num?)?.toInt() ?? 0,
+          paragraphId: (payload['paragraphId'] as num?)?.toInt() ?? 0,
+          isStartOfSentence: false,
+          order: order,
+          langId: widget.languageId,
+        ),
+      );
+    }
+    items.sort((a, b) => a.order.compareTo(b.order));
+    return items;
+  }
+
+  /// The chapter's tokens carry no language, so a word rebuilt from them
+  /// cannot route a dictionary lookup.  The book's id is the answer for
+  /// every word in the chapter.
+  TextItem _withLanguage(TextItem item) {
+    final langId = widget.languageId;
+    if (item.langId != null || langId == null) return item;
+    return item.copyWith(langId: langId);
   }
 
   Future<void> _runJs(String source) async {
@@ -491,6 +697,45 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     } catch (_) {
       // The page may be mid-navigation; the next push retries.
     }
+  }
+
+  /// Closes a selection the page still considers open, if one is.
+  ///
+  /// Called on the way into every other word interaction: a long press
+  /// that never moved ends the gesture as a long press, and the reader's
+  /// "is selecting" flag has to come down with it or page swiping stays
+  /// disabled for the rest of the chapter.
+  void _closeMultiSelection() {
+    if (!_multiSelectActive) return;
+    _multiSelectActive = false;
+    if (mounted) widget.onMultiTermSelectionCancel?.call();
+  }
+
+  /// Stamps the multi-word selection colour into the page.
+  ///
+  /// The scheme owns it -- it is the same colour the Flutter-rendered
+  /// text paints a selection with -- and a stylesheet served from the
+  /// server cannot derive a Flutter theme, so it travels as a custom
+  /// property the injected class refers to.  Re-stamping on every load
+  /// covers a scheme the reader switched to while the chapter was up.
+  Future<void> _pushSelectionColor() async {
+    final argb = context.multiTermSelectionColor.toARGB32();
+    final r = (argb >> 16) & 0xFF;
+    final g = (argb >> 8) & 0xFF;
+    final b = argb & 0xFF;
+    final a = (((argb >> 24) & 0xFF) / 255).toStringAsFixed(2);
+    await _runJs('''(function () {
+  var root = document.documentElement;
+  root.style.setProperty('--lute-multisel-bg', 'rgba($r, $g, $b, $a)');
+  var s = document.getElementById('lute-epub-multisel');
+  if (!s) {
+    s = document.createElement('style');
+    s.id = 'lute-epub-multisel';
+    (document.head || document.documentElement).appendChild(s);
+  }
+  s.textContent = 'span.textitem.lute-multisel {' +
+    'background-color: var(--lute-multisel-bg) !important;}';
+})();''');
   }
 
   /// Pushes the reading pane's text size into the chapter.
@@ -516,6 +761,32 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   return 'ok';
 })()
 ''');
+  }
+
+  /// Lets the book's own margin be the only gutter on a narrow pane.
+  ///
+  /// The reader page stacks three gaps between the glass and the text: the
+  /// pane's padding, the paper sheet's `1rem`, and the margin the book puts
+  /// on its own block.  On this device (674 CSS px across) they came to
+  /// 48px a side -- an eighth of the column spent on blank, in two visible
+  /// steps, because the sheet edge sits between them.  The pane already
+  /// drops its share under 48rem; this drops the sheet's, leaving one
+  /// margin, the one the book chose.
+  ///
+  /// A book that brings no margin of its own keeps a small gutter from the
+  /// sheet instead -- otherwise its text would sit on the glass, and
+  /// "the book decides" would be a bug rather than a rule.  The measured
+  /// gutter is published as `--lute-book-gutter` so the end-of-chapter
+  /// block can line up with the text column rather than with the sheet.
+  Future<void> _pushMargins([InAppWebViewController? page]) async {
+    final controller = page ?? _controller;
+    if (controller == null || !_pageReady) return;
+    if (widget.chapter.fixedLayout) return;
+    try {
+      await controller.evaluateJavascript(source: _marginsScript);
+    } catch (_) {
+      // Mid-navigation; the next load injects again.
+    }
   }
 
   Map<int, String> _statusMap(List<Paragraph> paragraphs) {
@@ -548,6 +819,23 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     } catch (_) {
       // The page may be mid-navigation; the next load re-asserts.
     }
+  }
+
+  /// 墨水屏纸张（Kaleido 3）：最白底、最黑正文、浅彩状态词块。
+  ///
+  /// 样式本体在 `shared/theme/eink_paper.dart`，与本地书阅读页共用一份 ——
+  /// 纸张不该因为书是从服务器来的还是本地导入的而长得不一样。
+  ///
+  /// eInk 模式下阅读页**不再继承服务器端 `current_theme`**：纸色、墨色、
+  /// 状态色三样都直接钉在页面上，于是「打开墨水屏模式就是这套主题」不依赖
+  /// 账号级设置；在手机上读深色、在墨水屏上读白纸，互不打架。
+  ///
+  /// `look == 'night'` 时整块撤销：夜间靠页面的反相滤镜变暗，把纸色钉成
+  /// 白色等于把夜间模式钉死。
+  Future<void> _pushEInkPaper() async {
+    if (!mounted) return;
+    final on = context.eInk && widget.look != 'night';
+    await _runJs(eInkPaperScript(enabled: on));
   }
 
   /// Push the reader's look onto the page.
@@ -637,11 +925,22 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     super.didUpdateWidget(oldWidget);
 
     // Look / furigana / zoom-relevant settings changed: push them down.
+    if (oldWidget.scroll != widget.scroll) {
+      if (oldWidget.scroll?._turn == _turnByScreen) {
+        oldWidget.scroll?._turn = null;
+      }
+      widget.scroll?._turn = _turnByScreen;
+    }
     if (oldWidget.look != widget.look) {
       _pushLook();
+      // 夜间 <-> 白纸切换时那层纸色样式要跟着加/撤（见 _pushEInkPaper）。
+      _pushEInkPaper();
     }
     if (oldWidget.textSize != widget.textSize) {
       _pushTextSize();
+      // The book's own gutter is in `em`, so it grew with the type: the
+      // block that aligns to the text column has to be re-measured.
+      _pushMargins();
     }
     if (oldWidget.furiganaEnabled != widget.furiganaEnabled) {
       _runJs(
@@ -674,6 +973,16 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // reach the network.
     debugPrint('[epub-ready] load-stop host=${url?.host}');
 
+    // A theme refresh that landed mid-mount: the page's own request may
+    // have reached the local server before the packed file was swapped,
+    // so the mount can carry the previous palette.  Same CSS either way
+    // when the request came after the swap -- re-appending it is a no-op.
+    final pendingTheme = _pendingThemeCss;
+    _pendingThemeCss = null;
+    if (pendingTheme != null && pendingTheme.isNotEmpty) {
+      await _applyThemeCss(pendingTheme, controller);
+    }
+
     // A packed copy carries the status classes it had when it was
     // written; the reader's model is the authority.  One DOM pass, once
     // per load -- the per-word bridge call would be thousands of
@@ -688,6 +997,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // look=night.  Assert the reader's setting once per load; the chips
     // then apply instantly and a fresh chapter starts on the right look.
     await _pushLook();
+
+    // 墨水屏：把白纸 + 纯黑墨 + 浅彩状态钉上去（夜间外观时是撤销）。
+    // 紧随 look 之后，页面一挂好就是最终颜色，不会先闪一帧服务器主题色。
+    await _pushEInkPaper();
 
     // Report clicks that miss every word.  Wired here rather than in the
     // page: a pack written before this existed has no such bridge, and its
@@ -718,9 +1031,26 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       // The page may be mid-navigation; the next load retries.
     }
 
+    // The long press, the gesture that opens a word's edit form on the
+    // Flutter-rendered text.  The page settles clicks (single / double /
+    // triple) but never sees a press that stops being one, and Chromium
+    // has no Dart-side long press to forward -- so the gesture is
+    // measured in the document, like the blank-tap listener above, and
+    // reported through the same bridge.
+    try {
+      await controller.evaluateJavascript(source: _longPressScript);
+    } catch (_) {
+      // The page may be mid-navigation; the next load retries.
+    }
+
+    await _pushSelectionColor();
+    await _pushTextSize();
+    // After the type size: the book's own gutter is in `em`, so it has to
+    // be measured against the type that is actually in the page.
+    await _pushMargins(controller);
+
     // Last in the DOM pass: the block is appended *after* the chapter, so
     // it must not be in the tree while the page aligns its word spans.
-    await _pushTextSize();
     await _pushChapterNav(controller);
 
     // The page reports readiness at DOMContentLoaded, i.e. before the
@@ -815,10 +1145,37 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     } catch (_) {}
   }
 
+  /// Scrolls the chapter by one screen, for the physical page keys.
+  ///
+  /// `true` = the key was used.  When the page cannot scroll further in that
+  /// direction it answers `edge`, and the reader turns the page instead --
+  /// that is the only way a key-only reader gets from one chapter to the
+  /// next without touching the screen.
+  Future<bool> _turnByScreen(int direction) async {
+    final controller = _controller;
+    // Not ready yet: swallow the key rather than jump a page on a document
+    // the user has not seen.
+    if (controller == null || !_pageReady) return true;
+    try {
+      final result = await controller.evaluateJavascript(
+        source: _pageTurnScript.replaceFirst('__DIR__', '$direction'),
+      );
+      debugPrint('[pagekey] turn $direction -> $result');
+      return result?.toString() != 'edge';
+    } catch (_) {
+      // Mid-navigation; a key press must not surface as an error.
+      return true;
+    }
+  }
+
   @override
   void dispose() {
     _scrollFlushTimer?.cancel();
     _revealTimer?.cancel();
+    // One chapter is on screen at a time.  Guarded, because with a fresh
+    // page key the replacement may already have claimed the slot.
+    final slot = widget.scroll;
+    if (slot != null && slot._turn == _turnByScreen) slot._turn = null;
     // Persist whatever offset was last reported.
     if (_lastScrollTop > 0) {
       unawaited(_flushScroll());
@@ -996,6 +1353,51 @@ class _ZoomButton extends StatelessWidget {
   }
 }
 
+/// Out-of-band control of a chapter's scroll position.
+///
+/// A chapter is one long document inside a platform view: the reader has no
+/// scroll controller for it, so the physical page keys (the main way through
+/// a book on this device) had nothing to move.  The view hands its scroller
+/// to this slot when it mounts and clears it when it goes away.
+class EpubChapterScroll {
+  Future<bool> Function(int direction)? _turn;
+
+  bool get attached => _turn != null;
+
+  /// Scrolls one screen.  `true` means the key was used (the chapter moved,
+  /// or the view could not tell); `false` means it is already at that end,
+  /// which is the reader's cue to leave the chapter instead.
+  Future<bool> turn(int direction) async {
+    final handler = _turn;
+    if (handler == null) return false;
+    return handler(direction);
+  }
+}
+
+/// Scrolls the chapter by one screen (`__DIR__` = -1 up / +1 down).
+///
+/// Done page-side so the units are the document's, and reported back as
+/// `moved` / `edge` -- the caller needs the difference: at the edge the key
+/// has to turn the page instead.
+const String _pageTurnScript = r"""
+(function (dir) {
+  var doc = document.scrollingElement || document.documentElement;
+  if (!doc) return 'edge';
+  var step = Math.round(doc.clientHeight * 0.92);
+  var before = doc.scrollTop;
+  doc.scrollTop = before + dir * step;
+  if (doc.scrollTop !== before) return 'moved';
+  /* Some look modes scroll a container instead of the document. */
+  var pane = document.getElementById('thetext');
+  if (pane && pane.scrollHeight > pane.clientHeight + 4) {
+    var paneBefore = pane.scrollTop;
+    pane.scrollTop = paneBefore + dir * step;
+    return pane.scrollTop !== paneBefore ? 'moved' : 'edge';
+  }
+  return 'edge';
+})(__DIR__)
+""";
+
 /// Builds the end-of-chapter block inside the page (`__CONFIG__` is
 /// replaced with the JSON of [ChapterNavConfig]).
 ///
@@ -1030,7 +1432,11 @@ const String _chapterNavScript = r"""
   var cfg = __CONFIG__;
   var STYLE_ID = 'lute-chapter-nav-style';
   var CSS = [
-    '.lute-chapter-nav{margin:44px 0 36px !important;padding:0 !important;',
+    /* The block sits in .epub-body, which now runs to the glass; the text
+       column does not, so it takes the book's own gutter (published by
+       [_marginsScript]) and keeps the buttons under the paragraphs. */
+    '.lute-chapter-nav{margin:44px var(--lute-book-gutter,0) 36px !important;',
+    '  padding:0 !important;',
     '  text-align:center !important;',
     '  font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;',
     '  font-size:13px;line-height:1.2;color:#1c1b1f;}',
@@ -1160,6 +1566,296 @@ const String _chapterNavScript = r"""
 
   host.appendChild(wrap);
   return 'ok';
+})();
+""";
+
+/// Wires a long press on a word into the bridge.
+///
+/// The page's own click listener settles *clicks* -- it counts them inside
+/// a 300 ms window and reports the settled one -- and a press that never
+/// becomes a click never reaches it.  The gesture the Flutter-rendered text
+/// maps to the term edit form (a ~500 ms hold) therefore had no equivalent
+/// in a chapter: nothing happened at all.
+///
+/// Measured here rather than in the page template for the same reason the
+/// blank-tap listener is: an offline pack stores the chapter document
+/// verbatim, so every chapter written before the wiring existed would stay
+/// without it until the book was re-rendered.
+///
+/// The press that leaves no click still produces one: Chromium fires
+/// `click` on release, which the page would settle as a word tap and open
+/// the word card on top of the form.  It is swallowed in the capture
+/// phase -- capture runs before the page's own (bubble-phase) document
+/// listener, so `stopPropagation` there is enough, and it costs nothing
+/// when no press was held.  A press that drifts (a scroll, a finger that
+/// slides off the word) is dropped rather than counted.
+///
+/// The press is only the *start* of the gesture, though: past [LONG_MS]
+/// the finger is still down, and dragging it across the paragraph extends
+/// the selection to every word between the two ends -- the EPUB page's
+/// answer to the multi-word selection the Flutter-rendered text gets from
+/// `onLongPressMoveUpdate`.  A press that is released without having
+/// moved is a plain long press and opens the term form for that one word,
+/// so the gesture the reader already knows is unchanged.
+///
+/// Two things about the drag are not obvious.  A touch pointer gets
+/// *implicit pointer capture* on `pointerdown`, so every `pointermove`
+/// the document sees still carries the pressed span as its target -- the
+/// finger's actual position has to be asked for with `elementFromPoint`.
+/// And the page scrolls under a drag, which would both move the words out
+/// from under the finger and turn the gesture into a flick: `touchmove`
+/// is prevented for the duration, which only works because the listener
+/// is registered (non-passive) before any touch begins, and because a
+/// press that moved before the hold landed was already dropped -- so the
+/// first `touchmove` of a drag is always the first one the page sees.
+const String _longPressScript = r"""
+(function () {
+  if (window.__luteSelectionWired) return;
+  window.__luteSelectionWired = true;
+
+  var LONG_MS = 500;
+  var MOVE_TOL = 14;
+  var timer = null;
+  var startX = 0, startY = 0;
+  var startSpan = null;
+  var endSpan = null;
+  var selecting = false;
+  var held = false;
+
+  function wordSpan(node) {
+    return node && node.closest ? node.closest('span.textitem.word') : null;
+  }
+
+  function tokenSpan(node) {
+    return node && node.closest ? node.closest('span.textitem') : null;
+  }
+
+  function payloadOf(el) {
+    return {
+      wid: parseInt(el.dataset.wid || '0', 10),
+      text: el.dataset.text || '',
+      sentenceId: parseInt(el.dataset.sentenceId || '0', 10),
+      paragraphId: parseInt(el.dataset.paragraphId || '0', 10),
+      order: parseInt(el.dataset.order || '0', 10)
+    };
+  }
+
+  function call(name, arg) {
+    if (window.flutter_inappwebview &&
+        window.flutter_inappwebview.callHandler) {
+      window.flutter_inappwebview.callHandler(name, arg);
+    }
+  }
+
+  function order(el) {
+    return parseInt(el.dataset.order || '0', 10);
+  }
+
+  /* The painted range is the closed order interval between the two ends:
+     `data-order` is the token's index in the page and is unique and
+     contiguous across it, so the interval is exactly the words the reader
+     swept over -- including the ones it skipped past, which is what the
+     Flutter-rendered text does too. */
+  function paint() {
+    var marked = document.querySelectorAll('span.textitem.lute-multisel');
+    for (var i = 0; i < marked.length; i++) {
+      marked[i].classList.remove('lute-multisel');
+    }
+    if (!startSpan || !endSpan) return;
+    var lo = Math.min(order(startSpan), order(endSpan));
+    var hi = Math.max(order(startSpan), order(endSpan));
+    var all = document.querySelectorAll('span.textitem');
+    for (var j = 0; j < all.length; j++) {
+      var o = order(all[j]);
+      if (o >= lo && o <= hi) all[j].classList.add('lute-multisel');
+    }
+  }
+
+  function reset() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    selecting = false;
+    startSpan = null;
+    endSpan = null;
+    var marked = document.querySelectorAll('span.textitem.lute-multisel');
+    for (var i = 0; i < marked.length; i++) {
+      marked[i].classList.remove('lute-multisel');
+    }
+    var host = document.getElementById('thetext');
+    if (host) host.style.touchAction = '';
+  }
+
+  document.addEventListener('pointerdown', function (event) {
+    reset();
+    held = false;
+    var el = wordSpan(event.target);
+    if (!el) return;
+    startSpan = el;
+    endSpan = el;
+    startX = event.clientX;
+    startY = event.clientY;
+    timer = setTimeout(function () {
+      timer = null;
+      selecting = true;
+      held = true;
+      /* Chromium's own long press starts a selection on the word; the
+         form may follow, and a selection left under it reappears when the
+         form closes. */
+      var sel = window.getSelection && window.getSelection();
+      if (sel && sel.removeAllRanges) sel.removeAllRanges();
+      var host = document.getElementById('thetext');
+      if (host) host.style.touchAction = 'none';
+      paint();
+      call('luteEpubMultiSelectStart', null);
+    }, LONG_MS);
+  }, true);
+
+  document.addEventListener('pointermove', function (event) {
+    if (selecting) {
+      /* Implicit pointer capture pins `event.target` to the pressed span,
+         so the finger's real position has to be resolved here. */
+      var under = document.elementFromPoint(event.clientX, event.clientY);
+      var el = wordSpan(under) || tokenSpan(under);
+      if (el && el !== endSpan) {
+        endSpan = el;
+        paint();
+      }
+      return;
+    }
+    if (!timer) return;
+    if (Math.abs(event.clientX - startX) > MOVE_TOL ||
+        Math.abs(event.clientY - startY) > MOVE_TOL) {
+      reset();
+    }
+  }, true);
+
+  /* Non-passive and registered before any touch: the drag's first
+     `touchmove` is the page's first too, so preventing it here keeps the
+     chapter from scrolling out from under a moving finger. */
+  document.addEventListener('touchmove', function (event) {
+    if (selecting) event.preventDefault();
+  }, { capture: true, passive: false });
+
+  document.addEventListener('pointerup', function (event) {
+    if (timer) { reset(); return; }
+    if (!selecting) return;
+
+    var lo = Math.min(order(startSpan), order(endSpan));
+    var hi = Math.max(order(startSpan), order(endSpan));
+    /* Every token in the range, not just the words: the term is built
+       from the text the reader swept over, and on a language that spaces
+       its words that text is what sits between them -- dropping the
+       non-words would join "make" and "up" into "makeup".  The reader
+       trims the ends, and it is what the Flutter-rendered text hands
+       over for the same gesture. */
+    var all = document.querySelectorAll('span.textitem');
+    var payloads = [];
+    for (var i = 0; i < all.length; i++) {
+      var o = order(all[i]);
+      if (o >= lo && o <= hi) payloads.push(payloadOf(all[i]));
+    }
+    payloads.sort(function (a, b) { return a.order - b.order; });
+
+    /* Counted in words, not tokens: a drag that ends on a space still
+       swept over one word, and it has to read as the long press the
+       reader already knows. */
+    var first = null;
+    var words = 0;
+    for (var k = 0; k < payloads.length; k++) {
+      if (payloads[k].wid > 0) {
+        words += 1;
+        if (!first) first = payloads[k];
+      }
+    }
+
+    reset();
+    if (words === 0) {
+      call('luteEpubMultiSelectCancel', null);
+    } else if (words === 1) {
+      /* Released where it started: the long press the reader already
+         knows, not a selection. */
+      call('luteEpubWordLongPress', first);
+    } else {
+      call('luteEpubMultiSelectComplete', payloads);
+    }
+  }, true);
+
+  document.addEventListener('pointercancel', function (event) {
+    if (selecting) call('luteEpubMultiSelectCancel', null);
+    reset();
+  }, true);
+
+  /* The release of a held press is still a click to the page.  Capture
+     phase, so it is gone before the page's own listener can settle it. */
+  document.addEventListener('click', function (event) {
+    if (!held) return;
+    held = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
+  document.addEventListener('contextmenu', function (event) {
+    if (!wordSpan(event.target)) return;
+    event.preventDefault();
+  }, true);
+})();
+""";
+
+/// Collapses the reader page's side margins down to the book's own.
+///
+/// Runs after every chapter load (and again when the type size changes, as
+/// the book's margin is authored in `em`).  The stylesheet is a single
+/// element kept across looks; only narrow panes are touched, so a tablet or
+/// a desktop browser is unaffected.
+const String _marginsScript = r"""
+(function () {
+  var chapter = document.getElementById('epub-chapter');
+  var body = document.querySelector('#epub-chapter .epub-body');
+  if (!chapter || !body) return 'nohost';
+
+  /* What the book itself leaves between the sheet edge and its text.  Read
+     off the inner block's computed box: those margins are the book's and do
+     not move when ours do, so measuring cannot make the result oscillate. */
+  var inner = body.firstElementChild || body;
+  var cs = getComputedStyle(inner);
+  var left = (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.paddingLeft) || 0);
+  var right = (parseFloat(cs.marginRight) || 0) + (parseFloat(cs.paddingRight) || 0);
+  var own = Math.min(left, right);
+
+  /* Only a book that brings its own gutter gets ours removed: a bare one
+     keeps a small gutter from the sheet so its text never sits on the
+     glass. */
+  var tighter = own >= 6;
+  var gutter = tighter ? '0' : '0.9rem';
+
+  var css =
+    '@media (max-width: 48rem) {' +
+      'div#thetext.epub-text-container.epub-look-original #epub-chapter,' +
+      'div#thetext.epub-text-container.epub-look-night #epub-chapter {' +
+        'padding-left:' + gutter + ' !important;' +
+        'padding-right:' + gutter + ' !important;' +
+        'margin-left:0 !important;' +
+        'margin-right:0 !important;' +
+        /* The sheet had 0.5rem of outer margin; with none it fills the
+           pane, which is what its min-height was compensating for. */
+        'min-height:100% !important;' +
+      '}' +
+    '}';
+
+  var style = document.getElementById('lute-epub-margins');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'lute-epub-margins';
+    (document.head || document.documentElement).appendChild(style);
+  }
+  if (style.textContent !== css) style.textContent = css;
+
+  /* Published for the end-of-chapter block, which lives in the (now
+     full-bleed) .epub-body and aligns to the text column instead. */
+  var column = Math.min(own, 64);
+  document.documentElement.style.setProperty(
+    '--lute-book-gutter', column.toFixed(1) + 'px');
+
+  return tighter ? 'tight' : 'keep';
 })();
 """;
 

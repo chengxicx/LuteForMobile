@@ -11,6 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../shared/models/language.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../../shared/theme/eink_paper.dart';
+import '../../../shared/theme/eink_scope.dart';
 import '../../books/models/book_create.dart';
 import '../../books/providers/books_provider.dart';
 import '../../reader/providers/epub_offline_provider.dart';
@@ -229,21 +231,31 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
   }
 
   Future<void> _pushSettings() async {
+    // 先读 context，再 await：墨水屏标志不会在这一次推送里变，读早了只是
+    // 为了让 analyze 的 use_build_context_synchronously 满意。
+    final paper = context.eInk && !_night;
     await _runJs(
       'window.LuteLocalBridge && window.LuteLocalBridge.setNight($_night)',
     );
     await _runJs(
       'window.LuteLocalBridge && window.LuteLocalBridge.setFontSize($_fontPx)',
     );
+    // 墨水屏纸张：白底 + 纯黑墨 + 浅彩状态。与 reader-mode EPUB 共用
+    // `shared/theme/eink_paper.dart` 那一份 CSS —— 纸色不该因为书是本地
+    // 导入的还是服务器来的而不同。夜间（_night）时撤销，交给页面反相。
+    await _runJs(eInkPaperScript(enabled: paper));
   }
 
   Future<void> _toggleNight() async {
     setState(() => _night = !_night);
+    final paper = context.eInk && !_night;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_nightPrefsKey, _night);
     await _runJs(
       'window.LuteLocalBridge && window.LuteLocalBridge.setNight($_night)',
     );
+    // 夜间/白纸两种纸张互斥，切完要重钉一次（见 _pushSettings）。
+    await _runJs(eInkPaperScript(enabled: paper));
   }
 
   Future<void> _bumpFont(int delta) async {

@@ -122,6 +122,12 @@ class NoPageTransitionsBuilder extends PageTransitionsBuilder {
 /// 水波纹（点击后 300ms 的扩散）、点击高亮、悬停色、卡片阴影 —— 在 LCD 上
 /// 是"反馈"，在 E-Ink 上是一串全屏刷新。
 ThemeData applyEInkTheme(ThemeData base) {
+  // 墨水屏纸张：最白底 + 最黑字。只对**浅色**主题生效 —— 深色主题在墨水屏
+  // 上走的是另一套（灰阶反相），把它刷白等于把夜间阅读直接毁掉。
+  // 这一层管的是 App 原生渲染的那些书（纯文本、漫画文字层、列表、词卡），
+  // WebView 里的书由 `eink_paper.dart` 的注入样式负责，两边纸色取同一个
+  // #ffffff / #000000，翻页时不会有色差。
+  final light = base.brightness == Brightness.light;
   return base.copyWith(
     splashFactory: NoSplash.splashFactory,
     splashColor: Colors.transparent,
@@ -129,6 +135,20 @@ ThemeData applyEInkTheme(ThemeData base) {
     hoverColor: Colors.transparent,
     focusColor: Colors.transparent,
     cardTheme: base.cardTheme.copyWith(elevation: 0),
+    scaffoldBackgroundColor: light ? const Color(0xFFFFFFFF) : null,
+    canvasColor: light ? const Color(0xFFFFFFFF) : null,
+    colorScheme: light
+        ? base.colorScheme.copyWith(
+            surface: const Color(0xFFFFFFFF),
+            onSurface: const Color(0xFF000000),
+          )
+        : null,
+    textTheme: light
+        ? base.textTheme.apply(
+            bodyColor: const Color(0xFF000000),
+            displayColor: const Color(0xFF000000),
+          )
+        : null,
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: NoPageTransitionsBuilder(),

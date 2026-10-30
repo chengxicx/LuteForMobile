@@ -188,6 +188,11 @@ class _PageTransitionState extends State<_PageTransition>
 
 class ReaderScreenState extends ConsumerState<ReaderScreen>
     with WidgetsBindingObserver {
+  /// 冷启动的「阅读优先」静默期：开屏这几秒让阅读请求和章节 WebView
+  /// 独占机器，不跟阅读首屏抢路的后台活（语言映射、stats、词库同步）
+  /// 都压到它之后。与 app.dart 侧延后挂载其余各屏的窗口对齐。
+  static const Duration _bootQuietPeriod = Duration(seconds: 6);
+
   int _buildCount = 0;
   TermForm? _currentTermForm;
   bool _isUiVisible = true;
@@ -232,6 +237,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// IndexedStack 常驻其它屏，那里的输入框（如设置页的 Server Host）会
   /// 拿走焦点且不还，实体键从此失灵直到重启 app。
   final FocusNode _hardwareKeyFocus = FocusNode();
+
+  /// 实体键在这里能滚动的"章节画布"：EPUB 流式章是一整篇长文档，翻页键
+  /// 要先在章内逐屏走，走到头才离开这一章（见 [_handleHardwareKey]）。
+  final EpubChapterScroll _epubScroll = EpubChapterScroll();
 
   /// Statuses a double tap cycles through, matching the web reader's
   /// _quick_cycle_status (lute-touch.js).  2/4/5 are skipped so the gesture
@@ -355,7 +364,40 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         }
       }
     }
+    // 流式 EPUB 章：一个 Lute 页就是一整章，[_turnPage] 在这里无事可做
+    // （pageCount 常常是 1），按键必须先在章内逐屏滚动。
+    debugPrint(
+      '[pagekey] handle $action epub=${pageData?.epubChapter != null} '
+      'attached=${_epubScroll.attached}',
+    );
+    if (pageData?.epubChapter != null && _epubScroll.attached) {
+      unawaited(_turnChapterScreen(action, pageData));
+      return;
+    }
     _turnPage(action == HardwareKeyAction.previous ? 1 : -1, pageData);
+  }
+
+  /// 章内翻一屏；到底了再交给翻页 / 相邻章。
+  Future<void> _turnChapterScreen(
+    HardwareKeyAction action,
+    PageData? pageData,
+  ) async {
+    final forward = action == HardwareKeyAction.next;
+    final moved = await _epubScroll.turn(forward ? 1 : -1);
+    if (moved || !mounted) return;
+
+    final data = ref.read(readerProvider).pageData;
+    if (data == null) return;
+    final canPage = forward
+        ? data.currentPage < data.pageCount
+        : data.currentPage > 1;
+    if (canPage) {
+      _turnPage(forward ? -1 : 1, data);
+      return;
+    }
+    // 章的尽头：有相邻章就接着读，和章末块那三个按钮同一个目标。
+    final neighbour = forward ? data.seriesNextBookId : data.seriesPrevBookId;
+    if (neighbour != null) _openChapter(neighbour);
   }
 
   /// 按方向翻页：direction > 0 上一页，< 0 下一页。
@@ -497,14 +539,18 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     ref.read(ttsPlayerProvider.notifier).onRequestNextPage =
         _advancePageForContinuousReading;
 
-    Future.delayed(Duration.zero, _loadLanguageMapping);
-    Future.delayed(Duration.zero, _loadStatsIfNeeded);
+    // 这三个都是阅读首屏用不上的后台活：语言映射喂 TTS、stats 喂状态条、
+    // 词库同步是静默回流。冷启动时它们和各屏 init 的请求一起挤在最前面
+    // （/language/index 45KB 还在主 isolate 上解析），让阅读路径先走，
+    // 统一延后到 _bootQuietPeriod 之后。
+    Future.delayed(_bootQuietPeriod, _loadLanguageMapping);
+    Future.delayed(_bootQuietPeriod, _loadStatsIfNeeded);
     // 开书静默同步词库（服务端 hash 没变时只有一次几十字节的请求）：
     // web 上补的翻译/注音由此回流到本地词库，词卡兜底和离线阅读都吃它。
     // 失败完全静默，绝不打扰阅读。
     unawaited(
       Future.delayed(
-        Duration.zero,
+        _bootQuietPeriod,
         () => ref.read(termSyncServiceProvider).syncIfChanged(),
       ),
     );
@@ -1394,6 +1440,23 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     );
   }
 
+  /// 阅读页外观的一键昼夜开关（EPUB）。
+  ///
+  /// 墨水屏上默认是白纸黑字（见 EpubChapterView 的 `_pushEInkPaper`），但
+  /// 暗处/夜里仍要能立刻切黑。抽屉里的 `EPUB Look` 三档要两步才点到，这里
+  /// 给一个单击就换的入口，只切 original <-> night —— `Theme`（跟随服务器
+  /// 主题）留在抽屉里给"就要跟着网页端"的人。
+  Widget _buildEpubLookToggle(Settings settings) {
+    final night = settings.epubLookMode == 'night';
+    return IconButton(
+      icon: Icon(night ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
+      tooltip: night ? 'Day mode' : 'Night mode',
+      onPressed: () => ref
+          .read(settingsProvider.notifier)
+          .updateEpubLookMode(night ? 'original' : 'night'),
+    );
+  }
+
   /// 阅读屏顶栏的「语法」入口，打开 Grammar 分析页（当前页的语法点）。
   ///
   /// 2026-09-26 做书架入口时把它撤了（"拼写检查不是阅读动作"），真机上很快
@@ -1495,6 +1558,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                   onPressed: () =>
                       setState(() => _mangaRevealAll = !_mangaRevealAll),
                 ),
+              if (currentPageData?.epubChapter != null)
+                _buildEpubLookToggle(settings),
               IconButton(
                 icon: const Icon(Icons.text_fields),
                 tooltip: 'Text formatting',
@@ -1545,6 +1610,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             onPressed: () =>
                 setState(() => _mangaFitToScreen = !_mangaFitToScreen),
           ),
+        if (currentPageData?.epubChapter != null)
+          _buildEpubLookToggle(settings),
         IconButton(
           icon: const Icon(Icons.text_fields),
           tooltip: 'Text formatting',
@@ -2032,7 +2099,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               final prefetch = ref.read(epubOfflinePrefetchProvider);
               // The stylesheet and reader scripts are ~200 KB and only
               // change on a redeploy: refresh them behind the first paint
-              // instead of in front of it.
+              // instead of in front of it.  The theme rides along the same
+              // way now -- the view hot-applies its CSS when it changed.
               unawaited(prefetch.refreshStaticAssets());
               return prefetch.refreshTheme();
             },
@@ -2082,12 +2150,37 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                   : (pageData.seriesPrevBookId ?? 0),
             ),
             onOpenContents: _openContents,
+            scroll: _epubScroll,
+            // The chapter's token stream carries no language, and a word
+            // without one cannot reach the local dictionary -- the book's
+            // id is the answer for every word in the chapter.
+            languageId: ref.watch(currentBookProvider).langId,
             textSize: textSettings.textSize,
             onDoubleTap: (item) {
               _handleDoubleTap(item);
             },
             onTripleTap: (item) {
               _handleTripleTap(item);
+            },
+            // Same gesture as on the Flutter-rendered text: a hold opens
+            // the term edit form.  The Flutter path buzzes from inside
+            // text_display.dart; here the press belongs to Chromium, so
+            // the feedback is the app's own.
+            onLongPress: (item, anchor) {
+              HapticFeedback.mediumImpact();
+              _handleLongPress(item);
+            },
+            // A held press that drags is a multi-word selection: the page
+            // paints the range as the finger moves and reports it once, on
+            // release.  A press released where it started takes the
+            // [onLongPress] branch above instead.
+            onMultiTermSelectionStart: () {
+              HapticFeedback.mediumImpact();
+              _handleMultiTermSelectionStart();
+            },
+            onMultiTermSelectionCancel: _handleMultiTermSelectionCancel,
+            onMultiTermSelectionComplete: (items, anchor) {
+              unawaited(_handleMultiTermSelectionComplete(items));
             },
           )
         : textDisplay;
@@ -2334,6 +2427,14 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 .buildLocalTooltipFallback(item);
       if (seq != _tooltipSeq) return;
       if (tooltip != null && mounted) {
+        // A word's language is the book's language when the page did not
+        // put one on it: the EPUB chapter's token stream is
+        // `[text, wo_id, status, sentence, paragraph]` -- no language -- so
+        // every word rebuilt from it arrives here with `langId == null`,
+        // which is what silently skipped the local dictionary (the lookup
+        // cannot route to a dictionary file without an id) and hid the
+        // sentence-translation button.
+        final langId = item.langId ?? ref.read(currentBookProvider).langId;
         // 本地词典（阶段3a）：SQLite 毫秒级查询，弹出前一次带入（卡片单帧
         // 绘制，墨水屏不重绘）。按当前书的语言查对应词典库；该语言没装
         // 专属词典时，只有日语书才回落旧版共享日汉库（其他语言如实显示
@@ -2345,7 +2446,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               .lookupWithReading(
                 tooltip.term,
                 tooltip.romanization,
-                langId: item.langId,
+                langId: langId,
                 languageName: ref.read(currentBookProvider).languageName,
               );
         } catch (_) {
@@ -2356,7 +2457,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         // 会被判为恒真。但 mounted 必须再查一遍——中间隔了一次 await，
         // widget 可能已经 dispose，此时 show 卡片会炸。
         if (mounted) {
-          final langId = item.langId;
           // An annotated reading (romanization) outranks the surface form for
           // TTS -- the engine pronounces the reading the user wrote down.
           final speakText = ttsSpeakTextForTerm(
