@@ -56,9 +56,11 @@ div#thetext .epub-body rt, body .epub-body rt {
 }
 /* 章末导航块是 App 注入的 chrome（"END OF CHAPTER / Prev / Next /
    Contents"），样式在 styles.css 里用的是弱化的灰。墨水屏上弱化等于看不清，
-   而且它是翻页的主要入口，一并压黑。 */
-.lute-chapter-nav,
-.lute-chapter-nav * {
+   而且它是翻页的主要入口，一并压黑。
+   注意那个块自带一份 `<style>`，规则也带 `!important` 且在本样式之后注入：
+   平级特异性会输给它，所以这里用 `body` 前缀抬一级（0,2,1 > 0,1,0）。 */
+body .lute-chapter-nav,
+body .lute-chapter-nav * {
   color: #000000 !important;
 }
 span.status0 {
@@ -102,9 +104,11 @@ String eInkPaperScript({required bool enabled}) {
   if (!s) {
     s = document.createElement('style');
     s.id = 'lute-eink-paper';
-    (document.head || document.documentElement).appendChild(s);
   }
   s.textContent = $css;
+  /* 再 appendChild 一次：已存在的节点会被*移*到 head 末尾，于是纸张样式
+     永远排在后来注入的样式（章末块那种自带 <style> 的）之后。 */
+  (document.head || document.documentElement).appendChild(s);
   return 'on';
 })();''';
 }

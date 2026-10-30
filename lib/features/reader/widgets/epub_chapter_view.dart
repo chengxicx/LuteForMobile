@@ -1071,6 +1071,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // it must not be in the tree while the page aligns its word spans.
     await _pushChapterNav(controller);
 
+    // 章末块自带一份样式（灰色 chrome + 自己的 !important），刚注入完要再
+    // 盖一次纸张样式，否则「END OF CHAPTER」那几行还是浅灰 —— 墨水屏上等于
+    // 看不清，而它是翻页的主要入口。
+    await _pushEInkPaper();
+
     // The page reports readiness at DOMContentLoaded, i.e. before the
     // load event, so a live chapter has already lifted the veil here.
     // One that did not is a chapter rendered before the callback existed
