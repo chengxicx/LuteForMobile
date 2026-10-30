@@ -834,7 +834,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// 白色等于把夜间模式钉死。
   Future<void> _pushEInkPaper() async {
     if (!mounted) return;
-    final on = context.eInk && widget.look != 'night';
+    // 夜里有三条路能进暗色：EPUB 的 Night 外观、App 主题切成深色、或者
+    // 干脆换一本本地书走它自己的夜间开关。任一为"暗"就不注纸张 —— 否则
+    // 深色的 App 会给出一张白得刺眼的正文。
+    final appLight = Theme.of(context).brightness == Brightness.light;
+    final on = context.eInk && appLight && widget.look != 'night';
     await _runJs(eInkPaperScript(enabled: on));
   }
 
@@ -918,6 +922,20 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       if (_navPushed == widget.chapterNav?.signature) return;
       unawaited(_pushChapterNav());
     });
+  }
+
+  Brightness? _lastBrightness;
+
+  /// App 主题从深切浅（或反之）时，页面的纸张要跟着换：eInk 的白纸只在
+  /// 浅色主题下注入，深色主题意味着"我现在要夜里读"。
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final brightness = Theme.of(context).brightness;
+    if (_lastBrightness != brightness) {
+      _lastBrightness = brightness;
+      if (_pageReady) unawaited(_pushEInkPaper());
+    }
   }
 
   @override

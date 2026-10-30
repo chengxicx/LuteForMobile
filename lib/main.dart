@@ -111,7 +111,11 @@ void main() async {
       basicAuthUser: basicAuthUser,
       basicAuthPassword: basicAuthPassword,
     );
-    apiService.triggerAutoBackup();
+    // 自动备份索引（/backup/index + /settings/index，共约 100KB）纯粹是
+    // 后台对账，却原来在 runApp 前就发出去，正好撞上阅读路径的冷启动
+    // 窗口。压到 8 秒后 —— 那时首屏早已落定；进程若没活到那时，下次
+    // 启动照样会查。
+    Future.delayed(const Duration(seconds: 8), apiService.triggerAutoBackup);
   }
 
   runApp(

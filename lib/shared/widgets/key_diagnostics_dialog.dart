@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../../core/services/page_keys.dart';
 import 'hardware_key_navigator.dart';
 
 /// 墨水屏设备的翻页键在第三方 app 里到底发什么键，每台机器、每种系统按键
@@ -15,6 +17,30 @@ class KeyDiagnosticsDialog extends StatefulWidget {
 
 class _KeyDiagnosticsDialogState extends State<KeyDiagnosticsDialog> {
   final List<String> _events = [];
+  VoidCallback? _unsubscribe;
+
+  @override
+  void initState() {
+    super.initState();
+    // 音量键在系统窗口层就被吃了，走不到上面的 Focus；只有原生桥看得见
+    // 它们，而"这台机器到底发哪个键"正是这个对话框要回答的问题。
+    _unsubscribe = PageKeys.addListener((direction, keyCode) {
+      if (!mounted) return;
+      setState(() {
+        _events.insert(
+          0,
+          'native  keyCode=$keyCode  '
+          '=> ${direction < 0 ? 'previous' : 'next'}',
+        );
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _unsubscribe?.call();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

@@ -179,6 +179,7 @@ class App extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeSettings = ref.watch(themeSettingsProvider);
     final eInk = ref.watch(einkModeProvider);
+    debugPrint('[pagekey] eink=$eInk');
 
     ThemeMode themeMode;
     switch (themeSettings.themeType) {
@@ -267,6 +268,26 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
       GlobalKey<State<StatefulWidget>>();
   bool _needsDataRefresh = false;
 
+  /// 冷启动的「阅读优先」窗口：这 6 秒里 IndexedStack 只挂 reader 一屏。
+  ///
+  /// 其余各屏的 initState 一挂载就会各自发服务端请求（书单、stats、
+  /// 词表、设置索引……合计约 10 个），其中好几个 45KB+ 的 HTML 还要在
+  /// 主 isolate 上解析 —— 而冷启动的头几秒正是阅读请求和章节 WebView
+  /// 挂载逐词 span 的窗口，实测（Leaf 5C）机器只有一颗弱 CPU。把其余
+  /// 屏的挂载压到窗口之后，阅读路径先独占；用户在这之前点了导航就
+  /// 立即挂载（[_mountRestOfStack]），所以可感知的行为不变。
+  static const Duration _bootQuietPeriod = Duration(seconds: 6);
+  bool _stackFullyMounted = false;
+  Timer? _stackMountTimer;
+
+  void _mountRestOfStack() {
+    _stackMountTimer?.cancel();
+    _stackMountTimer = null;
+    if (_stackFullyMounted || !mounted) return;
+    _stackFullyMounted = true;
+    setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
@@ -277,6 +298,7 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
       _updateDrawerSettings();
       _checkAndStartLute3IfNeeded();
       _loadLastReadBook();
+      _stackMountTimer = Timer(_bootQuietPeriod, _mountRestOfStack);
     });
     _navigationController.addReaderListener(_handleNavigateToReader);
     _navigationController.addScreenListener(_handleNavigateToScreen);
@@ -304,6 +326,7 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
 
   @override
   void dispose() {
+    _stackMountTimer?.cancel();
     _navigationController.removeReaderListener(_handleNavigateToReader);
     _navigationController.removeScreenListener(_handleNavigateToScreen);
     super.dispose();
@@ -372,6 +395,10 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
   }
 
   void _handleNavigateToScreen(String route) {
+    // 主动导航意味着用户要去某一屏了：静默期到此为止，目标屏立即挂载
+    // （它自己的 init 拉取随之开始），不能等 6 秒计时器。
+    _mountRestOfStack();
+
     // 只有真正的内容页才更新"返回目标"；在 Help/Settings 之间来回切换时
     // 保留最初进入前的页面。
     if (route != 'help' && route != 'settings') {
@@ -648,32 +675,55 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
                 builder: (context, ref, child) =>
                     ReaderScreen(key: _readerKey, scaffoldKey: _scaffoldKey),
               ),
-              Consumer(
-                builder: (context, ref, child) =>
-                    BooksScreen(key: _booksKey, scaffoldKey: _scaffoldKey),
-              ),
-              Consumer(
-                builder: (context, ref, child) =>
-                    GrammarScreen(key: _grammarKey, scaffoldKey: _scaffoldKey),
-              ),
-              Consumer(
-                builder: (context, ref, child) =>
-                    TermsScreen(key: _termsKey, scaffoldKey: _scaffoldKey),
-              ),
-              Consumer(
-                builder: (context, ref, child) =>
-                    StatsScreen(key: _statsKey, scaffoldKey: _scaffoldKey),
-              ),
-              Consumer(
-                builder: (context, ref, child) => SettingsScreen(
-                  key: _settingsKey,
-                  scaffoldKey: _scaffoldKey,
-                ),
-              ),
-              Consumer(
-                builder: (context, ref, child) =>
-                    ReviewScreen(key: _reviewKey, scaffoldKey: _scaffoldKey),
-              ),
+              // 冷启动静默期里只有 reader 一屏在树里（见
+              // [_bootQuietPeriod]）；其余屏是空占位，窗口过后或用户
+              // 导航时才真正挂载、触发各自的 init 拉取。
+              _stackFullyMounted
+                  ? Consumer(
+                      builder: (context, ref, child) => BooksScreen(
+                        key: _booksKey,
+                        scaffoldKey: _scaffoldKey,
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+              _stackFullyMounted
+                  ? Consumer(
+                      builder: (context, ref, child) => GrammarScreen(
+                        key: _grammarKey,
+                        scaffoldKey: _scaffoldKey,
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+              _stackFullyMounted
+                  ? Consumer(
+                      builder: (context, ref, child) =>
+                          TermsScreen(key: _termsKey, scaffoldKey: _scaffoldKey),
+                    )
+                  : const SizedBox.shrink(),
+              _stackFullyMounted
+                  ? Consumer(
+                      builder: (context, ref, child) => StatsScreen(
+                        key: _statsKey,
+                        scaffoldKey: _scaffoldKey,
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+              _stackFullyMounted
+                  ? Consumer(
+                      builder: (context, ref, child) => SettingsScreen(
+                        key: _settingsKey,
+                        scaffoldKey: _scaffoldKey,
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+              _stackFullyMounted
+                  ? Consumer(
+                      builder: (context, ref, child) => ReviewScreen(
+                        key: _reviewKey,
+                        scaffoldKey: _scaffoldKey,
+                      ),
+                    )
+                  : const SizedBox.shrink(),
             ],
           );
 

@@ -57,7 +57,8 @@ class EpubOfflinePrefetch {
   /// [refreshStaticAssets]).
   bool _staticAssetsRefreshed = false;
 
-  /// Re-fetch the user's theme, returning whether it changed.
+  /// Re-fetch the user's theme, returning the fresh CSS when it differs
+  /// from the packed copy (null when unchanged, offline, or failed).
   ///
   /// A pack stores `/theme/current` under a stable path, so a copy
   /// written when the pack was built outlives every theme change -- and a
@@ -65,17 +66,19 @@ class EpubOfflinePrefetch {
   /// up as a chapter painted on the previous palette (a white sheet under
   /// the app's dark chrome).
   ///
-  /// This is the one piece worth blocking the first paint on: it is a few
-  /// KB, and without it the chapter is simply wrong.  The caller gives it
-  /// a short leash; on a slow network the packed copy carries the open
-  /// and the next one gets the new bytes.
-  Future<bool> refreshTheme() async {
+  /// This used to be awaited ahead of the first paint -- a few KB, and
+  /// "the palette is simply wrong without it" -- but on a cold start the
+  /// request sits behind the CDN/TLS handshake, and waiting it out was a
+  /// measured 1.2 s of blank chapter on every open.  It is background
+  /// work now: the open paints with the packed copy, and the caller
+  /// hot-applies the CSS returned here once the page is up.
+  Future<String?> refreshTheme() async {
     final bytes = await _fetchAsset('theme/current');
-    if (bytes == null) return false;
+    if (bytes == null) return null;
     final packed = await store.readBytes('theme/current');
-    if (packed != null && _sameBytes(packed, bytes)) return false;
+    if (packed != null && _sameBytes(packed, bytes)) return null;
     await store.writeBytes('theme/current', bytes);
-    return true;
+    return utf8.decode(bytes, allowMalformed: true);
   }
 
   /// Re-fetch the pack's stylesheet and reader scripts, once a session.

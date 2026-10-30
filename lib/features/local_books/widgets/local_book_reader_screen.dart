@@ -232,8 +232,12 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
 
   Future<void> _pushSettings() async {
     // 先读 context，再 await：墨水屏标志不会在这一次推送里变，读早了只是
-    // 为了让 analyze 的 use_build_context_synchronously 满意。
-    final paper = context.eInk && !_night;
+    // 为了让 analyze 的 use_build_context_synchronously 满意。深色主题
+    // 代表"现在要夜里读"，此时不钉白纸。
+    final paper =
+        context.eInk &&
+        Theme.of(context).brightness == Brightness.light &&
+        !_night;
     await _runJs(
       'window.LuteLocalBridge && window.LuteLocalBridge.setNight($_night)',
     );
