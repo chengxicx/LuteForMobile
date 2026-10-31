@@ -84,6 +84,20 @@ class ReaderNotifier extends Notifier<ReaderState> {
   // Track the current page request to ignore stale responses
   String _currentRequestKey = '';
 
+  /// Which page load is allowed to write state.
+  ///
+  /// Every non-refresh [loadPage] takes a new number; an answer that comes
+  /// back carrying an older one is dropped.  Without this, opening book B
+  /// while book A's request is still in flight leaves the winner to timing:
+  /// on a slow link A's response lands last and paints book A over book B --
+  /// the reader then shows the *previously* opened book while
+  /// `settings.currentBookId` points at B (language, TTS and progress all
+  /// following the wrong book).  [_currentRequestKey] cannot do this job: it
+  /// is only consulted by the background refresh, and it is set *before* the
+  /// fetch, so two overlapping loads end up with the same key whenever the
+  /// page number matches.
+  int _loadGeneration = 0;
+
   // Sequential prefetch queue - ensures tooltip preloads happen in order
   // and don't overlap (prevents duplicate fetches for shared terms)
   Future<void>? _prefetchQueue;
@@ -241,14 +255,33 @@ class ReaderNotifier extends Notifier<ReaderState> {
     return 'An error occurred: $error';
   }
 
-  Future<void> loadPage({
+  /// Loads one page into the reader.
+  ///
+  /// Returns whether the requested page reached state.  `false` is not
+  /// always an error: with [keepCurrentPage] the previous page stays on
+  /// screen, and the caller decides what to say about the miss (the reader
+  /// turns pages that way so a slow link never blanks the text).
+  Future<bool> loadPage({
     required int bookId,
     int? pageNum,
     bool updateReaderState = true,
     bool showFullPageError = true,
     bool useCache = true,
     bool refreshStatuses = false,
+    bool keepCurrentPage = false,
   }) async {
+    // A background refresh belongs to the load it was queued behind, so it
+    // never supersedes anything; every real load makes the ones before it
+    // stale.  Answers carrying an older generation are dropped instead of
+    // painted over the screen (see [_loadGeneration]).  A load that does not
+    // touch the reader's state (the sentence screen's preview fetch) must
+    // not supersede the page someone is reading either.
+    final ownsScreen = updateReaderState && !refreshStatuses;
+    final gen = ownsScreen ? ++_loadGeneration : _loadGeneration;
+    // A turn must not erase what is already on screen -- that is the whole
+    // difference between "next page" and "open a book".
+    final keepOldPage = keepCurrentPage && state.pageData != null;
+
     if (!_repository.contentService.isConfigured) {
       if (updateReaderState) {
         state = state.copyWith(
@@ -256,7 +289,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
           errorMessage: 'Server URL not configured. Please set it in settings.',
         );
       }
-      return;
+      return false;
     }
 
     // Decide where this load actually starts, before touching any state.
@@ -272,11 +305,13 @@ class ReaderNotifier extends Notifier<ReaderState> {
       final localPage = await ref
           .read(bookProgressServiceProvider)
           .getPage(bookId);
+      final localPageCached =
+          localPage != null && await _isPageCached(bookId, localPage);
+      if (gen != _loadGeneration) return false; // superseded while probing
       final strategy = resolvePageLoadStrategy(
         requestedPage: pageNum,
         localPage: localPage,
-        localPageCached:
-            localPage != null && await _isPageCached(bookId, localPage),
+        localPageCached: localPageCached,
         serverReachable: ServerStatusManager.isReachable,
       );
 
@@ -287,10 +322,10 @@ class ReaderNotifier extends Notifier<ReaderState> {
         if (updateReaderState) {
           state = state.copyWith(
             isLoading: false,
-            errorMessage: _offlineNoPageMessage,
+            errorMessage: keepOldPage ? null : _offlineNoPageMessage,
           );
         }
-        return;
+        return false;
       }
 
       resumeFromLocal = strategy == PageLoadStrategy.localCacheThenRefresh;
@@ -308,17 +343,21 @@ class ReaderNotifier extends Notifier<ReaderState> {
     ApiLogger.logRequest(
       'loadPage',
       details:
-          'requestKey=$requestKey, useCache=$useCache, refreshStatuses=$refreshStatuses',
+          'requestKey=$requestKey, useCache=$useCache, refreshStatuses=$refreshStatuses, gen=$gen',
     );
 
-    if (updateReaderState && !refreshStatuses) {
-      state = state.copyWith(isLoading: true, errorMessage: null);
+    if (updateReaderState && !refreshStatuses && !keepOldPage) {
+      state = state.copyWith(isLoading: true);
     }
 
-    // Safety timeout - if loading takes more than 15 seconds, force stop
+    // Safety timeout - if loading takes more than 15 seconds, force stop.
+    // Only the load that owns the spinner may end it: an older timer firing
+    // over a newer load used to paint "Loading timed out" over a page that
+    // was still on its way.
     Timer? safetyTimeout;
-    if (updateReaderState && !refreshStatuses) {
+    if (updateReaderState && !refreshStatuses && !keepOldPage) {
       safetyTimeout = Timer(const Duration(seconds: 15), () {
+        if (gen != _loadGeneration) return;
         if (state.isLoading) {
           state = state.copyWith(
             isLoading: false,
@@ -335,6 +374,15 @@ class ReaderNotifier extends Notifier<ReaderState> {
         useCache: useCache && !refreshStatuses,
         forceRefresh: false,
       );
+      // The reader has moved on (another book, another page): this answer
+      // belongs to a screen nobody is looking at any more.
+      if (gen != _loadGeneration) {
+        ApiLogger.logBackground(
+          'loadPageStale',
+          details: 'gen=$gen, current=$_loadGeneration, requestKey=$requestKey',
+        );
+        return false;
+      }
       // Covers every branch below -- the cache hit, the refresh merge, and
       // the cache-miss path that hands off to _backgroundRefreshStatuses.
       final pageData = rawPageData == null
@@ -383,6 +431,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
                 // the page we are already showing.
                 resumeFromLocal ? null : effectivePageNum,
                 requestKey,
+                gen,
               ),
             );
           }
@@ -392,13 +441,29 @@ class ReaderNotifier extends Notifier<ReaderState> {
           if (updateReaderState && !refreshStatuses) {
             ref.read(readerReadinessProvider.notifier).markReady();
           }
+          return true;
         } else {
-          // Cache miss: stay in loading state and trigger background refresh
-          await _backgroundRefreshStatuses(bookId, pageNum, requestKey);
+          // Cache miss: the network answer is the only one there is.  Stay
+          // in whatever loading state this load set (a page turn keeps the
+          // old page and sets none).
+          return await _backgroundRefreshStatuses(
+            bookId,
+            pageNum,
+            requestKey,
+            gen,
+          );
         }
       }
+      return true; // updateReaderState == false: nothing was written
     } catch (e) {
-      if (showFullPageError && updateReaderState && !refreshStatuses) {
+      if (gen != _loadGeneration) return false;
+      if (keepOldPage && updateReaderState) {
+        // A turn: the text on screen stays, the caller offers a retry.  A
+        // full-page error here would trade a readable page for an error
+        // message because of one lost request.
+        ApiLogger.logError('loadPageTurn', e);
+        state = state.copyWith(isLoading: false, isBackgroundRefreshing: false);
+      } else if (showFullPageError && updateReaderState && !refreshStatuses) {
         state = state.copyWith(
           isLoading: false,
           isBackgroundRefreshing: false,
@@ -408,16 +473,23 @@ class ReaderNotifier extends Notifier<ReaderState> {
         ApiLogger.logError('loadPageNavigation', e);
         state = state.copyWith(isLoading: false, isBackgroundRefreshing: false);
       }
+      return false;
     } finally {
       // Always cancel the safety timeout
       safetyTimeout?.cancel();
     }
   }
 
-  Future<void> _backgroundRefreshStatuses(
+  /// Fetches [pageNum] from the network (3 attempts) and publishes it.
+  ///
+  /// Returns whether a page reached state; `gen` is the load generation the
+  /// caller belongs to, so an answer that arrives after the reader moved on
+  /// is dropped instead of painted.
+  Future<bool> _backgroundRefreshStatuses(
     int bookId,
     int? pageNum,
     String requestKey,
+    int gen,
   ) async {
     state = state.copyWith(isBackgroundRefreshing: true);
 
@@ -453,13 +525,16 @@ class ReaderNotifier extends Notifier<ReaderState> {
       details: 'requestKey=$requestKey, freshPage=${freshPage != null}',
     );
 
-    // Check if this response is still valid (user hasn't navigated to a different page)
-    if (requestKey != _currentRequestKey) {
+    // Check if this response is still valid (user hasn't navigated to a
+    // different page, or opened another book entirely).
+    if (requestKey != _currentRequestKey || gen != _loadGeneration) {
       ApiLogger.logBackground(
         'statusRefreshIgnored',
-        details: 'pageChanged from $requestKey to $_currentRequestKey',
+        details:
+            'pageChanged from $requestKey to $_currentRequestKey, '
+            'gen=$gen current=$_loadGeneration',
       );
-      return;
+      return false;
     }
 
     if (freshPage == null) {
@@ -475,7 +550,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
               : 'Failed to load page',
         );
       }
-      return;
+      return false;
     }
 
     final currentData = state.pageData;
@@ -513,6 +588,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
         pageData: overlaid,
       );
     }
+    return true;
   }
 
   PageData _mergePageStatuses(PageData currentPage, PageData freshPage) {

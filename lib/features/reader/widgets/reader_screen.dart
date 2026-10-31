@@ -258,6 +258,17 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// "No Book Loaded"，后者才该。
   bool _hasLoadedOnce = false;
   bool _isNavigatingForward = true;
+
+  /// 墨水屏下左右两侧各多宽的一条带子是翻页区（占屏宽比例）。
+  ///
+  /// 0.15 在 674 CSS px 的 Leaf5C 上是 101px：够拇指点，又不会把正文两侧的
+  /// 空白和行间空隙都变成"上一页/下一页"。中间的 70% 只负责唤出 UI。
+  static const double _pageTurnEdgeFraction = 0.15;
+
+  /// A page turn is in flight.  Taps that arrive meanwhile are dropped
+  /// instead of stacking another load behind the first (on a slow link the
+  /// two would answer in either order).
+  bool _isTurning = false;
   Key _pageKey = const ValueKey('page');
   Map<int, String> _languageIdToName = {};
   final Map<int, TextDirection> _languageIdToDirection = {};
@@ -1113,7 +1124,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       _lastAudioBookId = null;
     });
     try {
-      await ref
+      final loaded = await ref
           .read(readerProvider.notifier)
           .loadPage(bookId: bookId, pageNum: pageNum);
 
@@ -1121,8 +1132,22 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       // 真的「没开书」，那时该显示的是空状态而不是转圈。
       _hasLoadedOnce = true;
 
+      // 这次加载已经被后来的加载取代（用户又点了一本书）：它带回的页面
+      // 不是用户现在要看的，别拿它去设语言 / 装朗读句子表 —— 那正是
+      // 「点书却跳到前面打开过的书」的另一半。
+      if (!loaded) {
+        ApiLogger.logBackground(
+          'loadBookStale',
+          details: 'bookId=$bookId superseded',
+        );
+        if (mounted) setState(() {});
+        return;
+      }
+
       final pageData = ref.read(readerProvider).pageData;
-      if (pageData != null) {
+      // 即便这次加载成功，state 里也可能还是上一本书的页（新页还在路上）：
+      // 语言与句子表只认这本书自己的页。
+      if (pageData != null && pageData.bookId == bookId) {
         final langId = _findLangId(pageData);
 
         // 按 id 直接加载时（启动时恢复上次在读的书）没有 Book 对象，
@@ -1141,12 +1166,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             ref.read(termsProvider.notifier).loadStatus99Only(langId);
           }
         }
+
+        _loadTtsIfNeeded(pageData);
       }
 
       _loadAudioIfNeeded();
-      if (pageData != null) {
-        _loadTtsIfNeeded(pageData);
-      }
 
       // Force rebuild to ensure UI reflects loaded book content
       if (mounted) {
@@ -2169,6 +2193,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             // id is the answer for every word in the chapter.
             languageId: ref.watch(currentBookProvider).langId,
             textSize: textSettings.textSize,
+            lineSpacing: textSettings.lineSpacing,
             onDoubleTap: (item) {
               _handleDoubleTap(item);
             },
@@ -2253,16 +2278,20 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                     TermTooltipClass.close();
                   },
                   onTap: () {
-                    // 墨水屏模式：点左三分之一上一页、右三分之一下一页，中间区域
-                    // 仍走原来的「唤出/续期 UI」。拖动翻页在这里是关掉的（见
-                    // onHorizontalDragStart）—— 跟手位移每一帧都要刷一次屏。
+                    // 墨水屏模式：只有最外侧一条窄带翻页，中间区域一律走
+                    // 原来的「唤出/续期 UI」。三分法（左/右各 1/3）在 674
+                    // CSS px 的屏上给每侧 225px，正文两侧的空白、行间空隙、
+                    // 段距全落在里面 —— 读书时几乎"点哪儿都翻页"。翻页还有
+                    // 侧键与顶部箭头，窄带够用。拖动翻页在这里是关掉的
+                    // （见 onHorizontalDragStart）—— 跟手位移每帧都要刷屏。
                     if (context.eInk) {
                       final width = MediaQuery.sizeOf(context).width;
-                      if (_lastTapX < width / 3) {
+                      final edge = width * _pageTurnEdgeFraction;
+                      if (_lastTapX < edge) {
                         _turnPage(1, pageData);
                         return;
                       }
-                      if (_lastTapX > width * 2 / 3) {
+                      if (_lastTapX > width - edge) {
                         _turnPage(-1, pageData);
                         return;
                       }
@@ -3291,77 +3320,119 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   }
 
   Future<void> _goToPage(int pageNum) async {
+    if (_isTurning) return;
     final pageData = ref.read(readerProvider).pageData;
     if (pageData == null) return;
+    final bookId = pageData.bookId;
+    final fromPage = pageData.currentPage;
 
     // Log page change for debugging
     ApiLogger.logRequest(
       'ReaderScreen._goToPage',
-      details:
-          'from=${pageData!.currentPage}, to=$pageNum, bookId=${pageData!.bookId}',
+      details: 'from=$fromPage, to=$pageNum, bookId=$bookId',
     );
 
     setState(() {
-      _isNavigatingForward = pageNum > pageData!.currentPage;
-      _pageKey = ValueKey('${pageData!.bookId}-$pageNum');
+      _isNavigatingForward = pageNum > fromPage;
+      _pageKey = ValueKey('$bookId-$pageNum');
       _isLastPageMarkedDone = false;
-      _lastAttemptedBookId = pageData!.bookId;
+      _lastAttemptedBookId = bookId;
       _lastAttemptedPageNum = pageNum;
       _highlightedWordId = null;
     });
 
-    if (pageNum > pageData!.currentPage) {
+    if (pageNum > fromPage) {
       try {
         await ref
             .read(readerProvider.notifier)
-            .markPageRead(pageData!.bookId, pageData!.currentPage);
+            .markPageRead(bookId, fromPage);
       } catch (e) {
         ApiLogger.logError('markPageRead', e);
       }
     }
 
-    await ref
-        .read(readerProvider.notifier)
-        .loadPage(
-          bookId: pageData!.bookId,
-          pageNum: pageNum,
-          showFullPageError: false,
-          useCache: true,
-        );
+    _isTurning = true;
+    try {
+      final ok = await ref
+          .read(readerProvider.notifier)
+          .loadPage(
+            bookId: bookId,
+            pageNum: pageNum,
+            showFullPageError: false,
+            useCache: true,
+            keepCurrentPage: true,
+          );
+      if (!ok && mounted) _reportTurnFailure(fromPage, pageNum);
+    } finally {
+      _isTurning = false;
+    }
 
     ref.read(statsProvider.notifier).loadStats();
   }
 
   Future<void> _loadPageWithoutMarkingRead(int pageNum) async {
+    // One turn at a time.  A slow link used to let a second tap start a
+    // second load, and the two raced each other on the way back.
+    if (_isTurning) return;
     final pageData = ref.read(readerProvider).pageData;
     if (pageData == null) return;
+    final bookId = pageData.bookId;
+    final fromPage = pageData.currentPage;
 
     // Log page change for debugging
     ApiLogger.logRequest(
       'ReaderScreen._loadPageWithoutMarkingRead',
-      details:
-          'pageNum=$pageNum, currentPage=${pageData!.currentPage}, bookId=${pageData!.bookId}',
+      details: 'pageNum=$pageNum, currentPage=$fromPage, bookId=$bookId',
     );
 
     setState(() {
-      _isNavigatingForward = pageNum > pageData!.currentPage;
-      _pageKey = ValueKey('${pageData!.bookId}-$pageNum');
+      _isNavigatingForward = pageNum > fromPage;
+      _pageKey = ValueKey('$bookId-$pageNum');
       _isLastPageMarkedDone = false;
-      _lastAttemptedBookId = pageData!.bookId;
+      _lastAttemptedBookId = bookId;
       _lastAttemptedPageNum = pageNum;
       _highlightedWordId = null;
     });
 
-    await ref
-        .read(readerProvider.notifier)
-        .loadPage(
-          bookId: pageData!.bookId,
-          pageNum: pageNum,
-          showFullPageError: false,
-          useCache: true,
-        );
+    _isTurning = true;
+    try {
+      final ok = await ref
+          .read(readerProvider.notifier)
+          .loadPage(
+            bookId: bookId,
+            pageNum: pageNum,
+            showFullPageError: false,
+            useCache: true,
+            // Keep the current page up while the next one is fetched: the
+            // alternative is a blank screen whose length is the network's
+            // business.
+            keepCurrentPage: true,
+          );
+      if (!ok && mounted) _reportTurnFailure(fromPage, pageNum);
+    } finally {
+      _isTurning = false;
+    }
 
     ref.read(statsProvider.notifier).loadStats();
+  }
+
+  /// A page turn that could not be completed: say so, keep the page, offer
+  /// to try again.  Nothing is lost -- an error screen is reserved for the
+  /// case where there is no page to look at.
+  void _reportTurnFailure(int fromPage, int toPage) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('Page $toPage did not load. Still on page $fromPage.'),
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'Retry',
+          onPressed: () => _loadPageWithoutMarkingRead(toPage),
+        ),
+      ),
+    );
   }
 
   /// 整本连续朗读（循环键第二档）：读完本页最后一句，翻到下一页接着念；

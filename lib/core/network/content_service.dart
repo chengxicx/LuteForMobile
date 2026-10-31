@@ -1569,6 +1569,26 @@ class ContentService {
     required List<String> tokens,
     String? fullText,
   }) async {
+    final tokensOut = await fetchReadingsOrNull(
+      languageId: languageId,
+      tokens: tokens,
+      fullText: fullText,
+    );
+    return tokensOut ?? const [];
+  }
+
+  /// Same request as [fetchReadings], but a failure is reported instead of
+  /// being flattened into an empty list.
+  ///
+  /// Callers that paint the answer need to tell "the server has no readings
+  /// for these tokens" from "the request did not make it": the first is a
+  /// fact about the page, the second is a reason to try again.  Merging the
+  /// two is what left single paragraphs without ruby on a flaky link.
+  Future<List<ShadowingToken>?> fetchReadingsOrNull({
+    required int languageId,
+    required List<String> tokens,
+    String? fullText,
+  }) async {
     final Map<String, dynamic> body;
     try {
       final response = await _apiService.postShadowingReadings({
@@ -1578,7 +1598,7 @@ class ContentService {
       });
       body = jsonDecode(response.data ?? '') as Map<String, dynamic>;
     } catch (_) {
-      return const [];
+      return null;
     }
     return (body['tokens'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()

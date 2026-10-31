@@ -56,6 +56,22 @@ class ReaderRepository {
     );
   }
 
+  /// Readings for one batch, or null when the request failed.
+  ///
+  /// The reader needs the two cases apart: an empty list means "this text has
+  /// no readings", a null means "ask again".
+  Future<List<ShadowingToken>?> fetchReadingsOrNull({
+    required int languageId,
+    required List<String> tokens,
+    String? fullText,
+  }) {
+    return contentService.fetchReadingsOrNull(
+      languageId: languageId,
+      tokens: tokens,
+      fullText: fullText,
+    );
+  }
+
   /// Fetches a term tooltip and returns both the parsed object and raw HTML.
   /// This is more efficient than calling getTermTooltip and getRawTermTooltipHtml
   /// separately, as it only makes one API request.

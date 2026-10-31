@@ -153,6 +153,12 @@ class EpubChapterView extends StatefulWidget {
   /// EPUB chapter while working on a text page.
   final double textSize;
 
+  /// Line spacing, as a multiple of the line's own size -- the same unit
+  /// the Flutter text pages use ([TextStyle.height]).  Pushed into the
+  /// chapter as `line-height`; like [textSize] it has to be stamped on
+  /// the page, which renders the prose itself.
+  final double lineSpacing;
+
   /// Fired for a settled word tap.  The second argument is the *screen*
   /// rect the word card should hang off: only Chromium knows where the
   /// word sits inside the page (it is a `<span>` in a scrolled, zoomed
@@ -205,6 +211,7 @@ class EpubChapterView extends StatefulWidget {
     this.scroll,
     this.languageId,
     this.textSize = 18,
+    this.lineSpacing = 1.5,
     required this.onTap,
     required this.onDoubleTap,
     this.onTripleTap,
@@ -221,6 +228,15 @@ class EpubChapterView extends StatefulWidget {
 class _EpubChapterViewState extends State<EpubChapterView> {
   InAppWebViewController? _controller;
   bool _pageReady = false;
+
+  /// Whether the page has built the chapter's word spans yet.  Different
+  /// from [_pageReady] (load-stop): the render page mounts the chapter
+  /// itself, a few hundred ms after the load, and everything the app
+  /// injects into `#epub-chapter` before that lands inside the very text
+  /// the page then aligns its token stream against -- the end-of-chapter
+  /// block used to do exactly that, and the chapter silently rendered
+  /// without word spans (no ruby, no tapping, no status colours).
+  bool _chapterMounted = false;
   double _zoom = 1.0;
 
   /// The block's configuration last known to be in the page, and a guard so
@@ -251,6 +267,15 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   String? _urlOverride;
   bool _decidingUrl = true;
   bool _fellBackToLocal = false;
+
+  /// The chapter could not be loaded at all: the server was unreachable and
+  /// the offline pack has no copy of this chapter.
+  ///
+  /// Chromium would show its own "webpage not available" page for that --
+  /// a browser artefact in the middle of a reader, in English, with a
+  /// reload button that does the wrong thing.  The app covers it with its
+  /// own message and a retry instead.
+  bool _chapterUnavailable = false;
 
   /// Fresh theme CSS that landed while the page was still mounting (see
   /// [_refreshPackInBackground]); applied at load stop.
@@ -407,10 +432,15 @@ class _EpubChapterViewState extends State<EpubChapterView> {
 
   /// The server said unreachable but a navigation was already under
   /// way: if the pack has the chapter, reload it locally, once.
-  Future<void> _fallbackToLocal() async {
-    if (_fellBackToLocal || _urlOverride != null) return;
+  /// Falls back to the offline pack when the server cannot serve the
+  /// chapter.
+  ///
+  /// Returns whether a local copy was actually loaded: `false` means the
+  /// chapter is not on this device either, and the reader has to say so.
+  Future<bool> _fallbackToLocal() async {
+    if (_fellBackToLocal || _urlOverride != null) return false;
     final localServer = widget.localServer;
-    if (localServer == null) return;
+    if (localServer == null) return false;
     _fellBackToLocal = true;
     try {
       final local = await localServer.localPageUrl(
@@ -420,7 +450,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         furigana: widget.furiganaEnabled,
         triple: widget.enableTripleTap,
       );
-      if (local == null || !mounted) return;
+      if (local == null || !mounted) return false;
       setState(() {
         _urlOverride = local.toString();
         // A fresh navigation: veil the raw markup again until this copy
@@ -431,8 +461,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _revealTimer?.cancel();
       _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
       await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(local.toString())));
+      return true;
     } catch (_) {
-      // Offline without a pack: leave the server's error page showing.
+      // Offline without a pack: the caller says so in the app's own words.
+      return false;
     }
   }
 
@@ -499,6 +531,14 @@ class _EpubChapterViewState extends State<EpubChapterView> {
           'mismatch=${payload['mismatch']}',
         );
         _revealChapter();
+        // The chapter exists from here on, so this is the first moment the
+        // reading size can be stamped on it (see _pushTextStyle).
+        unawaited(_pushTextStyle());
+        // ... and the first moment the end-of-chapter block can be added
+        // without the page counting its labels as chapter text (see
+        // [_chapterMounted]).
+        _chapterMounted = true;
+        unawaited(_pushChapterNav());
         return null;
       },
     );
@@ -747,20 +787,92 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// rendered again later opens at the reader's size rather than at the
   /// book's.  Fixed-layout pages are pixel boxes fitted by the zoom
   /// controls; resizing their text independently would overflow them.
-  Future<void> _pushTextSize() async {
+  Future<void> _pushTextStyle() async {
     if (widget.chapter.fixedLayout) return;
+    final controller = _controller;
+    if (controller == null) return;
     final px = widget.textSize.clamp(1, 50);
-    await _runJs('''
+    final lh = widget.lineSpacing.clamp(0.6, 3.0);
+    // The chapter is not in the DOM at load-stop: the render page builds it
+    // itself (word spans, sentences) and only then reports `luteEpubReady`,
+    // which on this device lands a second or two after the load.  A push
+    // that arrives earlier finds no `.epub-body`, and the old code dropped
+    // it for good -- the chapter then read at the book's own size and the
+    // size control looked dead until the next chapter.  Retry until the
+    // host exists; the page's own ready report re-pushes too (see
+    // [_registerHandlers]), so this loop is only the backstop.
+    for (var attempt = 0; attempt < 20; attempt++) {
+      if (!mounted) return;
+      final result = await _applyTextStyle(controller, px, lh);
+      if (result is! String || !result.startsWith('nohost')) return;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    debugPrint('[epub-fontsize] no host after retries (px=$px)');
+  }
+
+  /// Stamps [px] and [lh] on the chapter and reports what the page did with
+  /// them.
+  ///
+  /// Two deliberate choices:
+  ///
+  ///  * `important` -- an inline declaration without it loses to any author
+  ///    rule that pins `font-size` (the account theme pins `div#thetext p`,
+  ///    and a book's own stylesheet can too).  The container would resize
+  ///    while the prose stood still, which reads as "the size control does
+  ///    nothing".  Inline + `!important` outranks every author rule; the
+  ///    book's relative `em` sizes (headings, footnotes) still ride on it.
+  ///  * the rem base is the root element, not `body` -- `rem` resolves
+  ///    against `<html>`, and on this device the two differ (16px vs 17.6px
+  ///    under the reader theme), which skewed every size by ~10%.
+  ///
+  /// Returns a string starting with `nohost` while the chapter is not in the
+  /// DOM yet; otherwise `ok:<p before>-><p after>`, which is what the reader
+  /// log shows.
+  Future<Object?> _applyTextStyle(
+    InAppWebViewController controller,
+    num px,
+    num lh,
+  ) async {
+    final rootNote = px.toStringAsFixed(2);
+    final lhNote = lh.toStringAsFixed(2);
+    try {
+      final result = await controller.evaluateJavascript(
+        source: '''
 (function () {
-  var body = document.querySelector(
-    '#thetext .epub-body:not([data-epub-viewport])');
-  if (!body) return 'nohost';
-  var root = parseFloat(window.getComputedStyle(document.body).fontSize) || 16;
-  body.style.fontSize = (${px.toStringAsFixed(2)} / root) + 'rem';
-  try { localStorage.setItem('fontSize', ${px.toStringAsFixed(2)}); } catch (e) {}
-  return 'ok';
+  var b = document.querySelector('#thetext .epub-body:not([data-epub-viewport])');
+  var via = 'thetext';
+  if (!b) {
+    b = document.querySelector('#epub-chapter .epub-body:not([data-epub-viewport])');
+    via = 'chapter';
+  }
+  if (!b) return 'nohost thetext=' + !!document.getElementById('thetext') +
+                      ' bodies=' + document.querySelectorAll('.epub-body').length +
+                      ' fixed=' + document.querySelectorAll('.epub-body[data-epub-viewport]').length;
+  var rootPx = parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
+  var probe = b.querySelector('p') || b;
+  var before = window.getComputedStyle(probe).fontSize;
+  b.style.setProperty('font-size', ($rootNote / rootPx) + 'rem', 'important');
+  var after = window.getComputedStyle(probe).fontSize;
+  try { localStorage.setItem('fontSize', $rootNote); } catch (e) {}
+  // Line spacing, which the App never pushed before -- the setting moved
+  // the text pages and did nothing here.  The web's own control stamps it
+  // on the paragraphs; the container gets it too so blocks that are not
+  // <p> (headings, block quotes) follow the same rhythm.
+  b.style.setProperty('line-height', $lhNote, 'important');
+  var paras = b.querySelectorAll('p');
+  for (var i = 0; i < paras.length; i++) {
+    paras[i].style.setProperty('line-height', $lhNote, 'important');
+  }
+  return 'ok:' + before + '->' + after + ' lh=' + $lhNote + ' via=' + via;
 })()
-''');
+''',
+      );
+      debugPrint('[epub-fontsize] px=$px -> $result');
+      return result;
+    } catch (e) {
+      debugPrint('[epub-fontsize] px=$px eval failed: $e');
+      return 'nohost';
+    }
   }
 
   /// Lets the book's own margin be the only gutter on a narrow pane.
@@ -871,6 +983,17 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     final controller = page ?? _controller;
     if (controller == null) return;
     final nav = widget.chapterNav;
+    // Injecting before the page has aligned its token stream is what made
+    // whole chapters lose their word spans: the block's labels sit inside
+    // `#epub-chapter .epub-body`, i.e. inside the text the aligner reads,
+    // and the token stream has no such characters.  Wait for the mount;
+    // removing a block can never break the alignment, so it runs either
+    // way.
+    if (nav != null && !_chapterMounted) {
+      _navPushed = null;
+      _scheduleNavRetry();
+      return;
+    }
     final config = (nav == null || nav.isEmpty)
         ? 'null'
         : jsonEncode(nav.toJson());
@@ -914,6 +1037,8 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   void _reconcileChapterNav() {
     if (_controller == null) return;
     if (_navPushed == widget.chapterNav?.signature) return;
+    // Before the mount: the ready report pushes it (see [_pushChapterNav]).
+    if (widget.chapterNav != null && !_chapterMounted) return;
     if (_navReconcileScheduled) return;
     _navReconcileScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -954,8 +1079,9 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       // 夜间 <-> 白纸切换时那层纸色样式要跟着加/撤（见 _pushEInkPaper）。
       _pushEInkPaper();
     }
-    if (oldWidget.textSize != widget.textSize) {
-      _pushTextSize();
+    if (oldWidget.textSize != widget.textSize ||
+        oldWidget.lineSpacing != widget.lineSpacing) {
+      _pushTextStyle();
       // The book's own gutter is in `em`, so it grew with the type: the
       // block that aligns to the text column has to be re-measured.
       _pushMargins();
@@ -985,6 +1111,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
 
   Future<void> _onLoadStop(InAppWebViewController controller, WebUri? url) async {
     if (!mounted) return;
+    // A new document: the chapter has to mount again, and whatever the
+    // previous one carried into the page is gone with it.
+    _chapterMounted = false;
+    _navPushed = null;
     setState(() => _pageReady = true);
     // `127.0.0.1` means the offline pack served this chapter, not the
     // server -- worth knowing when a page change looks like it did not
@@ -1062,7 +1192,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
 
     await _pushSelectionColor();
-    await _pushTextSize();
+    await _pushTextStyle();
     // After the type size: the book's own gutter is in `em`, so it has to
     // be measured against the type that is actually in the page.
     await _pushMargins(controller);
@@ -1124,13 +1254,42 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     WebResourceRequest request,
     WebResourceError error,
   ) {
-    if (request.isForMainFrame == true) {
-      // Whatever landed (the server's error page, or nothing) is what the
-      // reader should be looking at -- not a spinner over it.
-      _revealChapter();
-    }
-    if (request.isForMainFrame == true && _urlOverride == null) {
-      _fallbackToLocal();
+    if (request.isForMainFrame != true) return;
+    // Whatever landed (the server's error page, or nothing) is what the
+    // reader should be looking at -- not a spinner over it.
+    _revealChapter();
+    unawaited(_handleMainFrameFailure());
+  }
+
+  /// The server could not serve this chapter.  The offline pack takes over
+  /// if it has a copy; if it does not, the app says so in its own words
+  /// instead of leaving Chromium's error page on the glass.
+  Future<void> _handleMainFrameFailure() async {
+    if (_urlOverride != null) return; // already the local copy: it failed too
+    final loaded = await _fallbackToLocal();
+    if (loaded || !mounted) return;
+    setState(() => _chapterUnavailable = true);
+  }
+
+  /// Tries the server again for a chapter that could not be loaded.
+  Future<void> _retryChapterFromServer() async {
+    final controller = _controller;
+    if (controller == null) return;
+    setState(() {
+      _chapterUnavailable = false;
+      _fellBackToLocal = false;
+      _urlOverride = null;
+      _chapterReady = false;
+      _veilGone = false;
+    });
+    _revealTimer?.cancel();
+    _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
+    try {
+      await controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri(_serverPageUrl)),
+      );
+    } catch (_) {
+      // Still unreachable: the error handler runs again and says so.
     }
   }
 
@@ -1332,6 +1491,54 @@ class _EpubChapterViewState extends State<EpubChapterView> {
                       height: 24,
                       child: CircularProgressIndicator(strokeWidth: 2.2),
                     ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        // The chapter could not be fetched at all: neither the server nor
+        // the offline pack has it.  Chromium's own error page would sit on
+        // the glass here (English, browser chrome, a reload button that
+        // reloads the browser's URL); the app's message replaces it.
+        if (_chapterUnavailable)
+          Positioned.fill(
+            child: ColoredBox(
+              color: Theme.of(context).colorScheme.surface,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.cloud_off,
+                        size: 48,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'This chapter is not on this device yet.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Connect to the server to read it.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                      const SizedBox(height: 24),
+                      OutlinedButton.icon(
+                        onPressed: _retryChapterFromServer,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Try again'),
+                      ),
+                    ],
                   ),
                 ),
               ),
