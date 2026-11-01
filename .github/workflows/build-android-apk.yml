@@ -45,6 +45,15 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=android\nstoreFile=../../keystore.jks\n' \
             "$PASS" "$PASS" > android/key.properties
 
+      # gradle.properties 把堆钉在 -Xmx2G，那是给 4G 内存构建机调的（AGENTS.md）。
+      # CI runner 内存充足，但 2G 下 jetifier 处理 Flutter 引擎 jar 偶发
+      # "Java heap space"（run 41347414066，:app:mergeReleaseNativeLibs）——
+      # 仅在 CI 覆盖，不动仓库里给构建机的值。
+      - name: Raise Gradle heap for CI
+        run: |
+          sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx6G -XX:MaxMetaspaceSize=2G -XX:ReservedCodeCacheSize=512m -XX:+HeapDumpOnOutOfMemoryError/' android/gradle.properties
+          grep ^org.gradle.jvmargs android/gradle.properties
+
       - name: Build release APK
         run: flutter build apk --release
 
