@@ -53,6 +53,8 @@ class ReaderDrawerSettings extends ConsumerWidget {
             const SizedBox(height: 16),
             _buildFuriganaToggle(context, ref, settings),
             const SizedBox(height: 16),
+            _buildEpubPagedToggle(context, ref, settings),
+            const SizedBox(height: 16),
             _buildEpubLookSelector(),
           ],
           const SizedBox(height: 16),
@@ -524,6 +526,43 @@ class ReaderDrawerSettings extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  /// Reader-mode EPUB 的阅读方式开关（整页翻页 / 整章滚动）。与外观选择
+  /// 一样只在读 epub 时出现；切换即时生效（EpubChapterView 监听后重载章节）。
+  Widget _buildEpubPagedToggle(
+    BuildContext context,
+    WidgetRef ref,
+    dynamic settings,
+  ) {
+    return Consumer(
+      builder: (context, ref, _) {
+        final isEpub = ref.watch(
+          readerProvider.select((s) => s.pageData?.epubChapter != null),
+        );
+        if (!isEpub) return const SizedBox.shrink();
+        return Row(
+          children: [
+            const Text(
+              'Paged Mode',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const Spacer(),
+            Transform.scale(
+              scale: 0.8,
+              child: Switch(
+                value: settings.epubPagedMode,
+                onChanged: (value) {
+                  ref
+                      .read(settingsProvider.notifier)
+                      .updateEpubPagedMode(value);
+                },
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

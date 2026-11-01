@@ -19,6 +19,7 @@ import '../services/epub_local_server.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/theme/eink_scope.dart';
 import '../../../shared/theme/eink_paper.dart';
+import 'term_tooltip.dart' show TermTooltipClass;
 
 /// Reader-mode EPUB chapter, rendered as the server's standalone page
 /// (`/read/epub_render/<bookId>/<page>`) in a WebView.
@@ -62,6 +63,16 @@ class EpubChapterView extends StatefulWidget {
   /// second tap settles immediately or waits one more window for a
   /// third press; a mid-session change applies on the next chapter.
   final bool enableTripleTap;
+
+  /// 整页翻页模式（用户 2026-11-01 的需求：ePub 要像普通书一样翻页，
+  /// 不要整章滚动）。
+  ///
+  /// 开启时章节内容按屏分栏（CSS multicol，见 [_pagedModeScript]）：
+  /// 物理翻页键、横向快滑和空白区左右点按都在小节内翻屏，翻到头才换
+  /// 小节；关闭时保持旧行为——整章连续滚动。切换开关时本组件整页
+  /// 重载（见 didUpdateWidget），不走页内卸载/恢复。固定版式章节
+  /// （绘本类）不受影响，仍走原路径。
+  final bool paged;
 
   /// Offline-pack server, when the platform supports it (null on web).
   /// When the server is unreachable and the pack has this chapter, the
@@ -120,6 +131,11 @@ class EpubChapterView extends StatefulWidget {
 
   /// Previous (-1) / next (+1) chapter was pressed in that block.
   final ValueChanged<int>? onChapterNav;
+
+  /// 翻页模式下，小节内翻屏到头（最后一屏再往后 / 第一屏再往前）时触发，
+  /// 让读者换小节——与物理键路径经 [scroll] 返回 false 后的行为一致。
+  /// forward = 往后。滚动模式不触发（那个世界里没有"屏"）。
+  final ValueChanged<bool>? onTurnPage;
 
   /// The Contents row was pressed.
   final VoidCallback? onOpenContents;
@@ -200,6 +216,7 @@ class EpubChapterView extends StatefulWidget {
     required this.look,
     required this.furiganaEnabled,
     required this.enableTripleTap,
+    this.paged = false,
     this.localServer,
     this.onOnlineChapterLoaded,
     this.refreshPackAssets,
@@ -207,6 +224,7 @@ class EpubChapterView extends StatefulWidget {
     this.onBlankTap,
     this.chapterNav,
     this.onChapterNav,
+    this.onTurnPage,
     this.onOpenContents,
     this.scroll,
     this.languageId,
@@ -285,6 +303,27 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   double? _pendingScrollRestore;
   bool _restoredThisLoad = false;
 
+  /// 翻页模式的页码状态（页面在每次布局变化后经 `luteEpubPage` 上报）。
+  /// [_pendingPageRestore] 在 [initState] 读出、分页首次就位后恢复一次。
+  int _pageIndex = 0;
+  int _pageCount = 1;
+  int? _pendingPageRestore;
+  int? _lastPersistedPage;
+
+  /// 页码角标底下那层内容的实际底色（章纸/主题色），由
+  /// [_queryContentBackground] 在章节就绪、换 look、热换主题后询问页面
+  /// 得到。null = 还没问到，角标退回 Flutter 主题的 surface 样式。
+  Color? _contentBackground;
+
+  /// 本次按压缩间词卡是否正开着。打开着词卡时按下的那一击，其意图是
+  /// 「收卡」，随后的空白区 click 不该再翻页（否则收卡+翻页一次发生，
+  /// 用户看到的页面莫名跳走）。仅翻页模式的空白区点按关心它。
+  bool _cardWasOpenAtPress = false;
+
+  /// 翻页手势的起点（位置 + 时间戳）：横向快滑翻页、纵向拖动交给
+  /// Chromium（翻页模式下没有可滚的东西，等于无效）。
+  Duration? _gestureStartTime;
+
   /// Latest reported scroll offset, flushed to prefs debounced.
   double _lastScrollTop = 0;
   Timer? _scrollFlushTimer;
@@ -320,6 +359,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   }
 
   String get _scrollPrefsKey => 'epub_scroll_${widget.bookId}';
+
+  /// 翻页模式的页码持久化键（每章一个；滚动模式继续用 [_scrollPrefsKey]）。
+  String get _pagePrefsKey => 'epub_page_${widget.bookId}_${widget.pageNum}';
+
+  /// 翻页模式是否应该作用于本章（开关 + 章节不是固定版式）。
+  bool get _pagedActive => widget.paged && !widget.chapter.fixedLayout;
 
   @override
   void initState() {
@@ -407,6 +452,43 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
   }
 
+  /// 钉住阅读文字的字号链与注音（rt）的比例。
+  ///
+  /// 安卓 WebView 的 font boosting 会重写未带 !important 的元素的字号
+  /// （实测 p/word/ruby 逐层 ×1.1~1.2，用户设 15px 渲染成 ~20px，ruby
+  /// 注音被顶到和正文一样大；inline `font-size:50%`、绝对 px、
+  /// `text-size-adjust:none` 全部被无视），只有 !important 声明能存活。
+  /// 而 %/em/inherit 都以被污染的父级为基准，所以锚点必须是绝对值：
+  /// [_applyTextStyle] 把用户字号写进 `--lute-text-px`（px），段落钉到
+  /// 这个变量，句子/词/ruby 沿 inherit 钉回来，注音按比例收尾。
+  ///
+  /// 注音比例：常规屏幕 50%（与 web 端 `rt { font-size: 0.5em }` 和
+  /// Flutter 文本页的 textSize×0.5 一致）；e-ink 上 65% —— 半宽注音在
+  /// 300ppi 墨水屏上只有 ~14 物理像素，灰墨更看不清（用户反馈），放大
+  /// 一档并配合纯黑墨（eink_paper.dart）保住可读性。
+  ///
+  /// 代价：书自带的对 p 的相对字号（如 0.8em 的注脚段）会被拉平到正文
+  /// 基准 —— 比 boosting 把全章文字顶大要轻。标题/列表不在钉值范围，
+  /// 保留 boosting 的轻度放大。
+  Future<void> _pushRubySize() async {
+    final rtPct = context.eInk ? 65 : 50;
+    await _runJs('''(function () {
+  var s = document.getElementById('lute-epub-rt-size');
+  if (!s) {
+    s = document.createElement('style');
+    s.id = 'lute-epub-rt-size';
+    (document.head || document.documentElement).appendChild(s);
+  }
+  s.textContent =
+    'html, body, #thetext, #thetext * { -webkit-text-size-adjust: none; text-size-adjust: none; }' +
+    'div#thetext .epub-body p { font-size: var(--lute-text-px, 1em) !important; }' +
+    'div#thetext .epub-body span.textsentence,' +
+    'div#thetext .epub-body span.textitem { font-size: inherit !important; }' +
+    'div#thetext .epub-body ruby { font-size: inherit !important; }' +
+    'div#thetext .epub-body rt { font-size: $rtPct% !important; }';
+})();''');
+  }
+
   /// Swaps the page's theme stylesheet for the fresh CSS.
   ///
   /// The packed `<link>` is removed and the new rules appended as a
@@ -425,6 +507,8 @@ class _EpubChapterViewState extends State<EpubChapterView> {
             'style.id="lute-theme-live";style.textContent=css;'
             'document.head.appendChild(style);})()',
       );
+      // 主题换底色，角标跟着重新配色。
+      unawaited(_queryContentBackground());
     } catch (_) {
       // Mid-navigation: the next load reads the swapped file anyway.
     }
@@ -483,10 +567,25 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   Future<void> _loadSavedScroll() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_pagedActive) {
+        // 翻页模式恢复的是页码；滚动模式的偏移照旧由 [restoreScroll] 处理。
+        final savedPage = prefs.getInt(_pagePrefsKey);
+        if (savedPage != null && savedPage > 0) {
+          _pendingPageRestore = savedPage;
+        }
+        return;
+      }
       final saved = prefs.getDouble(_scrollPrefsKey);
       if (saved != null && saved > 0) {
         _pendingScrollRestore = saved;
       }
+    } catch (_) {}
+  }
+
+  Future<void> _persistPage(int index) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_pagePrefsKey, index);
     } catch (_) {}
   }
 
@@ -533,12 +632,15 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         _revealChapter();
         // The chapter exists from here on, so this is the first moment the
         // reading size can be stamped on it (see _pushTextStyle).
-        unawaited(_pushTextStyle());
+        unawaited(_pushTextStyle().then((_) => _pushPagedMode()));
         // ... and the first moment the end-of-chapter block can be added
         // without the page counting its labels as chapter text (see
         // [_chapterMounted]).
         _chapterMounted = true;
         unawaited(_pushChapterNav());
+        // 章纸已挂载、look 与墨水屏纸张（onLoadStop 里推的）都已生效：
+        // 这是第一次能读到「最终」内容底色的时刻，页码角标跟着它配色。
+        unawaited(_queryContentBackground());
         return null;
       },
     );
@@ -602,7 +704,55 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     controller.addJavaScriptHandler(
       handlerName: 'luteEpubBlankTap',
       callback: (args) {
-        if (mounted) widget.onBlankTap?.call();
+        if (!mounted) return;
+        // 翻页模式：空白区按左右三分区翻页（与正文页/e-ink 的习惯一致），
+        // 中间三分之一的点按保留给调用方（全屏模式下唤出工具条）。正开着
+        // 词卡时按下的那一击只负责收卡，不翻页。
+        if (_pagedActive) {
+          final payload = args.isNotEmpty && args.first is Map
+              ? (args.first as Map).cast<String, dynamic>()
+              : const <String, dynamic>{};
+          final x = (payload['x'] as num?)?.toDouble() ?? -1;
+          final w = (payload['w'] as num?)?.toDouble() ?? 0;
+          if (x >= 0 && w > 0) {
+            if (_cardWasOpenAtPress) return;
+            final third = w / 3;
+            if (x < third) {
+              unawaited(_flickTurn(-1));
+              return;
+            }
+            if (x > w - third) {
+              unawaited(_flickTurn(1));
+              return;
+            }
+          }
+        }
+        widget.onBlankTap?.call();
+      },
+    );
+    // 翻页模式的页码上报：页面在首次分栏、每次翻页和每次重排（字号、
+    // 行距、缩放、图片加载完成）后报 {index, count}。这里更新角标并持久
+    // 化页码（下次打开本章恢复到这一屏）。
+    controller.addJavaScriptHandler(
+      handlerName: 'luteEpubPage',
+      callback: (args) {
+        final payload = args.isNotEmpty && args.first is Map
+            ? (args.first as Map).cast<String, dynamic>()
+            : const <String, dynamic>{};
+        final index = (payload['index'] as num?)?.toInt() ?? 0;
+        final count = (payload['count'] as num?)?.toInt() ?? 1;
+        if (!mounted) return null;
+        if (index != _pageIndex || count != _pageCount) {
+          setState(() {
+            _pageIndex = index;
+            _pageCount = count;
+          });
+        }
+        if (_restoredThisLoad && index != _lastPersistedPage) {
+          _lastPersistedPage = index;
+          unawaited(_persistPage(index));
+        }
+        return null;
       },
     );
     // The end-of-chapter block reports through two channels: `{-1, +1}`
@@ -852,6 +1002,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   var probe = b.querySelector('p') || b;
   var before = window.getComputedStyle(probe).fontSize;
   b.style.setProperty('font-size', ($rootNote / rootPx) + 'rem', 'important');
+  /* 字号绝对锚点：WebView 的 font boosting 会重写未带 !important 的元素
+     字号（逐层 ×1.1~1.2），而 %/em/inherit 都以被污染的父级为基准 ——
+     只有绝对 px 能当干净参照。段落与注音的钉值规则见 _pushRubySize。 */
+  b.style.setProperty('--lute-text-px', $rootNote + 'px');
   var after = window.getComputedStyle(probe).fontSize;
   try { localStorage.setItem('fontSize', $rootNote); } catch (e) {}
   // Line spacing, which the App never pushed before -- the setting moved
@@ -863,6 +1017,8 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   for (var i = 0; i < paras.length; i++) {
     paras[i].style.setProperty('line-height', $lhNote, 'important');
   }
+  /* 翻页模式：字号变了，分栏几何全变 —— 重排并夹住当前页。 */
+  if (window.__lutePaged) window.__lutePaged.refresh();
   return 'ok:' + before + '->' + after + ' lh=' + $lhNote + ' via=' + via;
 })()
 ''',
@@ -952,6 +1108,123 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     final appLight = Theme.of(context).brightness == Brightness.light;
     final on = context.eInk && appLight && widget.look != 'night';
     await _runJs(eInkPaperScript(enabled: on));
+  }
+
+  /// 问页面要内容的实际底色，页码角标跟着它配色。
+  ///
+  /// 角标画在 WebView 上层，而底色由服务器主题 CSS、look 反相滤镜、墨水屏
+  /// 纸张共同决定 —— App 侧没有现成值。从章纸（`#epub-chapter`）向外找
+  /// 第一个不透明的 computed 背景色：夜间的 `invert` 滤镜打在
+  /// `.epub-body` 上，滤镜内元素的 computed 值读不出「渲染后」的颜色，但
+  /// 章纸自身（`#epub-chapter`，夜间钉 `#16161d`，original 钉
+  /// `--paper-bg`）不在滤镜里，读到的即所见。挂载点：章节就绪、换 look、
+  /// 热换主题。
+  Future<void> _queryContentBackground() async {
+    final controller = _controller;
+    if (controller == null || !mounted) return;
+    try {
+      final result = await controller.evaluateJavascript(
+        source: r"""
+(function () {
+  function paint(el) {
+    while (el) {
+      var c = getComputedStyle(el).backgroundColor;
+      if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') return c;
+      el = el.parentElement;
+    }
+    return '';
+  }
+  var host = document.getElementById('epub-chapter') ||
+             document.getElementById('thetext') || document.body;
+  return paint(host);
+})()""",
+      );
+      final color = _parseCssRgbColor(result?.toString());
+      if (mounted && color != null && color != _contentBackground) {
+        setState(() => _contentBackground = color);
+      }
+    } catch (_) {
+      // Mid-navigation: the next load / theme swap reports again.
+    }
+  }
+
+  static final RegExp _cssRgbColor = RegExp(
+    r'rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)',
+  );
+
+  /// `rgb(r, g, b)` / `rgba(...)`（Chromium computed style 只出这两种）；
+  /// 半透明或读不出来时返回 null，角标维持主题样式。
+  static Color? _parseCssRgbColor(String? raw) {
+    if (raw == null) return null;
+    var s = raw.trim();
+    if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+      s = s.substring(1, s.length - 1);
+    }
+    final m = _cssRgbColor.firstMatch(s);
+    if (m == null) return null;
+    final alpha = m.group(4) == null ? 1.0 : double.tryParse(m.group(4)!);
+    if (alpha == null || alpha < 0.99) return null;
+    return Color.fromARGB(
+      255,
+      int.parse(m.group(1)!),
+      int.parse(m.group(2)!),
+      int.parse(m.group(3)!),
+    );
+  }
+
+  /// 整页翻页模式：把分栏样式与 `window.__lutePaged` 桥接脚本装上（或卸下）。
+  ///
+  /// 与 [_pushTextStyle] 同一套就绪策略：章节是页面自己挂载的，load-stop
+  /// 时刻 `#thetext .epub-body` 还不存在，脚本返回 `nohost` 就按 250 ms
+  /// 重试；页面 ready 上报后也会再推一次（见 [_registerHandlers] 的回调）。
+  ///
+  /// 首次就位后恢复持久化的页码（[_pendingPageRestore]），并标记本次加载
+  /// 的"已恢复"，让页码上报开始走持久化（与滚动恢复的语义对齐）。
+  Future<void> _pushPagedMode() async {
+    if (!mounted) return;
+    if (widget.chapter.fixedLayout) return;
+    final controller = _controller;
+    if (controller == null) return;
+    for (var attempt = 0; attempt < 20; attempt++) {
+      if (!mounted) return;
+      Object? result;
+      try {
+        result = await controller.evaluateJavascript(
+          source: _pagedModeScript.replaceFirst(
+            '__ON__',
+            _pagedActive ? 'true' : 'false',
+          ),
+        );
+      } catch (_) {
+        // Mid-navigation: the next load pushes again.
+        return;
+      }
+      final state = result?.toString() ?? '';
+      if (state == 'nohost') {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        continue;
+      }
+      if (state.startsWith('paged')) {
+        final pending = _pendingPageRestore;
+        _pendingPageRestore = null;
+        if (pending != null && pending > 0) {
+          try {
+            await controller.evaluateJavascript(
+              source: 'window.__lutePaged && window.__lutePaged.goTo($pending)',
+            );
+          } catch (_) {}
+          // goTo 之后的页码上报可能在 _restoredThisLoad 置位前到达而被
+          // 持久化门槛挡掉 —— 这里直接把恢复页写盘，不等上报。
+          _lastPersistedPage = pending;
+          unawaited(_persistPage(pending));
+        }
+        // 页码恢复完成（或本来就在第一屏）：此后 luteEpubPage 的上报进入
+        // 持久化。与滚动模式的 restore 一次语义一致。
+        _restoredThisLoad = true;
+      }
+      return;
+    }
+    debugPrint('[epub-paged] no host after retries');
   }
 
   /// Push the reader's look onto the page.
@@ -1075,9 +1348,13 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       widget.scroll?._turn = _turnByScreen;
     }
     if (oldWidget.look != widget.look) {
-      _pushLook();
-      // 夜间 <-> 白纸切换时那层纸色样式要跟着加/撤（见 _pushEInkPaper）。
-      _pushEInkPaper();
+      // 夜间 <-> 白纸切换时那层纸色样式要跟着加/撤（见 _pushEInkPaper），
+      // 底色变了页码角标也随之重配（顺序：look → 纸张 → 问底色）。
+      unawaited(
+        _pushLook()
+            .then((_) => _pushEInkPaper())
+            .then((_) => _queryContentBackground()),
+      );
     }
     if (oldWidget.textSize != widget.textSize ||
         oldWidget.lineSpacing != widget.lineSpacing) {
@@ -1090,6 +1367,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _runJs(
         'window.LuteEpubBridge && window.LuteEpubBridge.setFurigana(${widget.furiganaEnabled})',
       );
+    }
+    // 翻页开关：页内卸装/恢复分栏的分支远比重载一章容易出状态残渣
+    // （滚动条、已注入的样式、恢复语义），而开关是低频操作 —— 直接
+    // 重载本章，走一遍完整的加载流水线。
+    if (oldWidget.paged != widget.paged) {
+      unawaited(_controller?.reload());
     }
 
     // The end-of-chapter block is reconciled from [build] rather than here:
@@ -1115,6 +1398,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // previous one carried into the page is gone with it.
     _chapterMounted = false;
     _navPushed = null;
+    // 翻页模式的状态跟着文档走：新章节从第 1 屏重新计数（页码随分栏
+    // 就绪后的 luteEpubPage 上报刷新）。
+    _pageIndex = 0;
+    _pageCount = 1;
+    _lastPersistedPage = null;
     setState(() => _pageReady = true);
     // `127.0.0.1` means the offline pack served this chapter, not the
     // server -- worth knowing when a page change looks like it did not
@@ -1155,6 +1443,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // HTML is only replaced when the chapter is re-rendered.  Capture
     // phase, so it runs before the page's own handler and does not depend
     // on it; `__luteBlankTapWired` keeps a reload from stacking listeners.
+    // 翻页模式要拿点击的横向位置做左右分区，所以带上 clientX 和视口宽。
     try {
       await controller.evaluateJavascript(
         source: r"""
@@ -1169,7 +1458,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
        fullscreen mode toggles the app's own bars). */
     if (target && target.closest && target.closest('.lute-chapter-nav')) return;
     if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-      window.flutter_inappwebview.callHandler('luteEpubBlankTap');
+      window.flutter_inappwebview.callHandler('luteEpubBlankTap', {
+        x: event.clientX,
+        y: event.clientY,
+        w: window.innerWidth
+      });
     }
   }, true);
 })();
@@ -1191,11 +1484,15 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       // The page may be mid-navigation; the next load retries.
     }
 
+    await _pushRubySize();
     await _pushSelectionColor();
     await _pushTextStyle();
     // After the type size: the book's own gutter is in `em`, so it has to
     // be measured against the type that is actually in the page.
     await _pushMargins(controller);
+    // 分页模式：字号/边距落位后重排分栏（脚本未就位时这次调用是空操作，
+    // ready 上报后的 [_pushPagedMode] 会再做一次并自起刷新定时器）。
+    await _pushPagedMode();
 
     // Last in the DOM pass: the block is appended *after* the chapter, so
     // it must not be in the tree while the page aligns its word spans.
@@ -1334,6 +1631,8 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// that is the only way a key-only reader gets from one chapter to the
   /// next without touching the screen.
   Future<bool> _turnByScreen(int direction) async {
+    // 翻页模式：物理键翻的是章节内的一屏，到头才交给调用方换小节。
+    if (_pagedActive) return _turnPageByColumn(direction);
     final controller = _controller;
     // Not ready yet: swallow the key rather than jump a page on a document
     // the user has not seen.
@@ -1348,6 +1647,31 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       // Mid-navigation; a key press must not surface as an error.
       return true;
     }
+  }
+
+  /// 翻页模式的一屏翻页：页面侧在当前小节内前进/后退一栏，到头返回
+  /// `edge`（调用方随即换小节）。脚本还没就位（章节在装）时按键被吞掉，
+  /// 与滚动模式"未就绪不跳页"的约定一致。
+  Future<bool> _turnPageByColumn(int direction) async {
+    final controller = _controller;
+    if (controller == null || !_pageReady) return true;
+    try {
+      final result = await controller.evaluateJavascript(
+        source:
+            'window.__lutePaged ? window.__lutePaged.turn($direction) : "unknown"',
+      );
+      debugPrint('[pagekey] paged turn $direction -> $result');
+      return result?.toString() != 'edge';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// 手势/点按区路径的翻屏：到头（`edge`）时交还读者换小节。物理键走
+  /// [scroll] 槽的返回值，与这里是同一个约定。
+  Future<void> _flickTurn(int direction) async {
+    final used = await _turnPageByColumn(direction);
+    if (!used) widget.onTurnPage?.call(direction > 0);
   }
 
   @override
@@ -1388,10 +1712,31 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         Listener(
           onPointerDown: (event) {
             _lastPointerDown = event.position;
+            _gestureStartTime = event.timeStamp;
+            // 先记下词卡状态再关它：这一击若是"收卡"，随后的空白区
+            // click 不应再翻页（见 luteEpubBlankTap 处理器）。
+            _cardWasOpenAtPress = TermTooltipClass.isShowing;
             // Anything pressed inside the chapter dismisses an open word
             // card -- including pressing another word, which re-opens the
             // card a moment later from the page's own tap handler.
             widget.onPress?.call();
+          },
+          onPointerUp: (event) {
+            final start = _lastPointerDown;
+            final startTime = _gestureStartTime;
+            _lastPointerDown = null;
+            _gestureStartTime = null;
+            if (start == null || startTime == null) return;
+            if (!_pagedActive || _multiSelectActive) return;
+            // 横向快滑翻页：位移够大、横向明显占优、时间上是"滑"而不是
+            // 拖着看。纵向拖动交给 Chromium（翻页模式下无可滚内容，等于
+            // 无操作）；长按选词的手势由 _multiSelectActive 挡住。
+            final dx = event.position.dx - start.dx;
+            final dy = event.position.dy - start.dy;
+            final dt = event.timeStamp - startTime;
+            if (dx.abs() < 72 || dx.abs() < dy.abs() * 1.5) return;
+            if (dt > const Duration(milliseconds: 800)) return;
+            unawaited(_flickTurn(dx < 0 ? 1 : -1));
           },
           child: InAppWebView(
             key: ValueKey('epub-webview-${widget.bookId}-${widget.pageNum}'),
@@ -1402,6 +1747,16 @@ class _EpubChapterViewState extends State<EpubChapterView> {
               // viewport gesture so double-tap stays a status cycle).
               supportZoom: false,
               transparentBackground: true,
+              // 关掉 wide-viewport 机制：翻页模式按屏分栏，栏在横向溢出
+              // （scrollLeft 翻屏），内容宽 ≫ 视口宽，这正是安卓 WebView
+              // font boosting 的触发条件——它把整章文字按"块"重新定大小
+              // （实测用户设 15px 渲染成 ~20px，ruby 注音被顶到和正文一样
+              // 大）。layoutAlgorithm: NORMAL 压不住它，wide viewport 一关
+              //就没有"超宽页面"可言。页面自己的 viewport meta 要的本来
+              // 就是 device-width，两种模式布局结果相同。
+              useWideViewPort: false,
+              loadWithOverviewMode: false,
+              layoutAlgorithm: LayoutAlgorithm.NORMAL,
             ),
             // A platform view only receives pointer events while *its* own
             // gesture recognizers hold the arena (see
@@ -1544,7 +1899,55 @@ class _EpubChapterViewState extends State<EpubChapterView> {
               ),
             ),
           ),
+        // 翻页模式的页码角标：luteEpubPage 上报驱动，只在多于一屏时出现。
+        // IgnorePointer —— 角标下的正文照常点词/翻页。
+        //
+        // 配色跟着内容的实际底色走（见 [_queryContentBackground]）：底色即
+        // 角标底，角标「隐身」只留数字 —— 夜间/深色主题下不再是一块刺眼的
+        // 白。问到之前退回 Flutter 主题的 surface（原样式）。
+        if (_pagedActive && _pageCount > 1)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 6,
+            child: IgnorePointer(child: Center(child: _buildPageBadge())),
+          ),
       ],
+    );
+  }
+
+  /// 翻页模式的页码角标。配色跟着内容的实际底色走（见
+  /// [_queryContentBackground]）：底色即角标底，角标「隐身」只留数字 ——
+  /// 夜间/深色主题下不再是一块刺眼的白。问到之前退回 Flutter 主题的
+  /// surface（原样式）。
+  Widget _buildPageBadge() {
+    final theme = Theme.of(context);
+    final contentBg = _contentBackground;
+    final Color bg;
+    final Color fg;
+    if (contentBg != null) {
+      bg = contentBg;
+      fg = contentBg.computeLuminance() > 0.5
+          ? const Color(0xFF595959)
+          : const Color(0xFF9A9A9A);
+    } else {
+      bg = theme.colorScheme.surface;
+      fg = theme.colorScheme.onSurface;
+    }
+    final border = contentBg != null
+        ? fg.withValues(alpha: 0.25)
+        : theme.colorScheme.outline.withValues(alpha: 0.4);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border.fromBorderSide(BorderSide(color: border)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        '${_pageIndex + 1} / $_pageCount',
+        style: theme.textTheme.labelSmall?.copyWith(color: fg),
+      ),
     );
   }
 }
@@ -1626,6 +2029,175 @@ const String _pageTurnScript = r"""
   }
   return 'edge';
 })(__DIR__)
+""";
+
+/// 整页翻页（`__ON__` = true/false）：把章节内容按屏分栏，页内横向平移
+/// 即翻页。设计要点：
+///
+///  * 分栏容器是 `#epub-chapter`（纸面本身）：`height` 钉成 #thetext 的
+///    可用高、`column-width` 钉成其内容盒宽，于是每栏就是一"页"，纸面的
+///    内边距在每一页上都保留。`overflow: hidden` 挡掉用户手势，翻页只
+///    走 `scrollLeft`（程序滚动，e-ink 无中间态）。`video-scroll-mode`
+///    被摘掉后 #thetext 回到默认的 flex/overflow:hidden 布局，文档本身
+///    不再滚动。
+///  * 页数 = 1 + (scrollWidth - clientWidth) / (栏宽 + 栏距)，取整吸收
+///    亚像素边框带来的小数。
+///  * `window.__lutePaged` 是给 Dart 的桥：turn/goTo/refresh，均返回
+///    'moved' / 'edge'（goTo 返回 'moved'）。
+///  * 重排来源（字号、边距、缩放、图片加载、视口变化）都汇入 refresh：
+///    重新量几何、夹住当前页、上报页码。图片用 load 捕获监听，晚到的
+///    大图不会把页数撑错。
+///  * 章末导航块在分栏里隐藏：翻页模式下物理键/滑动/点按区到头自然换
+///    小节，块本身会让"最后一页"多出一屏 chrome。
+const String _pagedModeScript = r"""
+(function (on) {
+  var STYLE_ID = 'lute-epub-paged';
+  var GAP = 64;
+  var wrap = document.getElementById('thetext');
+  var chapter = document.getElementById('epub-chapter');
+  if (!wrap || !chapter) return 'nohost';
+  if (!chapter.querySelector('.epub-body')) return 'nohost';
+  /* 固定版式（绘本类）：页面是像素盒子，走原有的 fit/zoom 路径。 */
+  if (chapter.dataset.epubViewport) return 'fixed';
+
+  var style = document.getElementById(STYLE_ID);
+  if (!on) {
+    if (style && style.parentNode) style.parentNode.removeChild(style);
+    wrap.classList.remove('lute-paged-mode');
+    wrap.classList.add('video-scroll-mode');
+    delete window.__lutePaged;
+    return 'off';
+  }
+
+  function colW() {
+    var cs = getComputedStyle(chapter);
+    return chapter.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  }
+  function advance() { return colW() + GAP; }
+  function pageCount() {
+    var a = advance();
+    if (a <= 0) return 1;
+    return Math.max(1, Math.round((chapter.scrollWidth - chapter.clientWidth) / a) + 1);
+  }
+  function pageIndex() {
+    var a = advance();
+    if (a <= 0) return 0;
+    return Math.max(0, Math.round(chapter.scrollLeft / a));
+  }
+  function report() {
+    if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+      var n = pageCount();
+      window.flutter_inappwebview.callHandler('luteEpubPage', {
+        index: Math.min(pageIndex(), n - 1),
+        count: n
+      });
+    }
+  }
+  function goTo(k) {
+    var n = pageCount();
+    k = Math.max(0, Math.min(k, n - 1));
+    chapter.scrollLeft = k * advance();
+    lastReportedCount = n;
+    lastReportedIndex = k;
+    report();
+    return 'moved';
+  }
+  function turn(dir) {
+    var n = pageCount();
+    var i = pageIndex();
+    if (dir > 0 && i >= n - 1) return 'edge';
+    if (dir < 0 && i <= 0) return 'edge';
+    return goTo(i + dir);
+  }
+  function apply() {
+    var tcs = getComputedStyle(wrap);
+    var availH = wrap.clientHeight - (parseFloat(tcs.paddingTop) || 0) - (parseFloat(tcs.paddingBottom) || 0);
+    /* 高度先落位，量出内容盒宽后再补 column-width（两段写入，中间强制
+       一次布局）；栏宽 = 内容盒宽，每栏即一页。 */
+    var sheet =
+      'div#thetext.lute-paged-mode div#epub-chapter {' +
+      '  height: ' + Math.max(120, availH) + 'px !important;' +
+      '  min-height: 0 !important;' +
+      '  margin: 0 auto !important;' +
+      '  column-gap: ' + GAP + 'px !important;' +
+      '  column-fill: auto !important;' +
+      '  overflow: hidden !important;' +
+      '  touch-action: none !important;';
+    style.textContent = sheet + '}';
+    var cs = getComputedStyle(chapter);
+    var w = chapter.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    var css =
+      sheet +
+      '  column-width: ' + Math.max(80, w) + 'px !important;' +
+      '}' +
+      'div#thetext.lute-paged-mode .epub-body img,' +
+      'div#thetext.lute-paged-mode .epub-body svg,' +
+      'div#thetext.lute-paged-mode .epub-body video {' +
+      '  max-height: ' + Math.max(120, availH - 24) + 'px !important;' +
+      '  break-inside: avoid;' +
+      '}' +
+      'div#thetext.lute-paged-mode .lute-chapter-nav { display: none !important; }';
+    /* 图片多的小节会一次次 load 进来触发 refresh —— 几何没变就别重写
+       样式（每次重写都是一次整章 style recalc）。 */
+    if (css === style.textContent) return;
+    style.textContent = css;
+  }
+  var lastReportedCount = 0;
+  var lastReportedIndex = -1;
+  function refresh() {
+    apply();
+    var n = pageCount();
+    var i = Math.min(pageIndex(), n - 1);
+    chapter.scrollLeft = i * advance();
+    if (n !== lastReportedCount || i !== lastReportedIndex) {
+      report();
+      lastReportedCount = n;
+      lastReportedIndex = i;
+    }
+  }
+
+  if (!style) {
+    style = document.createElement('style');
+    style.id = STYLE_ID;
+    document.head.appendChild(style);
+  }
+  var firstApply = !chapter.dataset.lutePaged;
+  chapter.dataset.lutePaged = '1';
+  wrap.classList.add('lute-paged-mode');
+  wrap.classList.remove('video-scroll-mode');
+  apply();
+  if (firstApply) chapter.scrollLeft = 0;
+
+  window.__lutePaged = {
+    turn: turn,
+    goTo: goTo,
+    refresh: refresh,
+    metrics: function () { return { index: pageIndex(), count: pageCount() }; }
+  };
+
+  /* 缩放桥被调用后几何全变（Chromium 的 zoom 会重排版）—— 挂一次钩。 */
+  if (window.LuteEpubBridge && window.LuteEpubBridge.setZoom &&
+      !window.LuteEpubBridge.__pagedHooked) {
+    var bridge = window.LuteEpubBridge;
+    var origSetZoom = bridge.setZoom;
+    bridge.setZoom = function (f) {
+      var r = origSetZoom.call(bridge, f);
+      refresh();
+      return r;
+    };
+    bridge.__pagedHooked = true;
+  }
+
+  /* 重排来源的兜底：视口变化、晚到的图片、字号推送与定时器竞态。 */
+  window.addEventListener('resize', refresh);
+  window.addEventListener('load', refresh);
+  chapter.addEventListener('load', refresh, true);
+  setTimeout(refresh, 300);
+  setTimeout(refresh, 1200);
+
+  report();
+  return 'paged:' + pageCount();
+})(__ON__)
 """;
 
 /// Builds the end-of-chapter block inside the page (`__CONFIG__` is
@@ -2084,6 +2656,9 @@ const String _marginsScript = r"""
   var column = Math.min(own, 64);
   document.documentElement.style.setProperty(
     '--lute-book-gutter', column.toFixed(1) + 'px');
+
+  /* 翻页模式：边距变了，栏宽跟着变 —— 重排分栏。 */
+  if (window.__lutePaged) window.__lutePaged.refresh();
 
   return tighter ? 'tight' : 'keep';
 })();

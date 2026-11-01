@@ -611,6 +611,12 @@ class TermTooltipClass {
     _currentEntry?.markNeedsBuild();
   }
 
+  /// A word card is on screen right now (the auto-dismiss timer does not
+  /// count: after 3 s of e-ink stillness the card reads as gone, and a tap
+  /// that lands then should act on the text, not "close" nothing).
+  static bool get isShowing =>
+      _currentEntry != null && !_isHidden && _dismissTimer != null;
+
   static void close() {
     _dismissTimer?.cancel();
     // entry 可能已被框架摘掉（Overlay 随路由重建等），此时 entry.mounted 为

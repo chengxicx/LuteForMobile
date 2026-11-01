@@ -397,6 +397,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final moved = await _epubScroll.turn(forward ? 1 : -1);
     if (moved || !mounted) return;
 
+    _turnPastChapterEnd(forward);
+  }
+
+  /// 章内翻屏到头后的换页：翻小节（页码），小节尽头接相邻章 —— 与章末
+  /// 块那三个按钮同一个目标。物理键与翻页模式的手势/点按区共用。
+  void _turnPastChapterEnd(bool forward) {
     final data = ref.read(readerProvider).pageData;
     if (data == null) return;
     final canPage = forward
@@ -406,7 +412,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       _turnPage(forward ? -1 : 1, data);
       return;
     }
-    // 章的尽头：有相邻章就接着读，和章末块那三个按钮同一个目标。
     final neighbour = forward ? data.seriesNextBookId : data.seriesPrevBookId;
     if (neighbour != null) _openChapter(neighbour);
   }
@@ -726,17 +731,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
   void _startHideTimer() {
     _hideUiTimer?.cancel();
-    // 墨水屏下顶栏常驻，两个理由：
-    // 1. 阅读屏在宽屏布局里没有任何主导航入口（底部 NavigationBar 在宽屏不出现，
-    //    rail 又在阅读屏整条退场），顶栏的「书架」按钮是唯一一次点击就能离开
-    //    阅读页的路径，藏起来等于把这条路又堵上；
-    // 2. 显隐各是一次 0 → kToolbarHeight 的整屏 reflow，常驻反而少刷新。
-    if (context.eInk) {
-      // 直接赋值不走 setState：本方法会在 build 期间被调用（见下面 fullscreen
-      // 分支），那里 setState 会抛异常。同文件已有同样的写法。
-      _isUiVisible = true;
-      return;
-    }
+    // 只在 fullscreen 模式运行（调用方都先查过 fullscreenMode）。墨水屏不
+    // 例外：用户明确要顶栏自动隐藏、点中间唤出。代价是每次显隐一次
+    // 0 → kToolbarHeight 的整屏 reflow；离开阅读页变成两步（唤出 → 书架）。
     _hideUiTimer = Timer(const Duration(seconds: 2), _hideUi);
   }
 
@@ -2131,6 +2128,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               enabled: settings.furiganaEnabled,
             ),
             enableTripleTap: settings.enableTripleTapToMarkKnown,
+            paged: settings.epubPagedMode,
             localServer: ref.watch(epubLocalServerProvider),
             refreshPackAssets: () {
               final prefetch = ref.read(epubOfflinePrefetchProvider);
@@ -2186,6 +2184,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                   ? (pageData.seriesNextBookId ?? 0)
                   : (pageData.seriesPrevBookId ?? 0),
             ),
+            // 翻页模式下手势/点按区到头：翻小节，尽头接相邻章（与物理键
+            // 的 _turnChapterScreen 同一条换页逻辑）。
+            onTurnPage: _turnPastChapterEnd,
             onOpenContents: _openContents,
             scroll: _epubScroll,
             // The chapter's token stream carries no language, and a word

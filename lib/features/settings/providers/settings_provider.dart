@@ -90,6 +90,7 @@ class SettingsNotifier extends Notifier<Settings> {
   // App 本机偏好。与 Web settings 表的 ui_language 同值域但**互不同步**。
   static const String _keyUiLanguage = 'ui_language';
   static const String _keyEpubLookMode = 'epub_look_mode';
+  static const String _keyEpubPagedMode = 'epub_paged_mode';
 
   @override
   Settings build() {
@@ -174,6 +175,8 @@ class SettingsNotifier extends Notifier<Settings> {
     final epubLookMode = Settings.epubLookModes.contains(storedEpubLook)
         ? storedEpubLook
         : 'original';
+    // epub 翻页：老安装没有这个键 → 整页翻页（2026-11-01 用户要求的新默认）。
+    final epubPagedMode = prefs.getBool(_keyEpubPagedMode) ?? true;
 
     final currentBookId = prefs.getInt(_keyCurrentBookId);
     final currentBookLangId = prefs.getInt(_keyCurrentBookLangId);
@@ -220,6 +223,7 @@ class SettingsNotifier extends Notifier<Settings> {
       backgroundPlayback: backgroundPlayback,
       uiLanguage: uiLanguage,
       epubLookMode: epubLookMode,
+      epubPagedMode: epubPagedMode,
     );
 
     // 启动即应用方向锁：设置是在 build() 的异步加载里到位的，
@@ -487,6 +491,13 @@ class SettingsNotifier extends Notifier<Settings> {
     state = state.copyWith(epubLookMode: mode);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyEpubLookMode, mode);
+  }
+
+  /// 切换 reader-mode EPUB 的阅读方式（整页翻页 / 整章滚动）。只存本机。
+  Future<void> updateEpubPagedMode(bool enabled) async {
+    state = state.copyWith(epubPagedMode: enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyEpubPagedMode, enabled);
   }
 
   Future<void> updateOrientationLock(OrientationLock lock) async {

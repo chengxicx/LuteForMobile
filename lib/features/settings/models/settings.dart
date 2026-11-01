@@ -81,6 +81,12 @@ class Settings {
   /// （SharedPreferences 键 `epub_look_mode`），互不同步。默认原书外观。
   final String epubLookMode;
 
+  /// Reader-mode EPUB 的阅读方式：true = 整页翻页（章节内容按屏分栏，
+  /// 物理键/横滑/点按区翻页，见 EpubChapterView 的 paged 脚本）；
+  /// false = 整章连续滚动（2026-11 前的唯一方式）。只存本机，默认翻页
+  /// （用户 2026-11-01 提出的需求：ePub 要像普通书一样翻页，不要滚动）。
+  final bool epubPagedMode;
+
   /// [epubLookMode] 的合法值集合，加载与写入时据此校正。
   static const Set<String> epubLookModes = {'original', 'night', 'theme'};
 
@@ -130,6 +136,7 @@ class Settings {
     this.backgroundPlayback = true,
     this.uiLanguage = 'en',
     this.epubLookMode = 'original',
+    this.epubPagedMode = true,
   });
 
   Settings copyWith({
@@ -179,6 +186,7 @@ class Settings {
     bool? backgroundPlayback,
     String? uiLanguage,
     String? epubLookMode,
+    bool? epubPagedMode,
   }) {
     return Settings(
       localUrl: localUrl ?? this.localUrl,
@@ -245,6 +253,7 @@ class Settings {
       backgroundPlayback: backgroundPlayback ?? this.backgroundPlayback,
       uiLanguage: uiLanguage ?? this.uiLanguage,
       epubLookMode: epubLookMode ?? this.epubLookMode,
+      epubPagedMode: epubPagedMode ?? this.epubPagedMode,
     );
   }
 
@@ -341,7 +350,8 @@ class Settings {
         other.orientationLock == orientationLock &&
         other.backgroundPlayback == backgroundPlayback &&
         other.uiLanguage == uiLanguage &&
-        other.epubLookMode == epubLookMode;
+        other.epubLookMode == epubLookMode &&
+        other.epubPagedMode == epubPagedMode;
   }
 
   @override
@@ -388,6 +398,7 @@ class Settings {
     backgroundPlayback,
     uiLanguage,
     epubLookMode,
+    epubPagedMode,
   ]);
 
   bool isValidServerUrl(String url) {
