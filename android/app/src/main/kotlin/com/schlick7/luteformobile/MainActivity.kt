@@ -2,6 +2,7 @@ package com.schlick7.luteformobile
 
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.view.KeyEvent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import kotlinx.coroutines.CoroutineScope
@@ -13,6 +14,7 @@ class MainActivity : FlutterActivity() {
     private var termuxBridge: TermuxBridge? = null
     private var apkInstaller: ApkInstaller? = null
     private var mediaPlaybackBridge: MediaPlaybackBridge? = null
+    private var pageKeyBridge: PageKeyBridge? = null
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var hasAutoLaunched = false
 
@@ -42,6 +44,15 @@ class MainActivity : FlutterActivity() {
         apkInstaller?.registerMethodChannel(flutterEngine)
         mediaPlaybackBridge = MediaPlaybackBridge(this)
         mediaPlaybackBridge?.registerMethodChannel(flutterEngine)
+        pageKeyBridge = PageKeyBridge()
+        pageKeyBridge?.registerMethodChannel(flutterEngine)
+    }
+
+    /// 物理翻页键在窗口之前取走：音量键会被 `PhoneWindow` 吃掉，
+    /// 章节的 WebView 也会自己消费按键（见 [PageKeyBridge]）。
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (pageKeyBridge?.handleKeyEvent(event) == true) return true
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onDestroy() {
