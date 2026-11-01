@@ -1842,6 +1842,18 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
     return 'Language #$id';
   }
 
+  /// 本机池词典的显示名：优先用服务器词典池列表里的标题（导入时写的
+  /// sidecar 元数据），查不到（本地导入、离线、旧服务端）退回文件名。
+  /// 没有它，"On this device" 一栏全是 9-_V3.1.2.db 这种转换器文件名，
+  /// 用户对不上服务器列表里的《牛津高阶双解》——这就是"下载完不知道
+  /// 这是什么字典"的来源。
+  String _poolDisplayName(String filename) {
+    for (final dict in _serverDicts ?? const <ServerDictionary>[]) {
+      if (dict.filename == filename) return dict.displayName;
+    }
+    return filename;
+  }
+
   /// 下载列表里的一本到本机词典池（不绑定语言）。
   Future<void> _downloadFile(ServerDictionary dict) async {
     final url = ServerDictionary.urlFor(
@@ -1975,8 +1987,8 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
       builder: (ctx) => AlertDialog(
         title: const Text('Delete dictionary'),
         content: Text(
-          'Delete "$filename"? The file will be removed from this device; '
-          'you can download or import it again later.',
+          'Delete "${_poolDisplayName(filename)}"? The file will be removed '
+          'from this device; you can download or import it again later.',
         ),
         actions: [
           TextButton(
@@ -2008,7 +2020,8 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
     for (final id in _installedIds) {
       final name = _languageName(languages, id);
       final picked = _selections[id];
-      parts.add(picked != null ? '$name → $picked' : '$name (legacy)');
+      parts.add(
+          picked != null ? '$name → ${_poolDisplayName(picked)}' : '$name (legacy)');
     }
     if (_legacyShared) parts.add('Legacy shared dictionary (fallback)');
     return parts.join(' · ');
@@ -2158,41 +2171,47 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
               )
             else
               for (final dict in _pool)
-                ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity.compact,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(
-                    currentInPool && dict.filename == current
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
-                    size: 20,
-                  ),
-                  title: Text(
-                    dict.filename,
-                    style: const TextStyle(fontSize: 13),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    '${dict.sizeMb.toStringAsFixed(1)} MB',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.6),
-                    ),
-                  ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 18),
-                    tooltip: 'Delete',
+                Builder(builder: (context) {
+                  final display = _poolDisplayName(dict.filename);
+                  return ListTile(
+                    dense: true,
                     visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: busy ? null : () => _deleteDict(dict.filename),
-                  ),
-                  onTap: busy ? null : () => _selectDict(dict.filename),
-                ),
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      currentInPool && dict.filename == current
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                      size: 20,
+                    ),
+                    title: Text(
+                      display,
+                      style: const TextStyle(fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      display == dict.filename
+                          ? '${dict.sizeMb.toStringAsFixed(1)} MB'
+                          : '${dict.sizeMb.toStringAsFixed(1)} MB · ${dict.filename}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withValues(alpha: 0.6),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      tooltip: 'Delete',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: busy ? null : () => _deleteDict(dict.filename),
+                    ),
+                    onTap: busy ? null : () => _selectDict(dict.filename),
+                  );
+                }),
             const SizedBox(height: 12),
             // -------------------------------------------------- 服务器词典池
             Row(
