@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -94,7 +95,11 @@ class DictionaryService {
     return urlTemplate
         .replaceAll('[LUTE]', encodedTerm)
         .replaceAll('{term}', encodedTerm)
-        .replaceAll('{sentence}', encodedTerm);
+        .replaceAll('{sentence}', encodedTerm)
+        // lute v3 服务端词典模板的占位符（fanyi.baidu.com/#ja/zh/### 这类
+        // hash 路由）。不替换的话 WebView 拿到字面 "###"，页面显示 ### 而不是
+        // 查询词。
+        .replaceAll('###', encodedTerm);
   }
 
   /// 词典弹窗里该为 [dictionary] 加载哪个地址。
@@ -375,6 +380,111 @@ class DictionaryService {
           'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
       useWideViewPort: !localDictionary,
       loadWithOverviewMode: !localDictionary,
+    );
+  }
+
+  /// 逼 WebView 立刻重画一帧。
+  ///
+  /// WebView 页在 PageView 里滑出屏幕再滑回来后，BOOX 墨水屏上经常整页
+  /// 空白：渲染树里内容还在、也没有任何加载错误，就是合成器不出新帧
+  /// （platform view 重新贴上前不重绘）。对 body 做一次无副作用的样式
+  /// 抖动，强制 WebView 出一帧。切页回调里对当前页调用。
+  static void forceRepaint(InAppWebViewController controller) {
+    unawaited(
+      controller.evaluateJavascript(
+        source: '''
+(function(){
+  var b=document.body;
+  if(!b) return;
+  b.style.transform='translateZ(0)';
+  setTimeout(function(){ b.style.transform=''; }, 50);
+})();
+''',
+      ),
+    );
+  }
+
+  /// 修复第三方词典页在部分设备（如 BOOX 墨水屏）WebView 上的「叠字 / 字号
+  /// 错乱」。
+  ///
+  /// 根因是页面上被注入了一份 `*{font-size:110% !important}` 样式表（系统
+  /// WebView 注入，不是词典页自己的 CSS，特征是带 scrollbar-arrow-color 等
+  /// 老式滚动条属性）。它给每个元素的字号都乘 1.1 并覆盖行内样式：十几层
+  /// 嵌套后正文被放成 45px，而 line-height 还是原设计的几个 px，行盒塌陷、
+  /// 文字互相压住；页面按 rem 的字号体系（html 上页面自己写的 160px）也被
+  /// 打乱，说明文字跟着放大到和正文一样大。
+  ///
+  /// 所以先删掉这些注入的样式表——实测删完页面就按原设计渲染（正文 38.4px /
+  /// 行高 46.4px，小字 16px / 24px，整页无重叠）。删完仍有「行高不足字号
+  /// 80%」的病态元素时才退回压字号兜底：先快照全页字号再统一写入，避免
+  /// 边改父边读子导致层级塌平。正常渲染的页面完全不动。
+  ///
+  /// 句子翻译面板（sentence_translation）和词典弹窗（dictionary_view）都嵌
+  /// 第三方词典页，两边的 onLoadStop 里都要调用。
+  static void repairBrokenPage(InAppWebViewController controller) {
+    unawaited(
+      controller.evaluateJavascript(
+        source: r'''
+(function(){
+  var MARK='scrollbar-arrow-color';
+  function badCount(){
+    var all=document.querySelectorAll('*'), bad=0, i, el, cs, fs, lh;
+    for(i=0;i<all.length;i++){
+      el=all[i];
+      try{ cs=getComputedStyle(el); }catch(e){ continue; }
+      fs=parseFloat(cs.fontSize); lh=parseFloat(cs.lineHeight);
+      if(fs>0 && lh>0 && lh<fs*0.8) bad++;
+    }
+    return bad;
+  }
+  function deboost(){
+    var st=document.querySelectorAll('style'), i, t, n=0;
+    for(i=0;i<st.length;i++){
+      t=st[i].textContent || '';
+      if(t.indexOf('font-size: 110%')>=0 || t.indexOf(MARK)>=0){
+        st[i].parentNode.removeChild(st[i]); n++;
+      }
+    }
+    return n;
+  }
+  function squeezeFonts(){
+    var all=document.querySelectorAll('*'), i, el, snap=[];
+    for(i=0;i<all.length;i++){
+      el=all[i];
+      if(el===document.documentElement || el===document.body){
+        snap.push(-1); continue;
+      }
+      if(el.__luteFixed){ snap.push(-1); continue; }
+      try{ snap.push(parseFloat(getComputedStyle(el).fontSize)); }
+      catch(e){ snap.push(-1); }
+    }
+    for(i=0;i<all.length;i++){
+      var fs=snap[i];
+      if(!(fs>0)) continue;
+      el=all[i];
+      el.style.setProperty('line-height','normal','important');
+      if(fs>=30){
+        el.style.setProperty('font-size','16px','important');
+      } else if(fs>=18){
+        el.style.setProperty('font-size','13px','important');
+      }
+      el.__luteFixed=1;
+    }
+  }
+  function fix(){
+    if(deboost()>0) window.__luteBroken=1;
+    if(!window.__luteBroken && badCount()>0) window.__luteBroken=1;
+    if(!window.__luteBroken) return;
+    if(badCount()>0) squeezeFonts();
+  }
+  fix();
+  setTimeout(fix,700);
+  setTimeout(fix,2000);
+  setTimeout(fix,4500);
+  setTimeout(fix,8000);
+})();
+''',
+      ),
     );
   }
 

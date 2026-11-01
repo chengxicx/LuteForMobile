@@ -700,6 +700,16 @@ class _SentenceTranslationWidgetState
       controller: _pageController,
       allowImplicitScrolling: true,
       onPageChanged: (index) async {
+        // 切回已加载过的 WebView 页必须逼它重画一帧，否则墨水屏上整页空白
+        // （见 DictionaryService.forceRepaint）；第三方页顺带重跑字号修复。
+        final switchedDict = _dictionaries[index];
+        final controller = _webviewControllers[switchedDict.hashCode];
+        if (controller != null && !switchedDict.isAI) {
+          DictionaryService.forceRepaint(controller);
+          if (!switchedDict.isLocalDictionary) {
+            DictionaryService.repairBrokenPage(controller);
+          }
+        }
         if (_isPreloading) return;
         setState(() {
           _currentPage = index;
@@ -778,6 +788,9 @@ class _SentenceTranslationWidgetState
       onLoadStop: (controller, url) {
         if (index == _currentPage) {
           _preloadAdjacentPages();
+        }
+        if (!dictionary.isLocalDictionary) {
+          DictionaryService.repairBrokenPage(controller);
         }
       },
     );

@@ -891,6 +891,17 @@ class _DictionaryViewState extends ConsumerState<DictionaryView> {
       controller: _pageController,
       allowImplicitScrolling: true,
       onPageChanged: (index) async {
+        // 滑回来时 WebView 不出新帧（见 DictionaryService.forceRepaint），
+        // 必须在切页时逼当前页重画；顺带把第三方页的字号修复再跑一遍，
+        // 覆盖「加载很久之后才被注入样式」的情况。
+        final dict = widget.dictionaries[index];
+        final controller = _webviewControllers[dict.hashCode];
+        if (controller != null) {
+          DictionaryService.forceRepaint(controller);
+          if (!dict.isLocalDictionary) {
+            DictionaryService.repairBrokenPage(controller);
+          }
+        }
         if (_isPreloading) return;
         setState(() {
           _currentPage = index;
@@ -965,6 +976,12 @@ class _DictionaryViewState extends ConsumerState<DictionaryView> {
               }
               if (url != null && url.path.contains('/login')) {
                 _reportLoginRequired();
+              }
+              // 词典弹窗里嵌的第三方页面与句子翻译面板同病：系统 WebView 注入
+              // 的 110% 字号样式表会把页面叠成一团（见
+              // DictionaryService.repairBrokenPage）。
+              if (!dictionary.isLocalDictionary) {
+                DictionaryService.repairBrokenPage(controller);
               }
             },
           ),
