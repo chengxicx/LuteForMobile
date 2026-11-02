@@ -202,22 +202,66 @@ TTSSettingsConfig onDeviceConfigForFallback(TTSSettings settings) {
 }
 
 /// 兜底引擎开口前的装配：应用配置（语速/音调/音量）与当前书的语言。
-/// 两步都尽力而为：失败不阻塞发音，引擎退到出厂默认的声音与语速。
+///
+/// 语言这一步不再"尽力而为"：系统 TTS 在目标语言没有已装语音时会静默
+/// 退回系统默认 locale（本机是 ja_JP，即英文书发出日文音），所以必须在
+/// 设备真实语音列表里选中同语种的那一档；选不到就抛
+/// [TTSVoiceUnavailableException]，由调用方提示用户装语音 —— 而不是继续
+/// 开口念错语种。
 Future<void> prepareOnDeviceFallback(
   OnDeviceTTSService service, {
   required TTSSettingsConfig config,
   String? bookLanguageName,
+  String? text,
 }) async {
   try {
     await service.setSettings(config);
   } catch (e) {
     debugPrint('TTS fallback: failed to apply on-device settings: $e');
   }
+
   final language = bookLanguageName?.trim();
-  if (language == null || language.isEmpty) return;
-  try {
-    await service.setLanguage(ttsLanguageCodeFor(language));
-  } catch (e) {
-    debugPrint('TTS fallback: failed to set language "$language": $e');
+  // 书名语言拿不到时（离线恢复上次在读的书：书架缓存里没有这本书，
+  // /language/index 又不可达）按待朗读文本的字符集反推，而不是沿用系统
+  // 默认 locale。最后才退到应用默认的英文标签。
+  final tag = (language != null && language.isNotEmpty)
+      ? ttsLanguageCodeFor(language)
+      : (_languageTagFromText(text) ?? defaultTtsLanguageTag);
+  debugPrint(
+    'TTS fallback: book language="${language ?? '(unknown)'}" -> $tag',
+  );
+
+  // 用户在设置页里显式选过的 on-device 语音优先，但只有语种对得上才保留：
+  // 给英文书保留一档日语语音正是这条 bug 的来源。
+  final preferredLocale = config.voiceLocale?.trim();
+  if (preferredLocale != null &&
+      preferredLocale.isNotEmpty &&
+      _samePrimaryLanguage(preferredLocale, tag)) {
+    debugPrint(
+      'TTS fallback: keeping configured voice locale "$preferredLocale"',
+    );
+    return;
   }
+
+  await service.setLanguageForBook(tag);
+}
+
+bool _samePrimaryLanguage(String a, String b) {
+  final primaryA = a.toLowerCase().split(RegExp(r'[-_]')).first;
+  final primaryB = b.toLowerCase().split(RegExp(r'[-_]')).first;
+  return primaryA.isNotEmpty && primaryA == primaryB;
+}
+
+/// 从文本字符集反推语言标签；看不出语种时返回 null。
+///
+/// 只用于「书名语言解析失败」的兜底：假名 → 日语、谚文 → 韩语、汉字 →
+/// 中文、拉丁字母 → 英语。宁可粗略，也不能把英文交给系统默认的日语语音。
+String? _languageTagFromText(String? text) {
+  final sample = text?.trim();
+  if (sample == null || sample.isEmpty) return null;
+  if (RegExp(r'[\u3040-\u30ff]').hasMatch(sample)) return 'ja-JP';
+  if (RegExp(r'[\uac00-\ud7af]').hasMatch(sample)) return 'ko-KR';
+  if (RegExp(r'[\u4e00-\u9fff]').hasMatch(sample)) return 'zh-CN';
+  if (RegExp(r'[A-Za-z]').hasMatch(sample)) return 'en-US';
+  return null;
 }

@@ -570,6 +570,12 @@ class TermTooltipClass {
         if (top < 0) {
           top = termRect.bottom + verticalOffset;
         }
+        // 兜底锚点（整章视图）时 termRect.bottom 就是屏幕底部：再夹一次，
+        // 保证卡片任何时候都落在可视区内，不会画到屏幕下方（"点了没卡"）。
+        final maxTop = screenSize.height - tooltipHeight - horizontalMargin;
+        if (top > maxTop) {
+          top = maxTop < horizontalMargin ? horizontalMargin : maxTop;
+        }
 
         _tooltipPosition = Offset(left, top);
 

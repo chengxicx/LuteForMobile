@@ -2477,7 +2477,29 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         // which is what silently skipped the local dictionary (the lookup
         // cannot route to a dictionary file without an id) and hid the
         // sentence-translation button.
-        final langId = item.langId ?? ref.read(currentBookProvider).langId;
+        // 书架缓存是离线时唯一可靠的 langId 来源（页面 token 流不带语言，
+        // 冷启动恢复阅读时 setBookLanguage 也可能还没跑完）。这里再兜一次，
+        // 保证点词当下就能路由到对应语言的词典库。
+        final bookId = ref.read(currentBookProvider).bookId;
+        int? shelfLangId;
+        if (bookId != null) {
+          final shelf = ref.read(booksProvider);
+          for (final book in [...shelf.activeBooks, ...shelf.archivedBooks]) {
+            if (book.id == bookId) {
+              shelfLangId = book.langId;
+              break;
+            }
+          }
+        }
+        final langId =
+            item.langId ??
+            ref.read(currentBookProvider).langId ??
+            shelfLangId ??
+            (bookId == null
+                ? null
+                : await ref
+                      .read(currentBookProvider.notifier)
+                      .cachedLangId(bookId));
         // 本地词典（阶段3a）：SQLite 毫秒级查询，弹出前一次带入（卡片单帧
         // 绘制，墨水屏不重绘）。按当前书的语言查对应词典库；该语言没装
         // 专属词典时，只有日语书才回落旧版共享日汉库（其他语言如实显示
@@ -2509,9 +2531,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           // Auto pronounce (Settings -> Reading): read the term as the card opens,
           // so the reader does not have to reach for the speaker button.
           if (ref.read(settingsProvider).autoPronounceOnTap) {
-            unawaited(
-              ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
-            );
+            unawaited(_pronounceTerm(speakText));
           }
           // Grammar button state comes from the page pre-analysis: it knows
           // whether this sentence matched anything.  no -> greyed out; yes ->
@@ -2528,9 +2548,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             context,
             tooltip,
             termRect,
-            onSpeak: () => unawaited(
-              ref.read(sentenceTTSProvider.notifier).speakSentence(speakText, 0),
-            ),
+            onSpeak: () => unawaited(_pronounceTerm(speakText)),
             onSentenceTranslation: langId == null
                 ? null
                 : () => _translateSentenceFromCard(item, langId),
@@ -2548,6 +2566,24 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     } catch (e) {
       return;
     }
+  }
+
+  /// 点词发音，并把失败原因真正告诉用户。
+  ///
+  /// 词卡有自己的发音按钮，不经过 [SentenceTTSButton] 的全局 SnackBar；
+  /// 离线兜底引擎没有这本书语言的语音时（见
+  /// [TTSVoiceUnavailableException]），用户只会"点了没声音"。这里补一次
+  /// 提示，告诉他去系统 TTS 设置里装语音。
+  Future<void> _pronounceTerm(String text) async {
+    await ref.read(sentenceTTSProvider.notifier).speakSentence(text, 0);
+    if (!mounted) return;
+    final ttsState = ref.read(sentenceTTSProvider);
+    final message = ttsState.errorMessage;
+    if (!ttsState.hasError || message == null) return;
+    ref.read(sentenceTTSProvider.notifier).clearError();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 5)),
+    );
   }
 
   /// Sentence translation, entered from the button on the word card.

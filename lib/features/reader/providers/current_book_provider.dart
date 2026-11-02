@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../books/models/book.dart';
 import '../../books/providers/books_provider.dart';
 import '../../../shared/providers/network_providers.dart';
@@ -55,7 +56,8 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
     ref.listen(booksProvider, (_, _) {
       final bookId = state.bookId;
       if (bookId == null) return;
-      if (state.languageName?.trim().isNotEmpty ?? false) return;
+      final hasName = state.languageName?.trim().isNotEmpty ?? false;
+      if (hasName && state.langId != null) return;
       final shelfBook = _findShelfBook(bookId);
       if (shelfBook == null) return;
       unawaited(setBookLanguage(bookId, shelfBook.langId ?? state.langId));
@@ -80,6 +82,48 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
     return null;
   }
 
+  /// 上次翻阅这本书时记下的语言 id / 语言名。
+  ///
+  /// 启动时恢复「上次在读的书」只拿得到 bookId：书架上没有它（聚合行里的
+  /// 成员书、离线导入书都不在 active/archived 列表里），页面 token 流也不带
+  /// 语言，于是离线点词时 langId 为 null，本地词典直接「查不到」。
+  /// 读到哪本书、什么语言，是上一会话就知道的事，落盘备查。
+  static String _langIdKey(int bookId) => 'book_lang_id_$bookId';
+  static String _langNameKey(int bookId) => 'book_lang_name_$bookId';
+
+  Future<int?> cachedLangId(int bookId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getInt(_langIdKey(bookId));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> cachedLanguageName(int bookId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final name = prefs.getString(_langNameKey(bookId))?.trim();
+      return (name == null || name.isEmpty) ? null : name;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _rememberLanguage(int bookId, int? langId, String? name) async {
+    if (langId == null || langId == 0) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_langIdKey(bookId), langId);
+      final trimmed = name?.trim();
+      if (trimmed != null && trimmed.isNotEmpty) {
+        await prefs.setString(_langNameKey(bookId), trimmed);
+      }
+    } catch (_) {
+      // 缓存失败不影响本次会话。
+    }
+  }
+
   /// 这本书的语言名，按可靠性从高到低取第一个拿得到的。
   ///
   /// 语言名是 TTS 的硬依赖：拿不到就只能退回兜底语言码，而语言错的后果不是
@@ -102,7 +146,10 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
     final shelfName = shelfBook?.language.trim();
     if (shelfName != null && shelfName.isNotEmpty) return shelfName;
 
-    final effectiveLangId = langId ?? shelfBook?.langId;
+    final remembered = await cachedLanguageName(bookId);
+    if (remembered != null) return remembered;
+
+    final effectiveLangId = langId ?? shelfBook?.langId ?? await cachedLangId(bookId);
     if (effectiveLangId != null && effectiveLangId != 0) {
       try {
         final name = (await ref
@@ -138,6 +185,7 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
       languageName: name,
       book: book,
     );
+    unawaited(_rememberLanguage(book.id, book.langId, name));
   }
 
   /// 阅读器只按 id 加载书时（典型场景：启动时恢复上次在读的书）手上没有
@@ -150,6 +198,7 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
   /// 换书时语言名必须跟着换：拿上一本书的语言去念这一本，同样是一串 422。
   Future<void> setBookLanguage(int bookId, int? langId) async {
     if (state.bookId == bookId &&
+        state.langId != null &&
         (state.languageName?.trim().isNotEmpty ?? false)) {
       return;
     }
@@ -163,11 +212,24 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
     }
 
     final sameBook = state.bookId == bookId;
+    // EPUB 章节的 token 流没有 langId（见 EpubChapterView.languageId），
+    // 离线恢复阅读时 `_findLangId` 也拿不到，langId 就这样一直是 null ——
+    // 本地词典按 langId 选库，null 直接返回「查不到」，于是英文书离线点词
+    // 永远没有释义（书架缓存里其实带着 LgID）。书架里同一本书就是权威来源。
+    final shelfBook = _findShelfBook(bookId);
+    final effectiveLangId =
+        langId ??
+        shelfBook?.langId ??
+        await cachedLangId(bookId) ??
+        (sameBook ? state.langId : null);
     state = CurrentBookState(
       bookId: bookId,
-      langId: langId ?? (sameBook ? state.langId : null),
+      langId: effectiveLangId,
       languageName: name ?? (sameBook ? state.languageName : null),
       book: sameBook ? state.book : null,
+    );
+    unawaited(
+      _rememberLanguage(bookId, effectiveLangId, state.languageName),
     );
   }
 

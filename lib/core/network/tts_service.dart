@@ -59,12 +59,28 @@ class TTSVoice {
   final String? quality;
   final bool isNetworkConnectionRequired;
 
+  /// 引擎自报的能力标签。Android 上是 flutter_tts 的 `features` 键（用
+  /// `\t` 连接）；其中 `notInstalled` 表示这一档语音**没有下载到本机**。
+  ///
+  /// 它与 [isNetworkConnectionRequired] 是两件事：Google TTS 的
+  /// `ko-KR-language` 自报 `network_required=0`，却带着 `notInstalled`，
+  /// 合成时派发到 `ko-kr-x-ism-server`（离线下 -4，一声不出）。
+  final String features;
+
   TTSVoice({
     required this.name,
     required this.locale,
     this.quality,
     this.isNetworkConnectionRequired = false,
+    this.features = '',
   });
+
+  /// 这一档语音能不能在**断网**时真的出声。
+  ///
+  /// 只看 `isNetworkConnectionRequired` 不够：本机韩语那档自报「离线」，
+  /// 实际没装语音包，点了就是静默无声。
+  bool get isUsableOffline =>
+      !isNetworkConnectionRequired && !features.contains('notInstalled');
 
   String get displayName {
     String displayName = name;
@@ -112,8 +128,25 @@ class TTSVoice {
       name: map['name']?.toString() ?? '',
       locale: map['locale']?.toString() ?? '',
       quality: map['quality']?.toString(),
-      isNetworkConnectionRequired: map['isNetworkConnectionRequired'] == true,
+      isNetworkConnectionRequired: _networkRequired(map),
+      features: map['features']?.toString() ?? '',
     );
+  }
+
+  /// flutter_tts 的 Android 端把「是否需要联网」放在 **字符串** 键
+  /// `network_required`（"1"/"0"），桌面/iOS 端才是布尔
+  /// `isNetworkConnectionRequired`。只认后者会把所有云端 voice 当成
+  /// 离线可用 —— 本机韩语 `ko-KR-language` 实际映射到
+  /// `ko-kr-x-ism-server`，飞行模式下 Google TTS 合成报 -4，一声不出。
+  static bool _networkRequired(Map<dynamic, dynamic> map) {
+    final raw = map['network_required'] ?? map['isNetworkConnectionRequired'];
+    if (raw is bool) return raw;
+    if (raw is num) return raw != 0;
+    if (raw is String) {
+      final value = raw.trim().toLowerCase();
+      return value == '1' || value == 'true';
+    }
+    return false;
   }
 }
 
@@ -317,6 +350,122 @@ class OnDeviceTTSService implements TTSService {
     } catch (e) {
       throw TTSException('Failed to set language: $e');
     }
+  }
+
+  /// 切到 [languageTag] 对应的、设备上**真正装了**的那一档语音。
+  ///
+  /// 系统 TTS 在目标语言没有已装语音时不会报错，而是静默退回系统默认
+  /// locale（本机实测是 ja_JP）：英文单词因此被日语语音念出来。所以只看
+  /// [setLanguage] 的返回值不够，必须先拿 [getAvailableVoices] 的真实条目
+  /// 核对，命中之后才 setLanguage/setVoice。
+  ///
+  /// 同一主语言下优先真正能离线出声的语音（[TTSVoice.isUsableOffline]：
+  /// 既不要联网、也没带 `notInstalled` 标签）—— 离线兜底本来就用不了网络
+  /// 语音。一个都没有就抛 [TTSVoiceUnavailableException]：宁可不开口，也不发
+  /// 错语种的音，更不静默。
+  ///
+  /// 例外：引擎根本列不出语音（[getAvailableVoices] 返回空）时无从核对，
+  /// 只设 locale 返回 null —— 那不是「没装语音」，别把它判成失败。
+  Future<TTSVoice?> setLanguageForBook(String languageTag) async {
+    final primary = languageTag.toLowerCase().split(RegExp(r'[-_]')).first;
+    List<TTSVoice> voices;
+    try {
+      voices = await getAvailableVoices();
+    } on TTSException catch (e) {
+      // 引擎根本列不出语音（未初始化 / 平台不实现清单）：无从核对。**不能**
+      // 把「列不出」当成「设备没有语音」，否则每次兜底发音都会被判成无语音；
+      // 真出不来声，是由 speak 后的开口确认门报出来的。
+      debugPrint(
+        'On-device TTS: voice list unavailable (${e.message}); setting locale '
+        '$languageTag without a voice check',
+      );
+      await _flutterTts.setLanguage(languageTag);
+      return null;
+    }
+
+    if (voices.isEmpty) {
+      // 引擎不提供语音清单（桌面/iOS，或实现不全的引擎）：同上，只定 locale。
+      debugPrint(
+        'On-device TTS: engine listed no voices; setting locale '
+        '$languageTag without a voice check',
+      );
+      await _flutterTts.setLanguage(languageTag);
+      return null;
+    }
+
+    TTSVoice? exactOffline;
+    TTSVoice? exactOnline;
+    TTSVoice? sameLangOffline;
+    TTSVoice? sameLangOnline;
+    final candidates = <String>[];
+    for (final voice in voices) {
+      if (voice.name.isEmpty) continue;
+      final localePrimary =
+          voice.locale.toLowerCase().split(RegExp(r'[-_]')).first;
+      if (localePrimary != primary) continue;
+      candidates.add(
+        '${voice.name}(${voice.locale}, networkRequired='
+        '${voice.isNetworkConnectionRequired}, features=${voice.features})',
+      );
+      final exact = voice.locale.toLowerCase() == languageTag.toLowerCase();
+      if (voice.isUsableOffline) {
+        if (exact) {
+          exactOffline ??= voice;
+        } else {
+          sameLangOffline ??= voice;
+        }
+      } else {
+        if (exact) {
+          exactOnline ??= voice;
+        } else {
+          sameLangOnline ??= voice;
+        }
+      }
+    }
+    final chosen =
+        exactOffline ?? sameLangOffline ?? exactOnline ?? sameLangOnline;
+    if (chosen == null) {
+      debugPrint(
+        'On-device TTS: no voice for "$languageTag" at all '
+        '(candidates: ${candidates.isEmpty ? 'none' : candidates.join('; ')})',
+      );
+      throw TTSVoiceUnavailableException(
+        'No installed voice for "$languageTag" on this device. '
+        'Install an offline voice for this language in the system '
+        'text-to-speech settings.',
+      );
+    }
+    if (!chosen.isUsableOffline) {
+      // 只剩云端档（或没下载的档）能选：离线时它大概率一声不出。仍按原样
+      // 交给引擎（在线时是正常的），但把这件事写进日志，方便区分
+      // 「选错语音」与「合成失败」。
+      debugPrint(
+        'On-device TTS: only a voice that is not usable offline matches '
+        '$languageTag (candidates: ${candidates.join('; ')})',
+      );
+    }
+
+    try {
+      await _flutterTts.setLanguage(chosen.locale);
+      try {
+        await _flutterTts.setVoice({
+          'name': chosen.name,
+          'locale': chosen.locale,
+        });
+      } catch (e) {
+        // 个别引擎不支持按名字选 voice；setLanguage 已把 locale 定住。
+        debugPrint('On-device TTS: setVoice failed ($e); keeping locale '
+            '${chosen.locale}');
+      }
+    } catch (e) {
+      throw TTSException('Failed to select a voice for "$languageTag": $e');
+    }
+    debugPrint(
+      'On-device TTS: using voice "${chosen.name}" (${chosen.locale}) '
+      'for $languageTag (offlineUsable=${chosen.isUsableOffline}, '
+      'features=${chosen.features})',
+    );
+    return chosen;
   }
 
   @override
@@ -1306,4 +1455,22 @@ class TTSException implements Exception {
 /// not the 502 it used to be.
 class TTSUnpronounceableFragmentException extends TTSException {
   TTSUnpronounceableFragmentException(super.message);
+}
+
+/// 设备上没有目标语言的 TTS 语音（通常是没装离线语音包）。
+///
+/// 与 [TTSUnpronounceableFragmentException] 一样不该走重试：重试不会让
+/// 语音包长出来，只会拖 3 秒再报一次同样的错。调用方收到它就提示用户
+/// 去系统 TTS 设置里装语音，而不是让系统默认 locale 念出别国语言。
+class TTSVoiceUnavailableException extends TTSException {
+  TTSVoiceUnavailableException(super.message);
+}
+
+/// 引擎收下了这句话，但始终没有开口（onStart 没来，或后台合成报错）。
+///
+/// 典型是「voice 声称离线可用、实际要走网络」：Google TTS 的
+/// `ko-KR-language` 映射到 `ko-kr-x-ism-server`，离线合成失败只打系统日志，
+/// 不抛给调用方。点词发音必须把它翻成可见提示，否则就是「点了没声音」。
+class TTSPlaybackException extends TTSException {
+  TTSPlaybackException(super.message);
 }

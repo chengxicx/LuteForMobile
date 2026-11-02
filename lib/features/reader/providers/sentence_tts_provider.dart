@@ -130,13 +130,14 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
   /// 0.5 = Android 正常速度 —— 裸引擎的出厂默认在设备上体感太快，且设置
   /// 滑块对它不生效）+ 当前书的语言。与整页朗读播放器共用同一套装配
   /// （[prepareOnDeviceFallback]）。
-  Future<void> _prepareFallbackService() async {
+  Future<void> _prepareFallbackService(String text) async {
     final fallback = _onDeviceFallback;
     if (fallback == null) return;
     await prepareOnDeviceFallback(
       fallback,
       config: onDeviceConfigForFallback(ref.read(ttsSettingsProvider)),
       bookLanguageName: ref.read(currentBookProvider).languageName,
+      text: text,
     );
   }
 
@@ -178,10 +179,59 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       if (isPrimary) {
         await ref.read(ttsServiceProvider.notifier).ensureServiceReady();
       } else {
-        await _prepareFallbackService();
+        await _prepareFallbackService(text);
+      }
+      // 引擎的 speak() 只代表「收下了这句话」，合成在后台跑。voice 若是
+      // 云端档（Google TTS 的 ko-KR-language → ko-kr-x-ism-server），离线
+      // 会在后台失败且不抛错。开听必须在 speak 之前挂上，否则 onStart
+      // 可能比这里还早。
+      Future<void>? startGate;
+      if (service is OnDeviceTTSService) {
+        startGate = _awaitOnDeviceStart(service);
       }
       await service.speak(text);
+      if (startGate != null) await startGate;
       state = state.copyWith(status: SentenceTTSStatus.playing);
+    }
+  }
+
+  /// 引擎「收下了却不出声」时给用户看的那句话。
+  ///
+  /// release 包里 logcat 基本拿不到 debugPrint，界面上的提示是用户唯一能
+  /// 知道「为什么点了没声音」的地方，所以这句话要能直接指导下一步操作。
+  static const String _noAudioMessage =
+      'No audio was produced. This voice needs an internet connection, or '
+      'its voice pack is not installed. Add an offline voice for this '
+      'language in the system text-to-speech settings.';
+
+  /// 等本地引擎真的开口（onStart → [PlayerState.playing]）。
+  ///
+  /// 等不到就让这次发音失败并给出可见原因，而不是「点了没声音」。引擎若在
+  /// 合成阶段报错，[OnDeviceTTSService.engineErrorStream] 会先一步抛出。
+  Future<void> _awaitOnDeviceStart(OnDeviceTTSService service) async {
+    final completer = Completer<void>();
+    late StreamSubscription<PlayerState> stateSubscription;
+    late StreamSubscription<TTSException> errorSubscription;
+    stateSubscription = service.playerStateStream.listen((playerState) {
+      if (playerState == PlayerState.playing && !completer.isCompleted) {
+        completer.complete();
+      }
+    });
+    errorSubscription = service.engineErrorStream.listen((error) {
+      if (!completer.isCompleted) completer.completeError(error);
+    });
+    try {
+      await completer.future.timeout(const Duration(seconds: 4));
+    } on TimeoutException {
+      throw TTSPlaybackException(_noAudioMessage);
+    } on TTSException catch (error) {
+      // 引擎原文（如 `Error from TextToSpeech (speak) -4`）对用户没有意义，
+      // 换成能照着做的那句话；原文留给日志。
+      debugPrint('On-device TTS engine error during speak: ${error.message}');
+      throw TTSPlaybackException(_noAudioMessage);
+    } finally {
+      await stateSubscription.cancel();
+      await errorSubscription.cancel();
     }
   }
 
@@ -312,6 +362,27 @@ class SentenceTTSNotifier extends Notifier<SentenceTTSState> {
       if (e is TTSUnpronounceableFragmentException) {
         debugPrint('Skipping unpronounceable TTS fragment: $text');
         state = const SentenceTTSState();
+        return;
+      }
+      // 设备上没有这本书语言的语音：重试不会让语音包出现，直接提示。
+      if (e is TTSVoiceUnavailableException) {
+        debugPrint('TTS voice unavailable: ${e.message}');
+        state = state.copyWith(
+          status: SentenceTTSStatus.error,
+          errorMessage: e.message,
+          retryCount: 0,
+        );
+        return;
+      }
+      // 引擎收下了却始终没开口（多半是云端 voice 在离线时合成失败）：
+      // 同样不重试，直接把原因摆到用户面前。
+      if (e is TTSPlaybackException) {
+        debugPrint('TTS playback failed: ${e.message}');
+        state = state.copyWith(
+          status: SentenceTTSStatus.error,
+          errorMessage: e.message,
+          retryCount: 0,
+        );
         return;
       }
       debugPrint('TTS Error: $e');

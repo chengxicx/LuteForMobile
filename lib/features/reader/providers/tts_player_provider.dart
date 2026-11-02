@@ -403,7 +403,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
   ///
   /// 语言优先用 reader 直接传下来的那本书的语言：回退链上的名字可能正是
   /// 这个引擎被叫起来的原因（服务端念不出来 = 语言不对）。
-  Future<void> _prepareFallbackService() async {
+  Future<void> _prepareFallbackService(String? text) async {
     final fallback = _onDeviceFallback;
     if (fallback == null) return;
     await prepareOnDeviceFallback(
@@ -411,6 +411,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       config: onDeviceConfigForFallback(ref.read(ttsSettingsProvider)),
       bookLanguageName:
           _bookLanguageName ?? ref.read(currentBookProvider).languageName,
+      text: text,
     );
   }
 
@@ -840,7 +841,7 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
         if (state.status != TTSPlayerStatus.loading) {
           state = state.copyWith(status: TTSPlayerStatus.loading);
         }
-        await _prepareFallbackService();
+        await _prepareFallbackService(snippet.text);
         if (epoch != _transitionEpoch) return;
       }
 

@@ -1789,7 +1789,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
           onPointerUp: (event) {
             final start = _lastPointerDown;
             final startTime = _gestureStartTime;
-            _lastPointerDown = null;
+            // 这里刻意**不清** _lastPointerDown：词卡锚点要等页面的 click
+            // 穿过双击窗口（~250ms）才回到 Dart，清空后 _tapAnchor() 只能
+            // 退回整个章节视图 —— 卡片被摆到章节之外（真机表现为"点了没
+            // 卡"）。下一次 pointerDown 会覆盖它，脚本触发的点按也因此能
+            // 落回最近一次按压位置，比整章矩形更接近用户意图。
             _gestureStartTime = null;
             if (start == null || startTime == null) return;
             if (!_pagedActive || _multiSelectActive) return;
