@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection' show UnmodifiableListView;
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show Factory;
@@ -387,6 +388,19 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     setState(() => _chapterReady = true);
   }
 
+  /// 字号与分栏都推完再揭幕。
+  ///
+  /// ready 上报本身只说明章节挂好了，此刻页面还停在「未钉字号」的状态
+  /// （首帧护甲兜底之外的因素，比如页面自己的 boot 覆写）——先揭幕再推送
+  /// 会让读者在淡出的 220 ms 里看到整页大字弹回正常尺寸。两个推送在 ready
+  /// 时刻 host 必已存在（页面刚上报过），各是一次 JS 往返，揭幕只晚
+  /// ~100 ms；换来的是揭幕即所见：字号正确、已按屏分栏、页码已恢复。
+  Future<void> _revealAfterTypeReady() async {
+    await _pushTextStyle();
+    await _pushPagedMode();
+    _revealChapter();
+  }
+
   /// Where the first navigation goes.
   ///
   /// The offline pack wins whenever it holds this chapter, online or
@@ -487,6 +501,56 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     'div#thetext .epub-body ruby { font-size: inherit !important; }' +
     'div#thetext .epub-body rt { font-size: $rtPct% !important; }';
 })();''');
+  }
+
+  /// 首帧字号护甲：document start 注入的用户脚本。
+  ///
+  /// 揭幕与字号推送之间那几帧是「整页大字」的来源：章节挂载后、
+  /// [_applyTextStyle] 落地前，页面文字没有被 !important 钉住，font
+  /// boosting 按块逐层放大（实测 15px 渲染成 ~20px，见 [_pushRubySize]）。
+  /// 这个脚本在文档开始解析**之前**装上整套钉值样式，首绘即是最终字号：
+  ///
+  ///  * 字号从 Dart 烘进脚本（[EpubChapterView.textSize]），不读
+  ///    localStorage —— 离线包 origin 每次启动换端口，存储是空的；
+  ///  * `--lute-text-px` 定义在 `:root` 上：自定义属性的值是逐字替换，
+  ///    不受被 boosting 污染的祖先字号影响（同 [_applyTextStyle] 的
+  ///    「绝对锚点」），段落规则与 [_pushRubySize] 的完全一致；
+  ///  * 级联次序正好：author 样式表 !important 压过页面 boot 代码的普通
+  ///    内联声明；随后 App 每次加载都重推的内联 !important 再压过这里，
+  ///    字号仍以 App 为准。章内改字号走 didUpdateWidget 的内联推送，
+  ///    这份护甲只管每次导航的首绘（reload、离线兜底加载同样受益）。
+  ///
+  /// 固定版式章节走 fit/zoom 路径，不装（见 [_pushTextStyle]）。
+  String get _bootTypeScript {
+    final px = widget.textSize.clamp(1, 50).toStringAsFixed(2);
+    final lh = widget.lineSpacing.clamp(0.6, 3.0).toStringAsFixed(2);
+    final rt = context.eInk ? 65 : 50;
+    return """
+(function (px, lh, rt) {
+  var ID = 'lute-epub-boot-type';
+  function arm() {
+    if (document.getElementById(ID)) return true;
+    var host = document.head || document.documentElement;
+    if (!host) return false;
+    var s = document.createElement('style');
+    s.id = ID;
+    s.textContent =
+      ':root { --lute-text-px: ' + px + 'px; }' +
+      'html, body, #thetext, #thetext * { -webkit-text-size-adjust: none; text-size-adjust: none; }' +
+      'div#thetext .epub-body { font-size: ' + px + 'px !important; line-height: ' + lh + ' !important; }' +
+      'div#thetext .epub-body p { font-size: var(--lute-text-px, 1em) !important; line-height: ' + lh + ' !important; }' +
+      'div#thetext .epub-body span.textsentence,' +
+      'div#thetext .epub-body span.textitem { font-size: inherit !important; }' +
+      'div#thetext .epub-body ruby { font-size: inherit !important; }' +
+      'div#thetext .epub-body rt { font-size: ' + rt + '% !important; }';
+    host.appendChild(s);
+    return true;
+  }
+  /* document start 时 head 多半还没解析出来，挂在 documentElement 上
+     一样先于首绘；万一两者都还没有，等下一个 readiness 节点补挂。 */
+  if (!arm()) document.addEventListener('readystatechange', arm);
+})($px, $lh, $rt);
+""";
   }
 
   /// Swaps the page's theme stylesheet for the fresh CSS.
@@ -629,14 +693,15 @@ class _EpubChapterViewState extends State<EpubChapterView> {
           'mounted=${payload['mounted']} '
           'mismatch=${payload['mismatch']}',
         );
-        _revealChapter();
         // The chapter exists from here on, so this is the first moment the
-        // reading size can be stamped on it (see _pushTextStyle).
-        unawaited(_pushTextStyle().then((_) => _pushPagedMode()));
+        // reading size can be stamped on it (see _pushTextStyle) -- and the
+        // veil only lifts once that stamp has landed (see
+        // [_revealAfterTypeReady] for why reveal waits for the pushes).
+        _chapterMounted = true;
+        unawaited(_revealAfterTypeReady());
         // ... and the first moment the end-of-chapter block can be added
         // without the page counting its labels as chapter text (see
         // [_chapterMounted]).
-        _chapterMounted = true;
         unawaited(_pushChapterNav());
         // 章纸已挂载、look 与墨水屏纸张（onLoadStop 里推的）都已生效：
         // 这是第一次能读到「最终」内容底色的时刻，页码角标跟着它配色。
@@ -1741,6 +1806,16 @@ class _EpubChapterViewState extends State<EpubChapterView> {
           child: InAppWebView(
             key: ValueKey('epub-webview-${widget.bookId}-${widget.pageNum}'),
             initialUrlRequest: URLRequest(url: WebUri(_pageUrl)),
+            // 每次主框架导航（首发、reload、离线兜底）都在文档开始解析前
+            // 注入字号护甲；固定版式走 fit/zoom，不装。
+            initialUserScripts: widget.chapter.fixedLayout
+                ? null
+                : UnmodifiableListView<UserScript>([
+                    UserScript(
+                      source: _bootTypeScript,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
+                  ]),
             initialSettings: InAppWebViewSettings(
               javaScriptEnabled: true,
               // Zoom runs through the bridge (the page disables the
