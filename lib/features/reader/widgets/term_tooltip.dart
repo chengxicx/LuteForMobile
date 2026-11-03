@@ -50,6 +50,13 @@ class _AnimatedTermTooltip extends StatefulWidget {
   /// 卡片只画这一帧——墨水屏上打开的卡片不重绘。Null 隐藏释义段。
   final String? dictGloss;
 
+  /// 拆好的义项（按词典原始顺序）。有值时卡片默认只显示第一条，其余
+  /// 用「1/N」左右箭头切换；为空时才回落 [dictGloss] 的整段文本。
+  final List<String> dictSenses;
+
+  /// 用户在卡片里切到别的义项时回调，外层据此记住「建卡用哪一条」。
+  final void Function(int index, String text)? onDictSenseSelected;
+
   /// False greys the Grammar button out: the page pre-analysis covered this
   /// sentence and matched nothing, so tapping would only reach a guaranteed
   /// empty page.  The card is static once shown, so the state never flips
@@ -65,6 +72,8 @@ class _AnimatedTermTooltip extends StatefulWidget {
     this.onGrammar,
     this.onDictLookup,
     this.dictGloss,
+    this.dictSenses = const [],
+    this.onDictSenseSelected,
     this.grammarEnabled = true,
   });
 
@@ -114,6 +123,8 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
       onGrammar: widget.onGrammar,
       onDictLookup: widget.onDictLookup,
       dictGloss: widget.dictGloss,
+      dictSenses: widget.dictSenses,
+      onDictSenseSelected: widget.onDictSenseSelected,
       grammarEnabled: widget.grammarEnabled,
     );
 
@@ -147,6 +158,8 @@ class _TooltipContent extends ConsumerWidget {
   final VoidCallback? onGrammar;
   final VoidCallback? onDictLookup;
   final String? dictGloss;
+  final List<String> dictSenses;
+  final void Function(int index, String text)? onDictSenseSelected;
   final bool grammarEnabled;
 
   const _TooltipContent({
@@ -156,6 +169,8 @@ class _TooltipContent extends ConsumerWidget {
     this.onGrammar,
     this.onDictLookup,
     this.dictGloss,
+    this.dictSenses = const [],
+    this.onDictSenseSelected,
     this.grammarEnabled = true,
   });
 
@@ -309,26 +324,34 @@ class _TooltipContent extends ConsumerWidget {
                 ),
               ],
               // 本地词典释义（阶段3a）：微底色块与正文区分，弹出前查好
-              // 一次带入，卡片单帧绘制。eink 全不透明、行数放宽。
-              if (dictGloss != null) ...[
+              // 一次带入。多义项时默认只显示第一条，用 1/N 左右箭头切换——
+              // 与 web 词卡「先给第一个义项，其余按需看」一致，卡片高度也
+              // 不会随义项数量线性增长。
+              if (dictSenses.isNotEmpty || dictGloss != null) ...[
                 const SizedBox(height: 8),
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(8),
+                  padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
                   decoration: BoxDecoration(
                     color: context.appColorScheme.background.surfaceVariant
                         .withValues(alpha: eink ? 1.0 : 0.6),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: Text(
-                    dictGloss!,
-                    style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                          color: Theme.of(context).colorScheme.onSurface
-                              .withValues(alpha: eink ? 1.0 : 0.8),
+                  child: dictSenses.isNotEmpty
+                      ? _DictSenseBox(
+                          senses: dictSenses,
+                          eink: eink,
+                          onSelected: onDictSenseSelected,
+                        )
+                      : Text(
+                          dictGloss!,
+                          style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                                color: Theme.of(context).colorScheme.onSurface
+                                    .withValues(alpha: eink ? 1.0 : 0.8),
+                              ),
+                          maxLines: eink ? 12 : 8,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                    maxLines: eink ? 12 : 8,
-                    overflow: TextOverflow.ellipsis,
-                  ),
                 ),
               ],
               if (termTooltip.parents.isNotEmpty) ...[
@@ -513,6 +536,8 @@ class TermTooltipClass {
     VoidCallback? onGrammar,
     VoidCallback? onDictLookup,
     String? dictGloss,
+    List<String> dictSenses = const [],
+    void Function(int index, String text)? onDictSenseSelected,
     bool grammarEnabled = true,
   }) {
     close();
@@ -536,6 +561,8 @@ class TermTooltipClass {
           onGrammar: onGrammar,
           onDictLookup: onDictLookup,
           dictGloss: dictGloss,
+          dictSenses: dictSenses,
+          onDictSenseSelected: onDictSenseSelected,
           grammarEnabled: grammarEnabled,
         ),
       ),
@@ -593,6 +620,8 @@ class TermTooltipClass {
               onGrammar: onGrammar,
               onDictLookup: onDictLookup,
               dictGloss: dictGloss,
+              dictSenses: dictSenses,
+              onDictSenseSelected: onDictSenseSelected,
               grammarEnabled: grammarEnabled,
             ),
           ),
@@ -646,5 +675,116 @@ class TermTooltipClass {
     _dismissTimer = Timer(const Duration(seconds: 10), () {
       close();
     });
+  }
+}
+
+/// 多义项释义块：默认只显示第一条，左右箭头切换。
+///
+/// 卡片本身是单帧绘制，但切换是用户主动操作，重绘这一小块是预期的；
+/// 义项文本仍然限行，卡片高度不会因为词典里有 10 条释义而失控。
+class _DictSenseBox extends StatefulWidget {
+  final List<String> senses;
+  final bool eink;
+  final void Function(int index, String text)? onSelected;
+
+  const _DictSenseBox({
+    required this.senses,
+    required this.eink,
+    this.onSelected,
+  });
+
+  @override
+  State<_DictSenseBox> createState() => _DictSenseBoxState();
+}
+
+class _DictSenseBoxState extends State<_DictSenseBox> {
+  int _index = 0;
+
+  void _move(int delta) {
+    final next = _index + delta;
+    if (next < 0 || next >= widget.senses.length) return;
+    setState(() => _index = next);
+    widget.onSelected?.call(next, widget.senses[next]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final senses = widget.senses;
+    final muted = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: widget.eink ? 1.0 : 0.65);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (senses.length > 1) ...[
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _arrow(
+                context,
+                Icons.chevron_left,
+                '上一条义项',
+                enabled: _index > 0,
+                onTap: () => _move(-1),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  '${_index + 1} / ${senses.length}',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall!.copyWith(color: muted),
+                ),
+              ),
+              _arrow(
+                context,
+                Icons.chevron_right,
+                '下一条义项',
+                enabled: _index < senses.length - 1,
+                onTap: () => _move(1),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+        ],
+        Text(
+          senses[_index],
+          style: Theme.of(context).textTheme.bodySmall!.copyWith(
+            color: Theme.of(context).colorScheme.onSurface.withValues(
+              alpha: widget.eink ? 1.0 : 0.8,
+            ),
+          ),
+          maxLines: widget.eink ? 5 : 4,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+
+  Widget _arrow(
+    BuildContext context,
+    IconData icon,
+    String label, {
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    final color = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: enabled ? 1.0 : 0.25);
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: enabled ? onTap : null,
+        child: SizedBox(
+          width: 32,
+          height: 32,
+          child: Center(child: Icon(icon, size: 20, color: color)),
+        ),
+      ),
+    );
   }
 }

@@ -29,6 +29,7 @@ import '../../../shared/providers/server_status_provider.dart';
 import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/cache/term_sync_service.dart';
 import '../../../core/dict/dict_repository.dart';
+import '../../../core/dict/gloss_format.dart';
 import '../../../core/outbox/providers/outbox_provider.dart';
 import '../models/text_item.dart';
 import '../models/paragraph.dart';
@@ -233,6 +234,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// so three long presses end in three identical cards.  Same rule as
   /// _tooltipSeq above -- only the newest gesture gets to draw.
   int _termFormSeq = 0;
+
+  /// 词卡里切过的义项（词 → 义项文本）。
+  ///
+  /// 建卡时如果词条还没有翻译，就用这里记住的选择；没切过才回落到
+  /// 词典第一条。这样「在词卡里切到第 2 条 → 长按建卡」拿到的就是
+  /// 切过的那一条，而不是又回到第 1 条。
+  final Map<String, String> _dictSenseChoices = {};
 
   /// 实体键的焦点节点。从别的屏（设置等）回到阅读屏时要把焦点收回来 ——
   /// IndexedStack 常驻其它屏，那里的输入框（如设置页的 Server Host）会
@@ -2505,16 +2513,20 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         // 绘制，墨水屏不重绘）。按当前书的语言查对应词典库；该语言没装
         // 专属词典时，只有日语书才回落旧版共享日汉库（其他语言如实显示
         // 未选用）。查询链：原文 → 读音 → 去敬语前缀。
+        // 与 web 的 resolved_gloss 对齐：裸写法只是 "See also" 指针时
+        // 顺着第一条指针取到真正有义项的条目，再按 parse_gloss 拆义项。
         String? dictGloss;
+        var dictSenses = const <String>[];
         try {
           dictGloss = await ref
               .read(dictRepositoryProvider)
-              .lookupWithReading(
+              .resolvedGlossWithReading(
                 tooltip.term,
                 tooltip.romanization,
                 langId: langId,
                 languageName: ref.read(currentBookProvider).languageName,
               );
+          if (dictGloss != null) dictSenses = glossSenses(dictGloss);
         } catch (_) {
           dictGloss = null;
         }
@@ -2559,7 +2571,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             onDictLookup: tooltip.term.isEmpty
                 ? null
                 : () => _handleDictLookup(tooltip.term),
-            dictGloss: dictGloss,
+            dictGloss: dictSenses.isEmpty ? dictGloss : null,
+            dictSenses: dictSenses,
+            onDictSenseSelected: (_, text) =>
+                _dictSenseChoices[tooltip.term] = text,
             grammarEnabled: grammarPresence != GrammarPresence.no,
           );
         }
@@ -2775,23 +2790,59 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               termId: wordId,
               statusClass: item.statusClass,
             );
+        final prefilled = await _prefillTranslationFromDict(fallback);
         if (!mounted || seq != _termFormSeq) return;
         _showTermForm(
-          fallback,
+          prefilled,
           sentence: _extractSentence(item),
           initialReaderStatus: readerStatus,
           autoSaveOnClose: false,
         );
         return;
       }
+      final prefilled = await _prefillTranslationFromDict(termForm);
+      if (!mounted || seq != _termFormSeq) return;
       _showTermForm(
-        termForm,
+        prefilled,
         sentence: _extractSentence(item),
         initialReaderStatus: readerStatus,
       );
     } catch (e) {
       ApiLogger.logError('_openTermForm', e, details: 'wordId=$wordId');
     }
+  }
+
+  /// 建卡预填：已有翻译不动；词卡里切过义项就用那一条；否则取本地
+  /// 词典的第一个义项（与 web 的 `first_sense` 同一行）。
+  ///
+  /// 词典没装、语言不匹配、或词不在词典里时原样返回——表单照常打开，
+  /// 翻译位保持空白，不阻塞建卡。
+  Future<TermForm> _prefillTranslationFromDict(TermForm form) async {
+    if ((form.translation ?? '').trim().isNotEmpty) return form;
+    final chosen = _dictSenseChoices[form.term];
+    if (chosen != null && chosen.trim().isNotEmpty) {
+      return form.copyWith(translation: chosen);
+    }
+    String? gloss;
+    try {
+      gloss = await ref
+          .read(dictRepositoryProvider)
+          .resolvedGlossWithReading(
+            form.term,
+            form.romanization,
+            langId: form.languageId,
+            languageName: ref.read(currentBookProvider).languageName,
+          );
+    } catch (_) {
+      gloss = null;
+    }
+    final auto = autoFillTranslation(
+      existing: form.translation,
+      chosen: chosen,
+      gloss: gloss,
+    );
+    if (auto == null || auto.trim().isEmpty) return form;
+    return form.copyWith(translation: auto);
   }
 
   void _handleMultiTermSelectionStart() {
@@ -2855,7 +2906,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               statusClass: selectedItems.first.statusClass,
             );
     if (!mounted) return;
-    _showTermForm(form, sentence: _extractSentence(selectedItems.first));
+    final prefilled = await _prefillTranslationFromDict(form);
+    if (!mounted) return;
+    _showTermForm(prefilled, sentence: _extractSentence(selectedItems.first));
   }
 
   void _handleTripleTap(TextItem item) async {

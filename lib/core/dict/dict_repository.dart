@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
+import 'gloss_format.dart';
 import 'mdx_reader.dart';
 
 /// 导入结果。比 `bool` 多带一条给用户看的理由——导入失败的原因差别很大
@@ -506,6 +507,92 @@ class DictRepository {
     } catch (e) {
       return null;
     }
+  }
+
+  /// 与 web 端 `lute/dict/service.py: resolved_gloss` 对齐：词条只是
+  /// 「See also: 別読み」指针时，顺着**第一个**指针找到真正有义项的条目。
+  ///
+  /// MOJi 辞書 等词典把同一个词的每个读音各建一条：裸写法的条目往往只有
+  /// 几行 "See also: 所【どころ◎③】"，没有任何释义。web 词卡在这种情况下
+  /// 会跳去第一条指针的条目，mobile 之前直接把那三行指针平铺出来，看起来
+  /// 就是「没有释义」。
+  ///
+  /// 只跟第一个指针（其余是别的读音，选哪一个是读者的事）；最多跟
+  /// [_xrefFollowDepth] 跳，指针指向指针就停。返回值已剥掉重复词头。
+  Future<String?> resolvedGlossWithReading(
+    String term,
+    String? reading, {
+    int? langId,
+    String? languageName,
+  }) async {
+    if (langId == null) return null;
+    Database db;
+    try {
+      db = await _openFor(langId, languageName: languageName);
+    } catch (_) {
+      return null;
+    }
+
+    var current = term;
+    String? currentReading = reading;
+    // 初始查询与 web 一样：原文优先，读音只作后备。
+    var preferReading = false;
+    String? stripped;
+    final seen = <String>{};
+
+    for (var hop = 0; hop < _xrefFollowDepth; hop++) {
+      final candidates = preferReading && (currentReading ?? '').trim().isNotEmpty
+          ? homographCandidates(current, currentReading)
+          : lookupCandidates(current, currentReading);
+      if (candidates.isEmpty) return hop == 0 ? null : stripped;
+      String? gloss;
+      try {
+        gloss = await _queryTerm(db, candidates, current);
+      } catch (_) {
+        return hop == 0 ? null : stripped;
+      }
+      if (gloss == null || gloss.isEmpty) {
+        return hop == 0 ? null : stripped;
+      }
+      stripped = gloss;
+      // 有义项就到此为止——这就是「第一个义项」的来源。
+      if (glossSenses(stripped).isNotEmpty) return stripped;
+      final xrefsHere = glossXrefs(stripped);
+      if (xrefsHere.isEmpty) return stripped;
+      final pointer = xrefsHere.first;
+      final key = '${pointer.text}\u0000${pointer.reading ?? ''}';
+      if (!seen.add(key)) return stripped;
+      current = pointer.text;
+      currentReading = pointer.reading;
+      // 指针点名的读音锁定一个同形词，复合键优先于裸词条。
+      preferReading = (currentReading ?? '').trim().isNotEmpty;
+    }
+    return stripped;
+  }
+
+  /// 跟随 See also 指针的深度，与 web 端 `_XREF_FOLLOW_DEPTH` 相同。
+  static const int _xrefFollowDepth = 3;
+
+  /// 与 web 端 `_homograph_candidates` 对齐：指针带了读音时先试
+  /// 「词【读音】」复合键，再试裸词条——否则会查回用户刚离开的那张
+  /// 指针列表本身。
+  static List<String> homographCandidates(String term, String? reading) {
+    final list = <String>[];
+    void add(String word) {
+      final w = normalizeWord(word);
+      if (w.isNotEmpty && !list.contains(w)) list.add(w);
+    }
+
+    final r = normalizeWord(reading ?? '');
+    final stripped = r.replaceFirst(RegExp(r'[①-⑳]+$'), '');
+    for (final cand in [r, stripped]) {
+      if (cand.isEmpty) continue;
+      add('$term【$cand】');
+      add('$term($cand)');
+      add(cand);
+    }
+    add(term);
+    return list;
   }
 
   /// 按**池内文件名**查询，与服务器 `/read/localdict/<db>/<text>` 的"按文件
