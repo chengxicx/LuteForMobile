@@ -1232,6 +1232,35 @@ class HtmlParser {
         .toList();
   }
 
+  /// 子用户（role=user）的语言来源兜底。
+  ///
+  /// `/language/index` 带 `@admin_only_if_multiuser`：非 admin 的 HTML 请求
+  /// 被 302 回首页，解析结果是 0 条。`/book/new` 没有这个门禁，而它的
+  /// WTForms 语言下拉（`select#language_id`）装着同一份
+  /// `language_choices(include_inactive=False)`，即 (id, 名称) 与语言页一致
+  /// 且同样排除冻结语言。
+  ///
+  /// 页面里没有这个下拉时返回空表，由调用方决定下一步。
+  List<Language> parseLanguagesFromBookNew(String htmlContent) {
+    final document = html_parser.parse(htmlContent);
+    final select =
+        document.querySelector('select#language_id') ??
+        document.querySelector('select[name="language_id"]');
+    if (select == null) return const [];
+
+    final result = <Language>[];
+    final seen = <int>{};
+    for (final option in select.querySelectorAll('option')) {
+      final id = int.tryParse(option.attributes['value'] ?? '');
+      final name = option.text.trim();
+      if (id == null || id <= 0 || name.isEmpty) continue;
+      if (!seen.add(id)) continue;
+      // 该下拉来自 include_inactive=False，列出的都是未冻结语言。
+      result.add(Language(id: id, name: name, isActive: true));
+    }
+    return result;
+  }
+
   List<Language> parseLanguagesWithIds(String htmlContent) {
     final document = html_parser.parse(htmlContent);
 

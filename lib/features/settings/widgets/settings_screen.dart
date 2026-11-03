@@ -16,6 +16,7 @@ import '../../../shared/providers/language_data_provider.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../providers/settings_provider.dart';
 import '../../books/providers/books_provider.dart';
+import '../../reader/providers/reader_provider.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../models/settings.dart';
 import '../models/tts_settings.dart';
@@ -185,6 +186,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             _authPasswordController.text,
           );
       await ref.read(settingsProvider.notifier).updateLocalUrl(formUrl);
+      // Same-URL account switch (A -> B): updateLocalUrl takes the no-op
+      // branch, so the previous account's shelf filter/tooltip memory must be
+      // dropped explicitly.
+      await ref.read(settingsProvider.notifier).clearLanguageFilter();
+      ref.read(readerProvider.notifier).clearPageData();
       // Other users may have different books/terms: drop stale caches.
       await ref.read(cacheManagerProvider).clearServerDependentCaches();
       await ref.read(settingsProvider.notifier).clearCurrentBook();
@@ -200,6 +206,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (mounted) {
       await ref.read(cacheManagerProvider).clearServerDependentCaches();
       await ref.read(settingsProvider.notifier).clearCurrentBook();
+      await ref.read(settingsProvider.notifier).clearLanguageFilter();
+      ref.read(readerProvider.notifier).clearPageData();
       ref.read(booksProvider.notifier).loadBooks();
     }
   }
@@ -1903,7 +1911,12 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
         ref.read(languageListProvider).value ?? const <Language>[];
     final langId = _effectiveLangId(languages);
     if (langId == null) {
-      setState(() => _error = 'Language list unavailable — reload and retry');
+      setState(
+        () => _error =
+            'Language list unavailable. If this account has no language-'
+            'management permission, dictionary selection stays disabled; '
+            'ask the server admin.',
+      );
       return;
     }
     setState(() {

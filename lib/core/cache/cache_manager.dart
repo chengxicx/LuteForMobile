@@ -17,7 +17,8 @@ import '../../features/stats/repositories/stats_repository.dart';
 /// - **页面/词条类**（[clearPageCaches]）：可再生，体积小，清掉只是下次打开
 ///   重新拉一次。登录/登出、用户想强制刷新页面内容时都走它。
 /// - **音频**（[clearAudioCache]）：离线播放与影子跟读的根基，一本 6–64MB，
-///   清掉就是重新走一遍流量。只有用户明确要求时才清。
+///   清掉就是重新走一遍流量。账号隔离场景（登录/登出/换服务器）必须清：
+///   bookId 是各账号书架里的编号，留着会把 A 的音频放给 B。
 class CacheManager {
   final BooksCacheService _booksCache;
   final TermCacheService _termCache;
@@ -76,11 +77,15 @@ class CacheManager {
     await _audioCache.clearAll();
   }
 
-  /// 登录/登出用：语义与 [clearPageCaches] 相同。
+  /// 登录/登出/换服务器用：页面缓存与音频缓存都清。
   ///
-  /// 音频缓存刻意**不在这里清**：它是按 bookId 存的，登录态变化不会让它变成
-  /// 错的内容，而重下几十 MB 的代价用户要自己付。
-  Future<void> clearServerDependentCaches() => clearPageCaches();
+  /// 音频缓存以前刻意留着（按 bookId 存，重下几十 MB 代价高）。但 bookId 是
+  /// **每个账号自己书架里的编号**：B 账号的 book 5 与 A 账号的 book 5 是两本
+  /// 不同的书，留着就是让 B 播 A 的音频。账号隔离优先于流量，登录态变化时
+  /// 一并清掉，下次播放重新下载。
+  Future<void> clearServerDependentCaches() async {
+    await Future.wait([clearPageCaches(), clearAudioCache()]);
+  }
 
   /// 两类都清。用户显式要求「全清」时才用。
   Future<void> clearAllCaches() async {

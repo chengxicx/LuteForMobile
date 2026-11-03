@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../books/models/book.dart';
 import '../../books/providers/books_provider.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../../core/network/session_manager.dart';
 
 @immutable
 class CurrentBookState {
@@ -88,13 +89,30 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
   /// 成员书、离线导入书都不在 active/archived 列表里），页面 token 流也不带
   /// 语言，于是离线点词时 langId 为 null，本地词典直接「查不到」。
   /// 读到哪本书、什么语言，是上一会话就知道的事，落盘备查。
-  static String _langIdKey(int bookId) => 'book_lang_id_$bookId';
-  static String _langNameKey(int bookId) => 'book_lang_name_$bookId';
+  ///
+  /// key 带账号作用域（`@<serverUrl+username>`）：bookId 是各账号自己书架里的
+  /// 编号，A 的 book 7 与 B 的 book 7 不是同一本书。旧版无作用域的 key 会在
+  /// 首次读取时迁移到当前账号（读旧 key → 写新 key → 删旧 key），当前账号
+  /// 已有的书语言不会丢。
+  static String _langIdBase(int bookId) => 'book_lang_id_$bookId';
+  static String _langNameBase(int bookId) => 'book_lang_name_$bookId';
+  static String _langIdKey(int bookId) =>
+      '${_langIdBase(bookId)}@${SessionManager.cacheScope}';
+  static String _langNameKey(int bookId) =>
+      '${_langNameBase(bookId)}@${SessionManager.cacheScope}';
 
   Future<int?> cachedLangId(int bookId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      return prefs.getInt(_langIdKey(bookId));
+      final scoped = prefs.getInt(_langIdKey(bookId));
+      if (scoped != null) return scoped;
+      final legacy = prefs.getInt(_langIdBase(bookId));
+      if (legacy != null) {
+        await prefs.setInt(_langIdKey(bookId), legacy);
+        await prefs.remove(_langIdBase(bookId));
+        return legacy;
+      }
+      return null;
     } catch (_) {
       return null;
     }
@@ -103,8 +121,17 @@ class CurrentBookNotifier extends Notifier<CurrentBookState> {
   Future<String?> cachedLanguageName(int bookId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final name = prefs.getString(_langNameKey(bookId))?.trim();
-      return (name == null || name.isEmpty) ? null : name;
+      var name = prefs.getString(_langNameKey(bookId));
+      if (name == null || name.trim().isEmpty) {
+        final legacy = prefs.getString(_langNameBase(bookId));
+        if (legacy != null && legacy.trim().isNotEmpty) {
+          await prefs.setString(_langNameKey(bookId), legacy);
+          await prefs.remove(_langNameBase(bookId));
+          name = legacy;
+        }
+      }
+      final trimmed = name?.trim();
+      return (trimmed == null || trimmed.isEmpty) ? null : trimmed;
     } catch (_) {
       return null;
     }

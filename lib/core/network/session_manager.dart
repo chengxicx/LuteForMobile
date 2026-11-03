@@ -5,6 +5,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../shared/providers/server_status_provider.dart';
+
 /// Thrown when the server redirects a request to /login, i.e. multi-user
 /// mode is enabled and the client has no valid session cookie.
 class ServerLoginRequiredException implements Exception {
@@ -73,6 +75,23 @@ class SessionManager {
   static bool get isLoggedIn => _status == SessionStatus.loggedIn;
   static String get username => _luteUsername;
   static String get serverUrl => _serverUrl;
+
+  /// Who the on-device data belongs to: `serverUrl|username`.
+  ///
+  /// Used by the outbox (an intent recorded under one identity must not be
+  /// replayed under another) and by [cacheScope].
+  static String get identity => '$_serverUrl|$_luteUsername';
+
+  /// Filesystem/prefs-safe namespace for per-account cache keys.
+  ///
+  /// Single-user (not logged in) resolves to the server URL alone, so the
+  /// anonymous case keeps working and a server change still switches scope.
+  static String get cacheScope {
+    final raw = identity;
+    final sanitized = raw.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-');
+    final trimmed = sanitized.replaceAll(RegExp(r'-+'), '-');
+    return trimmed.isEmpty ? 'default' : trimmed;
+  }
   static bool get hasRememberedCredentials =>
       _luteUsername.isNotEmpty && _lutePassword.isNotEmpty;
 
@@ -129,6 +148,9 @@ class SessionManager {
     _cookie = '';
     _status = url.isEmpty ? SessionStatus.unknown : SessionStatus.loggedOut;
     _persistCookie();
+    // A different server answers different questions: the old reachability
+    // verdict (and the old account's cache scope) must not carry over.
+    ServerStatusManager.resetForIdentityChange();
     _notify();
   }
 
@@ -201,6 +223,10 @@ class SessionManager {
             '${check.message}',
           );
         }
+        // `/info` answered 200: the server is up *and* the session is good.
+        // Without this a cold start that began offline stays flagged
+        // unreachable even after a successful login.
+        ServerStatusManager.markSuccess();
         _notify();
         return LoginResult.ok();
       }
@@ -242,6 +268,9 @@ class SessionManager {
     _cookie = '';
     _lutePassword = '';
     _status = _serverUrl.isEmpty ? SessionStatus.unknown : SessionStatus.loggedOut;
+    // Logging out is an identity change: the next account must not inherit
+    // this account's reachability verdict.
+    ServerStatusManager.resetForIdentityChange();
     await _persistLogin();
     _notify();
   }

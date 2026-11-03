@@ -111,6 +111,7 @@ void main() {
       final service = OutboxService(
         store: InMemoryOutboxStore(),
         content: _FakeContent(),
+        identity: () => 'acct',
       );
 
       service.seed({
@@ -119,7 +120,9 @@ void main() {
       });
 
       expect(service.intents, hasLength(1));
-      expect(service.intents.single.coalesceKey, 'term:8');
+      // Legacy owner-less records are adopted into the starting identity and
+      // moved to the identity-prefixed key.
+      expect(service.intents.single.coalesceKey, 'acct|term:8');
     });
   });
 
@@ -334,6 +337,7 @@ void main() {
       final service = OutboxService(
         store: InMemoryOutboxStore(),
         content: content,
+        identity: () => 'acct',
       );
 
       await service.enqueueTermStatus(7, '3', formData: snapshot);
@@ -341,7 +345,7 @@ void main() {
       expect(service.intents.single.failed, isTrue);
 
       content.failWith = null;
-      await service.retry('term:7');
+      await service.retry('acct|term:7');
       await service.flush();
 
       expect(service.intents, isEmpty);

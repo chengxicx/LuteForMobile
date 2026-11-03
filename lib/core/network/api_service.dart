@@ -144,11 +144,47 @@ class ApiService {
             // Server answered; the session just needs a re-login.
             return handler.next(error);
           }
-          ServerStatusManager.markError();
+          // Only a *connection* failure says "server unreachable".  A 4xx/5xx
+          // means the server answered -- switching the whole app into its
+          // offline fallbacks because one endpoint rejected a payload is how
+          // an ordinary validation error used to disable the network paths.
+          //
+          // The two opt-out flags are deliberately excluded as well:
+          //  * `failFast` (term-form GET): its 2s/3s budgets exist so an
+          //    airplane-mode long-press degrades in <3s.  Charging that tight
+          //    timeout to global reachability would flip the app offline on a
+          //    merely slow link;
+          //  * `noQueue` (page content / shelf reads): the queue's own health
+          //    probe is the authority for these, and it already marks the
+          //    error when the probe really fails.
+          if (error.requestOptions.extra['failFast'] == true ||
+              error.requestOptions.extra['noQueue'] == true) {
+            return handler.next(error);
+          }
+          if (_isConnectionFailure(error)) {
+            ServerStatusManager.markError();
+          }
           return handler.next(error);
         },
       ),
     );
+  }
+
+  /// Whether [error] means "could not talk to the server" rather than "the
+  /// server answered and refused the request".
+  static bool _isConnectionFailure(DioException error) {
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.badResponse:
+      case DioExceptionType.badCertificate:
+      case DioExceptionType.cancel:
+      case DioExceptionType.unknown:
+        return false;
+    }
   }
 
   /// Attaches the multi-user session cookie and Basic Auth headers to every

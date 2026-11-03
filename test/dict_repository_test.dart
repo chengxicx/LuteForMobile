@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:song_mobile/core/dict/dict_repository.dart';
+import 'package:song_mobile/core/network/session_manager.dart';
 
 // 本地词典的查询候选链：词典键是假名读音且不带敬语前缀（小学馆V2日汉
 // 实测：おひさしぶり 在键里是 ひさしぶり），所以查询按 原文 → 读音 →
@@ -98,9 +99,20 @@ void main() {
   // 这两个纯函数决定持久化 key 与池内文件名，改名会让老用户的选择
   //  silently 失效，锁住。
   group('selectionKey', () {
-    test('按语言 id 各存一份', () {
-      expect(DictRepository.selectionKey(13), 'dict_for_lang_13');
-      expect(DictRepository.selectionKey(1), 'dict_for_lang_1');
+    test('按语言 id 各存一份，并带当前账号作用域', () {
+      expect(DictRepository.legacySelectionKey(13), 'dict_for_lang_13');
+      expect(
+        DictRepository.selectionKey(13),
+        'dict_for_lang_13@${SessionManager.cacheScope}',
+      );
+      expect(
+        DictRepository.selectionKey(1),
+        'dict_for_lang_1@${SessionManager.cacheScope}',
+      );
+      expect(
+        DictRepository.selectionKey(13),
+        isNot(DictRepository.selectionKey(1)),
+      );
     });
   });
 

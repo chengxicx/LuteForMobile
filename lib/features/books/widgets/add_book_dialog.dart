@@ -187,7 +187,12 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
 
     final languageId = _selectedLanguageId;
     if (languageId == null || languageId <= 0) {
-      _showError('Please select a language.');
+      _showError(
+        _languages.isEmpty
+            ? 'No languages available. This account may not have language-'
+                      'management permission - ask the server admin.'
+            : 'Please select a language.',
+      );
       return;
     }
 

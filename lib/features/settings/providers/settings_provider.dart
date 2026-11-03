@@ -283,10 +283,20 @@ class SettingsNotifier extends Notifier<Settings> {
     if (previousServerUrl != state.serverUrl) {
       await cacheManager.clearServerDependentCaches();
       await clearCurrentBook();
+      await clearLanguageFilter();
       ref.read(readerProvider.notifier).clearPageData();
     } else {
       await cacheManager.clearDictionaryPreferences();
     }
+  }
+
+  /// 账号/服务器变化：语言筛选是在**上一个账号书架**里挑的，带过去只会
+  /// 筛出一本不存在的书（或被后面 book_filter_bar 自动清掉）。登出、换号、
+  /// 换服务器时直接清空。
+  Future<void> clearLanguageFilter() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keyLanguageFilter);
+    state = state.copyWith(clearLanguageFilter: true);
   }
 
   Future<void> updateBasicAuth(String user, String password) async {

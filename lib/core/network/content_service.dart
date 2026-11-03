@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/dom.dart' as html;
 import '../../core/logger/api_logger.dart';
@@ -1137,7 +1138,22 @@ class ContentService {
     // Fetch from API and cache the result
     final response = await _apiService.getLanguages();
     final htmlContent = response.data ?? '';
-    final languages = parser.parseLanguagesWithIds(htmlContent);
+    var languages = parser.parseLanguagesWithIds(htmlContent);
+
+    // `/language/index` is admin-only on a multiuser server: a sub-user's
+    // request is redirected to the home page, which has no language table, so
+    // the parse above yields nothing.  `/book/new` is readable by every role
+    // and its form carries the same language list -- use it as the fallback.
+    if (languages.isEmpty) {
+      try {
+        final bookNew = await _apiService.getBookNew();
+        languages = parser.parseLanguagesFromBookNew(bookNew.data ?? '');
+      } catch (e) {
+        // Keep the empty primary result; the caller shows the "no language
+        // management permission" hint instead of a network error.
+        debugPrint('language fallback via /book/new failed: $e');
+      }
+    }
 
     _cachedLanguages = languages;
     _languagesCacheTime = DateTime.now();

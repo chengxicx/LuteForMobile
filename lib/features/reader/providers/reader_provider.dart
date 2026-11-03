@@ -151,6 +151,10 @@ class ReaderNotifier extends Notifier<ReaderState> {
   ReaderRepository get _repository => ref.read(readerRepositoryProvider);
 
   void clearPageData() {
+    // Tooltips are keyed by term id only, and term ids are server-global --
+    // an account switch must not leave the previous account's card in memory
+    // (it would be served before the disk/network layers even get a chance).
+    _tooltipMemory.clear();
     state = const ReaderState();
   }
 

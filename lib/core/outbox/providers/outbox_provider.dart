@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../shared/providers/network_providers.dart';
 import '../../../shared/providers/server_status_provider.dart';
+import '../../network/session_manager.dart';
 import '../../../features/reader/providers/reader_provider.dart';
 import '../../providers/initial_providers.dart';
 import '../outbox_service.dart';
@@ -85,6 +86,11 @@ class OutboxNotifier extends Notifier<OutboxState> {
 
     ServerStatusManager.addListener(onReachabilityChanged);
 
+    // Identity change (A -> B, login/logout): the queue view must switch to
+    // the new account's intents immediately instead of showing A's text.
+    void onSessionChanged() => service.onIdentityChanged();
+    SessionManager.addListener(onSessionChanged);
+
     _retryTimer = Timer.periodic(_outboxRetryInterval, (_) {
       if (service.intents.isEmpty) return;
       // No reachability check on purpose: see [_outboxRetryInterval].  A
@@ -99,6 +105,7 @@ class OutboxNotifier extends Notifier<OutboxState> {
       _retryTimer?.cancel();
       _retryTimer = null;
       ServerStatusManager.removeListener(onReachabilityChanged);
+      SessionManager.removeListener(onSessionChanged);
       service.onChanged = null;
       service.onSent = null;
     });

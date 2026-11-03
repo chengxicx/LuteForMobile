@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../network/session_manager.dart';
 import 'gloss_format.dart';
 import 'mdx_reader.dart';
 
@@ -116,7 +117,29 @@ class DictRepository {
   DictRepository();
 
   /// 各语言"选用词典"的持久化 key。
-  static String selectionKey(int langId) => 'dict_for_lang_$langId';
+  ///
+  /// 带账号作用域（`@<serverUrl+username>`）：langId 是服务器语言 id，同一台
+  /// 设备上换账号不该继承上一个账号的选用。旧版无作用域的 key 由
+  /// [_migratedSelection] 在首次读取时迁移并删除。
+  static String legacySelectionKey(int langId) => 'dict_for_lang_$langId';
+  static String selectionKey(int langId) =>
+      '${legacySelectionKey(langId)}@${SessionManager.cacheScope}';
+
+  /// 读出当前账号的选用；旧版 key 存在时迁移到当前作用域。
+  Future<String?> _migratedSelection(
+    SharedPreferences prefs,
+    int langId,
+  ) async {
+    final scoped = prefs.getString(selectionKey(langId));
+    if (scoped != null && scoped.isNotEmpty) return scoped;
+    final legacy = prefs.getString(legacySelectionKey(langId));
+    if (legacy != null && legacy.isNotEmpty) {
+      await prefs.setString(selectionKey(langId), legacy);
+      await prefs.remove(legacySelectionKey(langId));
+      return legacy;
+    }
+    return null;
+  }
 
   /// 导入 .mdx 时生成池内文件名：取 basename 去扩展名，洗掉路径/控制
   /// 字符（保留中日韩文件名），加 `.db`。
@@ -336,7 +359,7 @@ class DictRepository {
     }
     final prefs = await SharedPreferences.getInstance();
     for (final key in prefs.getKeys()) {
-      if (!RegExp(r'^dict_for_lang_\d+$').hasMatch(key)) continue;
+      if (!RegExp(r'^dict_for_lang_\d+(@.+)?$').hasMatch(key)) continue;
       if (prefs.getString(key) == filename) await prefs.remove(key);
     }
     _invalidate();
@@ -349,8 +372,7 @@ class DictRepository {
   /// 不校验文件是否存在（调用方与查询层都会兜底）。
   Future<String?> selectedDict(int langId) async {
     final prefs = await SharedPreferences.getInstance();
-    final name = prefs.getString(selectionKey(langId));
-    return (name == null || name.isEmpty) ? null : name;
+    return _migratedSelection(prefs, langId);
   }
 
   /// 为 [langId] 选用池内词典；传 null = 清除选用（回落旧版库）。
@@ -359,6 +381,7 @@ class DictRepository {
     final prefs = await SharedPreferences.getInstance();
     if (filename == null || filename.isEmpty) {
       await prefs.remove(selectionKey(langId));
+      await prefs.remove(legacySelectionKey(langId));
       _invalidate();
       return;
     }
@@ -367,16 +390,27 @@ class DictRepository {
       throw ArgumentError('词典不在本机词典库：$filename');
     }
     await prefs.setString(selectionKey(langId), p.basename(filename));
+    await prefs.remove(legacySelectionKey(langId));
     _invalidate();
   }
 
   /// 全部语言的选用关系（langId → 池内文件名），供设置页摘要用。
+  /// 只返回**当前账号**作用域的条目。
   Future<Map<int, String>> selectionMap() async {
     final prefs = await SharedPreferences.getInstance();
-    final result = <int, String>{};
-    for (final key in prefs.getKeys()) {
+    // Migrate any pre-scope entries first so the settings summary (and the
+    // resolver) see the current account's choices under the scoped keys.
+    for (final key in prefs.getKeys().toList()) {
       final m = RegExp(r'^dict_for_lang_(\d+)$').firstMatch(key);
       if (m == null) continue;
+      await _migratedSelection(prefs, int.parse(m.group(1)!));
+    }
+
+    final result = <int, String>{};
+    final scope = SessionManager.cacheScope;
+    for (final key in prefs.getKeys()) {
+      final m = RegExp(r'^dict_for_lang_(\d+)@(.+)$').firstMatch(key);
+      if (m == null || m.group(2) != scope) continue;
       final name = prefs.getString(key);
       if (name == null || name.isEmpty) continue;
       result[int.parse(m.group(1)!)] = name;
@@ -397,7 +431,7 @@ class DictRepository {
       final m = reg.firstMatch(p.basename(entity.path));
       if (m == null) continue;
       final langId = int.parse(m.group(1)!);
-      final sel = prefs.getString(selectionKey(langId));
+      final sel = await _migratedSelection(prefs, langId);
       if (sel != null && sel.isNotEmpty) {
         // 该语言已选用池内词典，旧文件纯属占地方，直接清掉。
         entity.deleteSync();
@@ -673,7 +707,7 @@ class DictRepository {
   /// [languageName] 为日语时才作最后回落（见 lookupWithReading）。
   Future<File?> _resolveDictFile(int langId, {String? languageName}) async {
     final prefs = await SharedPreferences.getInstance();
-    final sel = prefs.getString(selectionKey(langId));
+    final sel = await _migratedSelection(prefs, langId);
     if (sel != null && sel.isNotEmpty) {
       final picked = await _poolFile(sel);
       if (picked.existsSync()) return picked;

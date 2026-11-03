@@ -70,7 +70,14 @@ class QueuedDioInterceptor extends Interceptor {
     if (_queue.isServerReachable) {
       handler.next(options);
     } else {
-      ServerStatusManager.markError();
+      // Requests that opted out of the queue (`failFast` term forms,
+      // `noQueue` page/shelf reads) must not feed the global reachability
+      // flag: the flag is already false here, and re-marking it would let a
+      // short-budget form timeout keep the whole app in its offline fallbacks.
+      if (options.extra['failFast'] != true &&
+          options.extra['noQueue'] != true) {
+        ServerStatusManager.markError();
+      }
 
       // Callers that opt out of the queue (see ApiService._noQueue) are the
       // ones the user is actively waiting on -- page content, the shelf's

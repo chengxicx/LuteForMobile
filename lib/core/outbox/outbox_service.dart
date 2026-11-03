@@ -1,3 +1,5 @@
+import 'dart:async' show unawaited;
+
 import 'package:dio/dio.dart' show DioException;
 import 'package:flutter/foundation.dart';
 
@@ -63,12 +65,22 @@ enum _Outcome { sent, transient, permanent, needsLogin }
 /// edit would sit in limbo, reported as pending forever, and the retry budget
 /// that is supposed to eventually give up would never advance.
 class OutboxService {
-  OutboxService({required OutboxStore store, required ContentService content})
-    : _store = store,
-      _content = content;
+  OutboxService({
+    required OutboxStore store,
+    required ContentService content,
+    String Function()? identity,
+  }) : _store = store,
+       _content = content,
+       _identity = identity ?? (() => SessionManager.identity);
 
   final OutboxStore _store;
   final ContentService _content;
+
+  /// Current `serverUrl|username`.  Injectable so tests can switch accounts
+  /// without a real session.
+  final String Function() _identity;
+
+  String get identity => _identity();
 
   /// Keyed by [PendingIntent.coalesceKey], so the map *is* the coalescing:
   /// there is at most one intent per identity.
@@ -87,11 +99,22 @@ class OutboxService {
   bool get isFlushing => _isFlushing;
 
   /// Oldest first — the order the flush will use.
+  ///
+  /// Only intents belonging to the **current** identity are exposed: the
+  /// outbox panel would otherwise show the previous account's term text, and
+  /// the flush must never replay another account's ids.
   List<PendingIntent> get intents {
-    final list = _intents.values.toList()
+    final scope = identity;
+    final list = _intents.values
+        .where((i) => i.owner == scope)
+        .toList()
       ..sort((a, b) => a.seq.compareTo(b.seq));
     return list;
   }
+
+  /// Identity changed (login/logout/server switch): republish so the UI stops
+  /// showing the previous account's queue.
+  void onIdentityChanged() => onChanged?.call();
 
   /// Load persisted intents by reading the store.
   Future<void> hydrate() async => seed(await _store.readAll());
@@ -107,8 +130,18 @@ class OutboxService {
 
     for (final entry in raw.entries) {
       try {
-        final intent = PendingIntent.decode(entry.value);
-        _intents[entry.key] = intent;
+        var intent = PendingIntent.decode(entry.value);
+        if (intent.owner.isEmpty) {
+          // Pre-scope record: it was written while this device's current
+          // identity was the logged-in one, so adopt it (and move it to the
+          // identity-prefixed key) rather than dropping the user's pending
+          // edit on upgrade.  Records written under a different account from
+          // now on always carry `owner` and are never adopted.
+          intent = intent.withOwner(identity);
+          unawaited(_store.write(intent.coalesceKey, intent.encode()));
+          unawaited(_store.delete(entry.key));
+        }
+        _intents[intent.coalesceKey] = intent;
         if (intent.seq > maxSeq) maxSeq = intent.seq;
       } catch (e) {
         // A single corrupt record must not cost the user every other edit.
@@ -133,6 +166,7 @@ class OutboxService {
         langId: langId,
         formData: formData,
         seq: _nextSeq,
+        owner: identity,
       ),
     );
   }
@@ -148,6 +182,7 @@ class OutboxService {
         text: text,
         formData: formData,
         seq: _nextSeq,
+        owner: identity,
       ),
     );
   }
@@ -166,6 +201,7 @@ class OutboxService {
         markRead: markRead,
         markKnown: markKnown,
         seq: _nextSeq,
+        owner: identity,
       ),
     );
   }
@@ -218,11 +254,15 @@ class OutboxService {
     final sent = <PendingIntent>[];
     try {
       final due = planFlush(
-        _intents.values,
+        intents,
         nowMs: DateTime.now().millisecondsSinceEpoch,
       );
 
       for (final intent in due) {
+        // The identity can change mid-round (A logs out and B logs in while
+        // a flush is in flight).  A stale intent must be left untouched, not
+        // replayed under the new session's cookie.
+        if (intent.owner != identity) continue;
         final outcome = await _replay(intent);
         switch (outcome) {
           case _Outcome.sent:

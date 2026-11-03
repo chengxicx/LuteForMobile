@@ -103,6 +103,17 @@ class ServerStatusManager {
     _notifyListeners();
   }
 
+  /// Account / server switch: the old account's reachability verdict says
+  /// nothing about the new one.  Reset to "assume reachable" so the first
+  /// request actually goes out instead of being short-circuited into the
+  /// offline fallbacks until some later probe succeeds.
+  static void resetForIdentityChange() {
+    if (_isReachable && !_isConnecting) return;
+    _isReachable = true;
+    _isConnecting = false;
+    _notifyListeners();
+  }
+
   static void addListener(VoidCallback callback) {
     if (!_listeners.contains(callback)) {
       _listeners.add(callback);

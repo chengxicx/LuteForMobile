@@ -19,11 +19,22 @@ sealed class PendingIntent {
     this.attempts = 0,
     this.nextAttemptAtMs = 0,
     this.failed = false,
+    this.owner = '',
   });
 
   /// Monotonic, assigned at enqueue time.  Flushing in `seq` order preserves
   /// the causal order of the user's actions.
   final int seq;
+
+  /// `serverUrl|username` the intent was recorded under.
+  ///
+  /// Term/book ids are per-account: replaying A's intent while B is logged in
+  /// would edit B's term.  Empty on records written before identity tracking;
+  /// those are adopted to the starting identity in `OutboxService.seed`.
+  final String owner;
+
+  /// Prefix for [coalesceKey], empty for legacy records.
+  String get ownerPrefix => owner.isEmpty ? '' : '$owner|';
 
   /// How many times a flush has tried and failed (transient failures only).
   final int attempts;
@@ -76,6 +87,13 @@ sealed class PendingIntent {
     ),
   };
 
+  /// Stamp a legacy (owner-less) record with the identity it is adopted into.
+  PendingIntent withOwner(String owner) => switch (this) {
+    TermEditIntent i => i.copyWith(owner: owner),
+    TermCreateIntent i => i.copyWith(owner: owner),
+    PageDoneIntent i => i.copyWith(owner: owner),
+  };
+
   static PendingIntent decode(String raw) {
     final json = jsonDecode(raw) as Map<String, dynamic>;
     final kind = json['kind'] as String?;
@@ -106,6 +124,7 @@ class TermEditIntent extends PendingIntent {
     super.attempts,
     super.nextAttemptAtMs,
     super.failed,
+    super.owner,
   });
 
   static const String kind = 'term_edit';
@@ -121,7 +140,7 @@ class TermEditIntent extends PendingIntent {
   final int? langId;
 
   @override
-  String get coalesceKey => 'term:$termId';
+  String get coalesceKey => '${ownerPrefix}term:$termId';
 
   @override
   Map<String, dynamic> toJson() => {
@@ -130,6 +149,7 @@ class TermEditIntent extends PendingIntent {
     'attempts': attempts,
     'nextAttemptAtMs': nextAttemptAtMs,
     'failed': failed,
+    'owner': owner,
     'termId': termId,
     'status': status,
     if (formData != null) 'formData': formData,
@@ -144,6 +164,7 @@ class TermEditIntent extends PendingIntent {
     int? attempts,
     int? nextAttemptAtMs,
     bool? failed,
+    String? owner,
   }) {
     return TermEditIntent(
       termId: termId,
@@ -154,6 +175,7 @@ class TermEditIntent extends PendingIntent {
       attempts: attempts ?? this.attempts,
       nextAttemptAtMs: nextAttemptAtMs ?? this.nextAttemptAtMs,
       failed: failed ?? this.failed,
+      owner: owner ?? this.owner,
     );
   }
 
@@ -177,6 +199,7 @@ class TermEditIntent extends PendingIntent {
       attempts: json['attempts'] as int? ?? 0,
       nextAttemptAtMs: json['nextAttemptAtMs'] as int? ?? 0,
       failed: json['failed'] as bool? ?? false,
+      owner: json['owner'] as String? ?? '',
     );
   }
 }
@@ -192,6 +215,7 @@ class TermCreateIntent extends PendingIntent {
     super.attempts,
     super.nextAttemptAtMs,
     super.failed,
+    super.owner,
   });
 
   static const String kind = 'term_create';
@@ -201,7 +225,7 @@ class TermCreateIntent extends PendingIntent {
   final Map<String, dynamic> formData;
 
   @override
-  String get coalesceKey => 'new:$langId:$text';
+  String get coalesceKey => '${ownerPrefix}new:$langId:$text';
 
   @override
   Map<String, dynamic> toJson() => {
@@ -210,6 +234,7 @@ class TermCreateIntent extends PendingIntent {
     'attempts': attempts,
     'nextAttemptAtMs': nextAttemptAtMs,
     'failed': failed,
+    'owner': owner,
     'langId': langId,
     'text': text,
     'formData': formData,
@@ -221,6 +246,7 @@ class TermCreateIntent extends PendingIntent {
     int? attempts,
     int? nextAttemptAtMs,
     bool? failed,
+    String? owner,
   }) {
     return TermCreateIntent(
       langId: langId,
@@ -230,6 +256,7 @@ class TermCreateIntent extends PendingIntent {
       attempts: attempts ?? this.attempts,
       nextAttemptAtMs: nextAttemptAtMs ?? this.nextAttemptAtMs,
       failed: failed ?? this.failed,
+      owner: owner ?? this.owner,
     );
   }
 
@@ -251,6 +278,7 @@ class TermCreateIntent extends PendingIntent {
       attempts: json['attempts'] as int? ?? 0,
       nextAttemptAtMs: json['nextAttemptAtMs'] as int? ?? 0,
       failed: json['failed'] as bool? ?? false,
+      owner: json['owner'] as String? ?? '',
     );
   }
 }
@@ -269,6 +297,7 @@ class PageDoneIntent extends PendingIntent {
     super.attempts,
     super.nextAttemptAtMs,
     super.failed,
+    super.owner,
   });
 
   static const String kind = 'page_done';
@@ -286,7 +315,7 @@ class PageDoneIntent extends PendingIntent {
   final bool markKnown;
 
   @override
-  String get coalesceKey => 'page:$bookId:$pageNum';
+  String get coalesceKey => '${ownerPrefix}page:$bookId:$pageNum';
 
   @override
   Map<String, dynamic> toJson() => {
@@ -295,6 +324,7 @@ class PageDoneIntent extends PendingIntent {
     'attempts': attempts,
     'nextAttemptAtMs': nextAttemptAtMs,
     'failed': failed,
+    'owner': owner,
     'bookId': bookId,
     'pageNum': pageNum,
     'markRead': markRead,
@@ -308,6 +338,7 @@ class PageDoneIntent extends PendingIntent {
     int? attempts,
     int? nextAttemptAtMs,
     bool? failed,
+    String? owner,
   }) {
     return PageDoneIntent(
       bookId: bookId,
@@ -318,6 +349,7 @@ class PageDoneIntent extends PendingIntent {
       attempts: attempts ?? this.attempts,
       nextAttemptAtMs: nextAttemptAtMs ?? this.nextAttemptAtMs,
       failed: failed ?? this.failed,
+      owner: owner ?? this.owner,
     );
   }
 
@@ -340,6 +372,7 @@ class PageDoneIntent extends PendingIntent {
       attempts: json['attempts'] as int? ?? 0,
       nextAttemptAtMs: json['nextAttemptAtMs'] as int? ?? 0,
       failed: json['failed'] as bool? ?? false,
+      owner: json['owner'] as String? ?? '',
     );
   }
 }
