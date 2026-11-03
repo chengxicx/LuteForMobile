@@ -6,6 +6,7 @@ import '../../../core/logger/widget_logger.dart';
 import '../models/text_item.dart';
 import '../models/paragraph.dart';
 import '../utils/text_direction_utils.dart';
+import '../utils/follow_scroll.dart';
 import '../../../shared/theme/eink.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import 'term_tooltip.dart';
@@ -380,6 +381,12 @@ class _TextDisplayState extends State<TextDisplay> {
 
   bool _autoScrollScheduled = false;
 
+  /// 用户手指拖动过页面之后，暂停自动跟随到这个时刻为止。
+  ///
+  /// 朗读跟随时用户想自己翻看别处，若下一句又把他拽回来就成了「抢滚动条」；
+  /// 2 秒内先让手感优先（拖动开始那一刻起算，连甩带惯性都算在窗口里）。
+  DateTime? _followSuppressedUntil;
+
   void _buildHitTestCache() {
     final items = _allItems();
     final kept = <TextItem>[];
@@ -625,25 +632,36 @@ class _TextDisplayState extends State<TextDisplay> {
     final fallbackDirection =
         widget.textDirection ?? Directionality.of(context);
     return RepaintBoundary(
-      child: SingleChildScrollView(
-        controller: widget.scrollController,
-        padding: EdgeInsets.only(
-          top: 16 + widget.topPadding,
-          left: 16,
-          right: 16,
-          bottom: 16 + widget.bottomPadding,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ...widget.paragraphs.map((paragraph) {
-              return _buildParagraph(context, paragraph, fallbackDirection);
-            }),
-            if (widget.bottomControlWidget != null) ...[
-              const SizedBox(height: 16),
-              widget.bottomControlWidget!,
+      child: NotificationListener<ScrollStartNotification>(
+        onNotification: (notification) {
+          // dragDetails 非空 = 手指拖动；我们自己 animateTo 的通知里没有它。
+          if (notification.dragDetails != null) {
+            _followSuppressedUntil = DateTime.now().add(
+              const Duration(seconds: 2),
+            );
+          }
+          return false;
+        },
+        child: SingleChildScrollView(
+          controller: widget.scrollController,
+          padding: EdgeInsets.only(
+            top: 16 + widget.topPadding,
+            left: 16,
+            right: 16,
+            bottom: 16 + widget.bottomPadding,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ...widget.paragraphs.map((paragraph) {
+                return _buildParagraph(context, paragraph, fallbackDirection);
+              }),
+              if (widget.bottomControlWidget != null) ...[
+                const SizedBox(height: 16),
+                widget.bottomControlWidget!,
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -748,6 +766,12 @@ class _TextDisplayState extends State<TextDisplay> {
     final controller = widget.scrollController;
     if (controller == null || !controller.hasClients) return;
 
+    // 用户刚拖过页面：先让他的位置站住。
+    final suppressedUntil = _followSuppressedUntil;
+    if (suppressedUntil != null && DateTime.now().isBefore(suppressedUntil)) {
+      return;
+    }
+
     final item = _firstPlayingItem();
     if (item == null) return;
 
@@ -766,22 +790,31 @@ class _TextDisplayState extends State<TextDisplay> {
     final viewportRect =
         viewportBox.localToGlobal(Offset.zero) & viewportBox.size;
 
-    // A tenth of the viewport as margin, so a line just barely peeking in at
-    // the edge still counts as out of view.
-    final margin = viewportRect.height * 0.1;
-    final inView =
-        itemRect.top >= viewportRect.top + margin &&
-        itemRect.bottom <= viewportRect.bottom - margin;
-    if (inView) return;
+    // 锚点 + 舒适区策略见 followScrollTarget：高亮行只在快掉出视口时才
+    // 走一步，页末不再重算居中（旧实现在这里把末句推到视口中间）。
+    final position = controller.position;
+    final target = followScrollTarget(
+      itemTop: itemRect.top - viewportRect.top,
+      itemBottom: itemRect.bottom - viewportRect.top,
+      viewportHeight: viewportRect.height,
+      currentOffset: position.pixels,
+      minScrollExtent: position.minScrollExtent,
+      maxScrollExtent: position.maxScrollExtent,
+    );
+    if (target == null) return;
+
+    // 墨水屏上真的没有动画：`animateTo(Duration.zero)` 在这版 Flutter 里
+    // 是个空操作（零时长的插值模拟），跟随会静默失效。直接跳。
+    if (context.eInk || MediaQuery.of(context).disableAnimations) {
+      controller.jumpTo(target);
+      return;
+    }
 
     unawaited(
-      Scrollable.ensureVisible(
-        itemContext,
-        alignment: 0.35,
-        duration: MediaQuery.of(context).disableAnimations || context.eInk
-            ? Duration.zero
-            : const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
+      controller.animateTo(
+        target,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
       ),
     );
   }
