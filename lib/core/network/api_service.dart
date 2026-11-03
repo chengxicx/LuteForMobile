@@ -57,6 +57,31 @@ class ApiService {
   /// whole app, since the success interceptor fires on the response.
   static const Map<String, dynamic> _bypassQueue = {'bypassQueue': true};
 
+  /// 词卡表单 GET 的专用标记：**永不排队 + 跳过健康探测**。
+  ///
+  /// 这两个端点（`/read/termform/...`、`/read/edit_term/<id>`）是长按之后
+  /// 用户正盯着等的那一条，而调用方拿不到时有本地表单兜底
+  /// （`buildLocalTermFormFallback`）。走全局限时（10s）再被队列扣住等上限
+  /// （30s）时，飞行模式下长按到本地表单出现实测要 18 秒以上。
+  ///
+  /// 这里的三层配合：
+  ///  * [noQueue]：拦截器已知不可达时直接合成拒绝，不占队列位；
+  ///  * [failFast]：失败路径跳过 5–8 秒的服务器健康探测（探测并不比结论
+  ///    有用 —— 用户等的就是这张表）；
+  ///  * 下面两个短上限：探测依据可能过期（刚开飞行模式时 app 仍以为在线），
+  ///    这时最多也只耗 [termFormConnectTimeout] 就降级。
+  static const Map<String, dynamic> _failFastTermForm = {
+    'noQueue': true,
+    'failFast': true,
+  };
+
+  /// 词卡表单的连接上限：飞行模式下按键到本地表单出现要 < 3 秒。
+  static const Duration termFormConnectTimeout = Duration(seconds: 2);
+
+  /// 词卡表单的接收上限。正常一张表单只有几十 KB，在线远快于这个值；
+  /// 慢网超过它就直接降级到本地表单，别让用户对着空屏等。
+  static const Duration termFormReceiveTimeout = Duration(seconds: 3);
+
   ApiService({
     required String baseUrl,
     Dio? dio,
@@ -424,16 +449,31 @@ class ApiService {
 
   Future<Response<String>> getTermForm(int langId, String text) async {
     final encodedText = Uri.encodeComponent(text);
-    return await _dio.get<String>('/read/termform/$langId/$encodedText');
+    return await _dio.get<String>(
+      '/read/termform/$langId/$encodedText',
+      options: Options(
+        connectTimeout: termFormConnectTimeout,
+        receiveTimeout: termFormReceiveTimeout,
+        extra: _failFastTermForm,
+      ),
+    );
   }
 
   Future<Response<String>> getTermFormById(
     int termId, {
     bool bypassQueue = false,
   }) async {
+    // bypassQueue 的调用方是 outbox 重放：它自带重试预算，必须按自己的
+    // 方式真连一次，不能继承这里的短上限。
     return await _dio.get<String>(
       '/read/edit_term/$termId',
-      options: bypassQueue ? Options(extra: _bypassQueue) : null,
+      options: bypassQueue
+          ? Options(extra: _bypassQueue)
+          : Options(
+              connectTimeout: termFormConnectTimeout,
+              receiveTimeout: termFormReceiveTimeout,
+              extra: _failFastTermForm,
+            ),
     );
   }
 

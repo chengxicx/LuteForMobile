@@ -2797,6 +2797,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           sentence: _extractSentence(item),
           initialReaderStatus: readerStatus,
           autoSaveOnClose: false,
+          // 服务器表单拿不到（离线，或短超时后主动降级）：在表单里给一句
+          // 提示。SnackBar 会被这个模态弹层挡住，所以放在表单顶部。
+          notice: '已切换到本地表单',
         );
         return;
       }
@@ -2908,7 +2911,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     if (!mounted) return;
     final prefilled = await _prefillTranslationFromDict(form);
     if (!mounted) return;
-    _showTermForm(prefilled, sentence: _extractSentence(selectedItems.first));
+    _showTermForm(
+      prefilled,
+      sentence: _extractSentence(selectedItems.first),
+      notice: termForm == null ? '已切换到本地表单' : null,
+    );
   }
 
   void _handleTripleTap(TextItem item) async {
@@ -2986,6 +2993,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     String? sentence,
     String? initialReaderStatus,
     bool autoSaveOnClose = true,
+    String? notice,
   }) {
     _currentTermForm = termForm;
     bool _shouldAutoSaveOnClose = autoSaveOnClose;
@@ -3042,6 +3050,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                     termForm: _currentTermForm ?? termForm,
                     sentence: sentence,
                     initialReaderStatus: initialReaderStatus,
+                    notice: notice,
                     contentService: repository.contentService,
                     dictionaryService: DictionaryService(
                       fetchLanguageSettingsHtml: (langId) => repository

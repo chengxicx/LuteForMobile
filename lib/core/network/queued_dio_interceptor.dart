@@ -159,6 +159,15 @@ class QueuedDioInterceptor extends Interceptor {
       return handler.next(err);
     }
 
+    // 词卡表单（ApiService._failFastTermForm）走的是「用户正等着、拿不到就
+    // 开本地表单」的路径。这里再去做一次健康探测只会把 5–8 秒加到用户已经
+    // 失败的那条请求上 —— 而且慢网超时本来就不等于服务器挂了，探测结论没有
+    // 任何后续动作可做。直接交回失败，让上层立刻降级。
+    if (err.requestOptions.extra['failFast'] == true) {
+      err.requestOptions.extra['noRetry'] = true;
+      return handler.next(err);
+    }
+
     final baseUrl = err.requestOptions.baseUrl;
     final health = baseUrl.isEmpty
         ? null

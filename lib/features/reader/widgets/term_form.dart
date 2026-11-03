@@ -26,6 +26,12 @@ class TermFormWidget extends ConsumerStatefulWidget {
   final TermForm termForm;
   final String? sentence;
   final String? initialReaderStatus;
+
+  /// 从服务器表单降级到本地表单时的一句提示（null = 正常打开服务器表单）。
+  ///
+  /// 不放在 SnackBar 里：这张表是模态底部弹层，SnackBar 会被它挡住，
+  /// 等于没提示。
+  final String? notice;
   final void Function(TermForm) onSave;
   final void Function(TermForm) onUpdate;
   final VoidCallback onCancel;
@@ -41,6 +47,7 @@ class TermFormWidget extends ConsumerStatefulWidget {
     required this.termForm,
     this.sentence,
     this.initialReaderStatus,
+    this.notice,
     required this.onSave,
     required this.onUpdate,
     required this.onCancel,
@@ -401,6 +408,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
               child: Column(
                 children: [
                   _buildHeader(context),
+                  if (widget.notice != null) _buildNotice(context),
                   const SizedBox(height: 12),
                   _buildTranslationField(context),
                   // 操作行：父词 chips + Add Parent + Cancel/Save。
@@ -426,6 +434,7 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildHeader(context),
+                    if (widget.notice != null) _buildNotice(context),
                     const SizedBox(height: 12),
                     _buildTranslationField(context),
                     const SizedBox(height: 12),
@@ -519,6 +528,18 @@ class _TermFormWidgetState extends ConsumerState<TermFormWidget> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildNotice(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        widget.notice!,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }

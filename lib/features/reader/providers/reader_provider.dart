@@ -1231,6 +1231,12 @@ class ReaderNotifier extends Notifier<ReaderState> {
   }
 
   Future<TermForm?> fetchTermForm(int langId, String text) async {
+    // 已知不可达：不发请求，直接让上层开本地表单。
+    //
+    // 这条请求即使带 `noQueue` 也会先走一次拦截器 + 一次健康探测，而长按
+    // 建卡在飞行模式下**实测要 18 秒**才回落 —— 全耗在这条注定失败的
+    // 往返上。可达性标志由队列轮询/其它请求维护，这里只读。
+    if (!ServerStatusManager.isReachable) return null;
     state = state.copyWith(isTermFormLoading: true);
     try {
       return await _repository.getTermForm(langId, text);
@@ -1283,6 +1289,9 @@ class ReaderNotifier extends Notifier<ReaderState> {
   }
 
   Future<TermForm?> fetchTermFormById(int termId) async {
+    // 长按建卡的第一条请求：离线时必须立刻交回 null，让调用方开本地表单。
+    // 否则用户要等完整条注定失败的往返（实测 18 秒）。
+    if (!ServerStatusManager.isReachable) return null;
     state = state.copyWith(isTermFormLoading: true);
     try {
       return await _repository.getTermFormByIdWithParentDetails(termId);
@@ -1294,6 +1303,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
   }
 
   Future<TermForm?> fetchTermFormWithDetails(int langId, String text) async {
+    if (!ServerStatusManager.isReachable) return null;
     state = state.copyWith(isTermFormLoading: true);
     try {
       return await _repository.getTermFormWithParentDetails(langId, text);
