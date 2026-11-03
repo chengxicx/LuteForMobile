@@ -17,6 +17,7 @@ import '../models/epub_chapter.dart';
 import '../models/paragraph.dart';
 import '../models/text_item.dart';
 import '../services/epub_local_server.dart';
+import '../utils/term_selection.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/theme/eink_scope.dart';
 import '../../../shared/theme/eink_paper.dart';
@@ -892,33 +893,43 @@ class _EpubChapterViewState extends State<EpubChapterView> {
 
   /// Rebuild the items for a multi-word selection.
   ///
-  /// The page sends one payload per word span inside the swept range.
-  /// `order` is the key: it is the token's index in the page, unique and
-  /// contiguous, and it is the same index the token stream was rebuilt
-  /// with -- so it resolves a payload against the reader's own model even
-  /// for a token that carries no word id (a save that raced the gesture,
-  /// a word the server has not persisted yet), which [_itemForPayload]
-  /// would drop.
+  /// The page sends one payload per *span* inside the swept range.
+  ///
+  /// Two page-side facts make a payload's `order` not directly a token
+  /// index, and both used to drop the word separators:
+  ///
+  ///  * `data-order` is `tokenIndex * 1000 + piece` (lute-epub-reader.js's
+  ///    `makeSpan`): a token cut by an inline tag renders one span per
+  ///    piece, and the multiplier keeps every span's order unique.  So the
+  ///    token index is the order divided by 1000, and the pieces of one
+  ///    token collapse onto it.
+  ///  * The page gives whitespace tokens no span (their spaces are raw
+  ///    text nodes between the word spans), so the payloads alone contain
+  ///    no separators and joining them turned "roll off" into "rolloff".
+  ///    [widget.paragraphs] is the chapter's whole token stream, so the
+  ///    closed token-index interval is taken from it -- exactly the
+  ///    interval the Flutter-rendered text selects.
+  ///
+  /// Payloads stay as the fallback for tokens the model does not know
+  /// (a save that raced the gesture).
   List<TextItem> _itemsForPayloads(List<dynamic> args) {
     if (args.isEmpty || args.first is! List) return const <TextItem>[];
+    final pageItems = widget.paragraphs.expand((para) => para.textItems);
     final byOrder = <int, TextItem>{};
-    for (final para in widget.paragraphs) {
-      for (final item in para.textItems) {
-        byOrder.putIfAbsent(item.order, () => item);
-      }
+    for (final item in pageItems) {
+      byOrder.putIfAbsent(item.order, () => item);
     }
-    final items = <TextItem>[];
+
+    final payloads = <TextItem>[];
+    final rawOrders = <int>[];
     for (final raw in args.first as List) {
       if (raw is! Map) continue;
       final payload = raw.cast<String, dynamic>();
       final order = (payload['order'] as num?)?.toInt() ?? -1;
-      final known = byOrder[order];
-      if (known != null) {
-        items.add(_withLanguage(known));
-        continue;
-      }
+      if (order < 0) continue;
+      rawOrders.add(order);
       final wid = (payload['wid'] as num?)?.toInt() ?? 0;
-      items.add(
+      payloads.add(
         TextItem(
           text: payload['text']?.toString() ?? '',
           statusClass: '',
@@ -931,8 +942,35 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         ),
       );
     }
-    items.sort((a, b) => a.order.compareTo(b.order));
-    return items;
+    if (payloads.isEmpty) return const <TextItem>[];
+
+    // A page rendered before the piece multiplier existed (an offline pack
+    // written by an older build) sends plain token indices; those never
+    // exceed the model's own highest order, while `token * 1000` always
+    // does (a sweep covers at least two tokens, so the second one is
+    // >= 1000).
+    final modelMax = byOrder.keys.isEmpty
+        ? -1
+        : byOrder.keys.reduce((a, b) => a > b ? a : b);
+    final rawMax = rawOrders.reduce((a, b) => a > b ? a : b);
+    final usesPieceShift = byOrder.isNotEmpty && rawMax > modelMax;
+
+    final payloadsByOrder = <int, TextItem>{};
+    for (final payload in payloads) {
+      final order = tokenIndexForSpanOrder(
+        payload.order,
+        usesPieceShift: usesPieceShift,
+      );
+      payloadsByOrder.putIfAbsent(
+        order,
+        () => payload.copyWith(order: order),
+      );
+    }
+    final items = selectionItemsInOrderRange(
+      pageItems: byOrder.values,
+      payloadsByOrder: payloadsByOrder,
+    );
+    return items.map(_withLanguage).toList();
   }
 
   /// The chapter's tokens carry no language, so a word rebuilt from them

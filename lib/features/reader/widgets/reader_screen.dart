@@ -52,6 +52,7 @@ import '../../grammar/widgets/sentence_grammar_screen.dart';
 import '../utils/playing_line.dart';
 import '../utils/player_lifecycle.dart';
 import '../utils/app_bar_layout.dart';
+import '../utils/term_selection.dart';
 import '../widgets/term_tooltip.dart';
 import 'text_display.dart';
 import 'page_nav.dart';
@@ -2830,9 +2831,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final langId = selectedItems.first.langId;
     if (langId == null) return;
 
-    // 多选拼词时词间会夹 U+200B（零宽空格），带它去查必然"有词条查不到"；
-    // displayText 已经把这个字符洗掉了。
-    final termText = selectedItems.map((item) => item.displayText).join().trim();
+    // 选区里词与词之间的空格也是 token（EPUB 页的空白 token 原先没跟过来，
+    // 见 EpubChapterView._itemsForPayloads）。只裁剪/折叠空白，不能整体删：
+    // 删掉空格词卡里的 "roll off" 就变成 "rolloff"。词内的 U+200B 由
+    // displayText 洗掉。
+    final termText = buildMultiTermText(selectedItems);
     if (termText.isEmpty) return;
 
     final termForm = await ref

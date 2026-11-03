@@ -27,6 +27,7 @@ import '../widgets/sentence_tts_button.dart';
 import '../widgets/sentence_ai_translation_button.dart';
 import '../widgets/sentence_ai_translation_widget.dart';
 import '../utils/sentence_parser.dart';
+import '../utils/term_selection.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../../../core/outbox/providers/outbox_provider.dart';
@@ -1618,8 +1619,8 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
     final langId = selectedItems.first.langId;
     if (langId == null) return;
 
-    // 同阅读页：拼词时夹带的 U+200B 会毁掉查询，用 displayText 洗掉。
-    final termText = selectedItems.map((item) => item.displayText).join().trim();
+    // 同阅读页：只裁剪/折叠空白并洗掉词内的 U+200B，词间空格必须留下。
+    final termText = buildMultiTermText(selectedItems);
     if (termText.isEmpty) return;
 
     final termForm = await ref
