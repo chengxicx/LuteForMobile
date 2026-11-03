@@ -6,13 +6,22 @@ import '../../core/network/dictionary_service.dart';
 import '../../core/cache/providers/page_cache_provider.dart';
 import '../../core/cache/providers/term_cache_provider.dart';
 
-// API service provider using serverUrl from settings
+// API service provider using serverUrl from settings.
+//
+// Watches only the fields ApiService actually depends on.  Watching the whole
+// [settingsProvider] rebuilt every service below it on *any* setting change --
+// including a language-filter clear during login/logout -- and a rebuilt
+// outbox service used to lose the intents added during this session.
 final apiServiceProvider = Provider<ApiService>((ref) {
-  final settings = ref.watch(settingsProvider);
+  final serverUrl = ref.watch(settingsProvider.select((s) => s.serverUrl));
+  final basicAuthUser =
+      ref.watch(settingsProvider.select((s) => s.basicAuthUser));
+  final basicAuthPassword =
+      ref.watch(settingsProvider.select((s) => s.basicAuthPassword));
   return ApiService(
-    baseUrl: settings.serverUrl,
-    basicAuthUser: settings.basicAuthUser,
-    basicAuthPassword: settings.basicAuthPassword,
+    baseUrl: serverUrl,
+    basicAuthUser: basicAuthUser,
+    basicAuthPassword: basicAuthPassword,
   );
 });
 

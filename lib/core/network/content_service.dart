@@ -39,8 +39,15 @@ class ContentService {
 
   // 5-second cache for languages to prevent redundant API calls
   List<Language>? _cachedLanguages;
+  LanguageListResult? _cachedLanguageResult;
   DateTime? _languagesCacheTime;
   static const _languagesCacheTtl = Duration(seconds: 5);
+
+  /// Hard cap for one language-list stage (the Dio options already cap each
+  /// request; the future-level timeout also covers a queued/retried request
+  /// that would otherwise outlive its own budget).  Two stages plus the
+  /// synchronous shelf fallback keep the whole load under 5 seconds.
+  static const _languageStageBudget = Duration(seconds: 2, milliseconds: 500);
 
   ContentService({
     required ApiService apiService,
@@ -1127,38 +1134,71 @@ class ContentService {
   }
 
   Future<List<Language>> getLanguagesWithIds() async {
+    return (await getLanguagesResult()).languages;
+  }
+
+  /// Loads the language list with an explicit terminal outcome.
+  ///
+  /// Three stages, each able to fail without blocking the next:
+  ///  1. `/language/index` — admin path.
+  ///  2. `/book/new`'s `select#language_id` — readable by every role.
+  ///  3. (the caller adds the shelf's own languages on top, see
+  ///     `languageListResultProvider`).
+  ///
+  /// Never leaves the future pending: both stages are capped by
+  /// [_languageStageBudget] and by their Dio options (short timeout,
+  /// `noQueue`/`failFast`), so the worst case is a failed/empty result that the
+  /// settings page can render as a message.
+  Future<LanguageListResult> getLanguagesResult() async {
     // Check if we have a valid cached result (< 5 seconds old)
-    if (_cachedLanguages != null && _languagesCacheTime != null) {
+    if (_cachedLanguageResult != null && _languagesCacheTime != null) {
       final age = DateTime.now().difference(_languagesCacheTime!);
       if (age < _languagesCacheTtl) {
-        return _cachedLanguages!;
+        return _cachedLanguageResult!;
       }
     }
 
-    // Fetch from API and cache the result
-    final response = await _apiService.getLanguages();
-    final htmlContent = response.data ?? '';
-    var languages = parser.parseLanguagesWithIds(htmlContent);
+    var failed = false;
+    var languages = const <Language>[];
+    var source = LanguageListSource.none;
+
+    try {
+      final response = await _apiService
+          .getLanguages()
+          .timeout(_languageStageBudget);
+      languages = parser.parseLanguagesWithIds(response.data ?? '');
+      if (languages.isNotEmpty) source = LanguageListSource.server;
+    } catch (e) {
+      failed = true;
+      debugPrint('language list via /language/index failed: $e');
+    }
 
     // `/language/index` is admin-only on a multiuser server: a sub-user's
     // request is redirected to the home page, which has no language table, so
     // the parse above yields nothing.  `/book/new` is readable by every role
-    // and its form carries the same language list -- use it as the fallback.
+    // and its form carries the same language list.
     if (languages.isEmpty) {
       try {
-        final bookNew = await _apiService.getBookNew();
+        final bookNew = await _apiService
+            .getBookNew(fastRead: true)
+            .timeout(_languageStageBudget);
         languages = parser.parseLanguagesFromBookNew(bookNew.data ?? '');
+        if (languages.isNotEmpty) source = LanguageListSource.bookForm;
       } catch (e) {
-        // Keep the empty primary result; the caller shows the "no language
-        // management permission" hint instead of a network error.
+        failed = true;
         debugPrint('language fallback via /book/new failed: $e');
       }
     }
 
+    final result = LanguageListResult(
+      languages: languages,
+      source: source,
+      failed: failed,
+    );
     _cachedLanguages = languages;
+    _cachedLanguageResult = result;
     _languagesCacheTime = DateTime.now();
-
-    return languages;
+    return result;
   }
 
   Future<Language?> getLanguageById(int languageId) async {

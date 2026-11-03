@@ -3,9 +3,42 @@ import '../models/language.dart';
 import '../../features/books/providers/books_provider.dart';
 import './network_providers.dart';
 
-final languageListProvider = FutureProvider<List<Language>>((ref) async {
+/// Terminal language-list load: server → add-book form → shelf languages.
+///
+/// The settings page watches this (not just [languageListProvider]) so it can
+/// tell "still loading" from "loaded but empty" and "failed", and explain a
+/// fallback instead of leaving the dropdown on "Loading languages…".
+final languageListResultProvider =
+    FutureProvider<LanguageListResult>((ref) async {
   final contentService = ref.read(contentServiceProvider);
-  return await contentService.getLanguagesWithIds();
+  final result = await contentService.getLanguagesResult();
+  if (result.languages.isNotEmpty) return result;
+
+  // Last stage: the languages of books already on this account's shelf.
+  // `/language/index` and `/book/new` both come up empty for some sub-users,
+  // but the shelf cache still carries each book's `LgID`/`LgName`, so the
+  // dictionary-per-language dropdown keeps offering real ids.
+  final books = ref.read(booksProvider);
+  final fromBooks = <int, Language>{};
+  for (final book in [...books.activeBooks, ...books.archivedBooks]) {
+    final id = book.langId;
+    final name = book.language.trim();
+    if (id == null || id <= 0 || name.isEmpty) continue;
+    fromBooks.putIfAbsent(id, () => Language(id: id, name: name));
+  }
+  if (fromBooks.isNotEmpty) {
+    return LanguageListResult(
+      languages: fromBooks.values.toList(),
+      source: LanguageListSource.bookShelf,
+      failed: result.failed,
+    );
+  }
+  return result;
+});
+
+final languageListProvider = FutureProvider<List<Language>>((ref) async {
+  final result = await ref.watch(languageListResultProvider.future);
+  return result.languages;
 });
 
 final languageNamesProvider = FutureProvider<List<String>>((ref) async {

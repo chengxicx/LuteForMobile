@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:song_mobile/core/dict/dict_repository.dart';
 import 'package:song_mobile/core/network/html_parser.dart';
 import 'package:song_mobile/core/network/session_manager.dart';
+import 'package:song_mobile/core/prefs/legacy_scope_migration.dart';
 
 void main() {
   setUp(() {
@@ -11,22 +12,84 @@ void main() {
   });
 
   group('account-scoped preference keys', () {
-    test('legacy dict_for_lang_* is migrated to the current scope', () async {
+    test('legacy dict_for_lang_* is claimed once at startup', () async {
       SharedPreferences.setMockInitialValues({
         'dict_for_lang_13': 'jmdict.db',
       });
-      final scope = SessionManager.cacheScope;
+      await migrateLegacyScopedPrefs(scopeOverride: 'owner');
 
-      final chosen = await DictRepository().selectedDict(13);
-
-      expect(chosen, 'jmdict.db');
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getString('dict_for_lang_13@$scope'), 'jmdict.db');
+      expect(prefs.getString('dict_for_lang_13@owner'), 'jmdict.db');
       expect(
         prefs.getString('dict_for_lang_13'),
         isNull,
         reason: 'the unscoped key is removed so a later account cannot inherit it',
       );
+
+      // Reading through the repository sees the scoped entry without doing
+      // any migration of its own.
+      final chosen = await DictRepository().selectedDict(13);
+      if (SessionManager.cacheScope == 'owner') {
+        expect(chosen, 'jmdict.db');
+      } else {
+        expect(chosen, isNull);
+      }
+    });
+
+    test('a second account never claims keys already migrated', () async {
+      SharedPreferences.setMockInitialValues({
+        'dict_for_lang_13': 'jmdict.db',
+      });
+      await migrateLegacyScopedPrefs(scopeOverride: 'owner');
+      await migrateLegacyScopedPrefs(scopeOverride: 'guest');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('dict_for_lang_13@owner'), 'jmdict.db');
+      expect(prefs.getString('dict_for_lang_13@guest'), isNull);
+    });
+
+    test('an existing scoped choice is not overwritten by the legacy key',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'dict_for_lang_13': 'old.db',
+        'dict_for_lang_13@owner': 'new.db',
+      });
+      await migrateLegacyScopedPrefs(scopeOverride: 'owner');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('dict_for_lang_13@owner'), 'new.db');
+      expect(prefs.getString('dict_for_lang_13'), isNull);
+    });
+
+    test('empty legacy values are dropped, not migrated', () async {
+      SharedPreferences.setMockInitialValues({
+        'dict_for_lang_13': '',
+        'book_lang_name_7': '   ',
+        'book_lang_id_7': 0,
+      });
+      await migrateLegacyScopedPrefs(scopeOverride: 'owner');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('dict_for_lang_13@owner'), isNull);
+      expect(prefs.getString('book_lang_name_7@owner'), isNull);
+      expect(prefs.getInt('book_lang_id_7@owner'), isNull);
+      expect(prefs.getString('dict_for_lang_13'), isNull);
+      expect(prefs.getString('book_lang_name_7'), isNull);
+      expect(prefs.getInt('book_lang_id_7'), isNull);
+    });
+
+    test('book language keys are scoped too', () async {
+      SharedPreferences.setMockInitialValues({
+        'book_lang_id_7': 3,
+        'book_lang_name_7': 'Japanese',
+      });
+      await migrateLegacyScopedPrefs(scopeOverride: 'owner');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt('book_lang_id_7@owner'), 3);
+      expect(prefs.getString('book_lang_name_7@owner'), 'Japanese');
+      expect(prefs.getInt('book_lang_id_7'), isNull);
+      expect(prefs.getString('book_lang_name_7'), isNull);
     });
 
     test('selectionMap only reports the current scope', () async {

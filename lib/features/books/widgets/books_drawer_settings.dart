@@ -65,6 +65,7 @@ class _BooksDrawerSettingsState extends ConsumerState<BooksDrawerSettings> {
 
   Future<void> _refreshLanguages() async {
     try {
+      ref.invalidate(languageListResultProvider);
       ref.invalidate(languageListProvider);
       await ref.read(languageListProvider.future);
     } on Exception {

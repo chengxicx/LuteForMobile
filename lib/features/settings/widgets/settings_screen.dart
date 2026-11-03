@@ -1808,6 +1808,16 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
     });
   }
 
+  /// Re-runs the language chain (server → book form → shelf).
+  Future<void> _retryLanguages() async {
+    ref.invalidate(languageListResultProvider);
+    try {
+      await ref.read(languageListResultProvider.future);
+    } catch (_) {
+      // The dropdown renders the failure state itself.
+    }
+  }
+
   /// 刷新本机词典池状态：先收养旧版 per-lang 库，再读池/选用/安装情况。
   Future<void> _refreshPool() async {
     final repo = ref.read(dictRepositoryProvider);
@@ -2042,8 +2052,13 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
 
   @override
   Widget build(BuildContext context) {
-    final languages =
-        ref.watch(languageListProvider).value ?? const <Language>[];
+    final languageState = ref.watch(languageListResultProvider);
+    final languageResult = languageState.value;
+    final languages = languageResult?.languages ?? const <Language>[];
+    final languageLoading = languageState.isLoading;
+    final languageFailed =
+        languageState.hasError || (languageResult?.failed ?? false);
+    final languageFallback = languageResult?.usedFallback ?? false;
     final selectedId = _effectiveLangId(languages);
     final langName = _languageName(languages, selectedId);
     final current = selectedId != null ? _selections[selectedId] : null;
@@ -2154,8 +2169,57 @@ class _DictDownloadCardState extends ConsumerState<_DictDownloadCard> {
                 border: OutlineInputBorder(),
                 labelText: 'Choose a dictionary for language',
               ),
-              hint: const Text('Loading languages…'),
+              hint: Text(
+                languageLoading
+                    ? 'Loading languages…'
+                    : languages.isEmpty
+                        ? (languageFailed
+                            ? 'Could not load languages'
+                            : 'No languages available')
+                        : 'Choose a language',
+              ),
             ),
+            if (!languageLoading && languageFallback) ...[
+              const SizedBox(height: 4),
+              Text(
+                languageResult?.source == LanguageListSource.bookShelf
+                    ? 'This account cannot manage languages — using the '
+                        'languages of your books instead.'
+                    : 'This account cannot manage languages — using the '
+                        'add-book form language list instead.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.6),
+                ),
+              ),
+            ],
+            if (!languageLoading && languages.isEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                languageFailed
+                    ? 'Could not reach the server for the language list.'
+                    : 'No languages are available for this account. It may '
+                        'not have language-management permission, and its '
+                        'shelf has no books with a language yet.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.6),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: busy ? null : _retryLanguages,
+                  child: const Text('Retry'),
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             // -------------------------------------------------- 本机词典池
             Text(

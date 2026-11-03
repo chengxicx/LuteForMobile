@@ -19,6 +19,13 @@ abstract class OutboxStore {
   Future<void> clear();
 
   Future<void> close();
+
+  /// The latest known entries, or null before the first read.
+  ///
+  /// A rebuilt [OutboxService] seeds from this instead of the pre-`runApp`
+  /// snapshot: rebuilding must never drop an intent enqueued during this
+  /// session (that is how an offline edit used to vanish until a restart).
+  Map<String, String>? get cachedEntries;
 }
 
 /// Hive-backed store, kept in the **application support** directory.
@@ -41,6 +48,11 @@ class HiveOutboxStore implements OutboxStore {
 
   Box<String>? _box;
   bool _isInitialized = false;
+  Map<String, String>? _cache;
+
+  @override
+  Map<String, String>? get cachedEntries =>
+      _cache == null ? null : Map.of(_cache!);
 
   Future<Box<String>?> _getBox() async {
     if (!_isInitialized) {
@@ -62,10 +74,12 @@ class HiveOutboxStore implements OutboxStore {
     try {
       final box = await _getBox();
       if (box == null) return {};
-      return {
+      final entries = {
         for (final key in box.keys)
           if (box.get(key) != null) '$key': box.get(key)!,
       };
+      _cache = entries;
+      return Map.of(entries);
     } catch (e) {
       CacheLogger.logError('outbox readAll', e);
       return {};
@@ -77,6 +91,7 @@ class HiveOutboxStore implements OutboxStore {
     try {
       final box = await _getBox();
       await box?.put(key, value);
+      _cache?[key] = value;
     } catch (e) {
       CacheLogger.logError('outbox write', e);
     }
@@ -87,6 +102,7 @@ class HiveOutboxStore implements OutboxStore {
     try {
       final box = await _getBox();
       await box?.delete(key);
+      _cache?.remove(key);
     } catch (e) {
       CacheLogger.logError('outbox delete', e);
     }
@@ -97,6 +113,7 @@ class HiveOutboxStore implements OutboxStore {
     try {
       final box = await _getBox();
       await box?.clear();
+      _cache?.clear();
       CacheLogger.logClear(_boxName);
     } catch (e) {
       CacheLogger.logError('outbox clear', e);
@@ -118,6 +135,9 @@ class HiveOutboxStore implements OutboxStore {
 /// Test double.  Also the fallback shape if a platform has no Hive at all.
 class InMemoryOutboxStore implements OutboxStore {
   final Map<String, String> _entries = {};
+
+  @override
+  Map<String, String>? get cachedEntries => Map.of(_entries);
 
   @override
   Future<Map<String, String>> readAll() async => Map.of(_entries);

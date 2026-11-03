@@ -119,25 +119,20 @@ class DictRepository {
   /// 各语言"选用词典"的持久化 key。
   ///
   /// 带账号作用域（`@<serverUrl+username>`）：langId 是服务器语言 id，同一台
-  /// 设备上换账号不该继承上一个账号的选用。旧版无作用域的 key 由
-  /// [_migratedSelection] 在首次读取时迁移并删除。
+  /// 设备上换账号不该继承上一个账号的选用。旧版无作用域的 key 在启动时由
+  /// `migrateLegacyScopedPrefs()` 一次性归属到最后使用的账号（见
+  /// `core/prefs/legacy_scope_migration.dart`），这里只读作用域内的 key。
   static String legacySelectionKey(int langId) => 'dict_for_lang_$langId';
   static String selectionKey(int langId) =>
       '${legacySelectionKey(langId)}@${SessionManager.cacheScope}';
 
-  /// 读出当前账号的选用；旧版 key 存在时迁移到当前作用域。
+  /// 读出当前账号的选用。
   Future<String?> _migratedSelection(
     SharedPreferences prefs,
     int langId,
   ) async {
     final scoped = prefs.getString(selectionKey(langId));
     if (scoped != null && scoped.isNotEmpty) return scoped;
-    final legacy = prefs.getString(legacySelectionKey(langId));
-    if (legacy != null && legacy.isNotEmpty) {
-      await prefs.setString(selectionKey(langId), legacy);
-      await prefs.remove(legacySelectionKey(langId));
-      return legacy;
-    }
     return null;
   }
 
@@ -398,14 +393,6 @@ class DictRepository {
   /// 只返回**当前账号**作用域的条目。
   Future<Map<int, String>> selectionMap() async {
     final prefs = await SharedPreferences.getInstance();
-    // Migrate any pre-scope entries first so the settings summary (and the
-    // resolver) see the current account's choices under the scoped keys.
-    for (final key in prefs.getKeys().toList()) {
-      final m = RegExp(r'^dict_for_lang_(\d+)$').firstMatch(key);
-      if (m == null) continue;
-      await _migratedSelection(prefs, int.parse(m.group(1)!));
-    }
-
     final result = <int, String>{};
     final scope = SessionManager.cacheScope;
     for (final key in prefs.getKeys()) {

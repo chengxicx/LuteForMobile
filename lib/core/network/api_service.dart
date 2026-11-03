@@ -75,6 +75,21 @@ class ApiService {
     'failFast': true,
   };
 
+  /// 语言列表读取（设置页下拉、加书对话框、书架过滤）用的标记。
+  ///
+  /// 与词卡表单同一种"用户正等着"的读：必须很快有终态。若走普通路径，
+  /// 离线时会被 [ApiRequestQueue] 扣满 30 秒（见其 `_defaultRequestDeadline`），
+  /// 设置页的语言下拉就一直停在 "Loading languages…"。所以这里同样
+  /// **不排队 + 失败路径不做健康探测 + 短超时**。
+  static const Map<String, dynamic> _failFastRead = {
+    'noQueue': true,
+    'failFast': true,
+  };
+
+  /// 语言列表每一级的连接/接收上限。列表很小；设置页下拉必须在 5 秒内
+  /// 出终态（两级各 2 秒 + 书架回落），所以这里比普通 GET 的 10 秒短得多。
+  static const Duration languageReadTimeout = Duration(seconds: 2);
+
   /// 词卡表单的连接上限：飞行模式下按键到本地表单出现要 < 3 秒。
   static const Duration termFormConnectTimeout = Duration(seconds: 2);
 
@@ -910,8 +925,17 @@ class ApiService {
     );
   }
 
-  Future<Response<String>> getLanguages() async {
-    return await _dio.get<String>('/language/index');
+  Future<Response<String>> getLanguages({Duration? timeout}) async {
+    final budget = timeout ?? languageReadTimeout;
+    return await _dio.get<String>(
+      '/language/index',
+      options: Options(
+        connectTimeout: budget,
+        receiveTimeout: budget,
+        sendTimeout: budget,
+        extra: _failFastRead,
+      ),
+    );
   }
 
   Future<Response<String>> getNewLanguageSettings({
@@ -947,14 +971,30 @@ class ApiService {
     return await _dio.post<String>('/language/delete/$langId');
   }
 
-  Future<Response<String>> getBookNew({String? importUrl}) async {
+  /// [fastRead] is for the language-list fallback: bypass the queue and use
+  /// the short read timeout so a sub-user's dropdown settles immediately.
+  Future<Response<String>> getBookNew({
+    String? importUrl,
+    Duration? timeout,
+    bool fastRead = false,
+  }) async {
+    final budget = timeout ?? (fastRead ? languageReadTimeout : null);
+    final options = fastRead
+        ? Options(
+            connectTimeout: budget,
+            receiveTimeout: budget,
+            sendTimeout: budget,
+            extra: _failFastRead,
+          )
+        : null;
     if (importUrl != null && importUrl.trim().isNotEmpty) {
       return await _dio.get<String>(
         '/book/new',
         queryParameters: {'importurl': importUrl.trim()},
+        options: options,
       );
     }
-    return await _dio.get<String>('/book/new');
+    return await _dio.get<String>('/book/new', options: options);
   }
 
   Future<Response<String>> createBook(dynamic data) async {

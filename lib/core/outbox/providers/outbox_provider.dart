@@ -18,13 +18,17 @@ import '../status_overlay.dart' as overlay;
 final outboxStoreProvider = Provider<OutboxStore>((ref) => HiveOutboxStore());
 
 final outboxServiceProvider = Provider<OutboxService>((ref) {
+  final store = ref.watch(outboxStoreProvider);
   final service = OutboxService(
-    store: ref.watch(outboxStoreProvider),
+    store: store,
     content: ref.watch(contentServiceProvider),
   );
 
-  // Seeded from the pre-`runApp` read: see [initialOutboxEntriesProvider].
-  service.seed(ref.watch(initialOutboxEntriesProvider));
+  // Seed from the store's latest snapshot, falling back to the pre-`runApp`
+  // read.  A rebuilt provider must not resurrect the startup snapshot: that
+  // is how an intent enqueued during this session used to disappear until
+  // the next app start.
+  service.seed(store.cachedEntries ?? ref.watch(initialOutboxEntriesProvider));
 
   return service;
 });
@@ -87,8 +91,13 @@ class OutboxNotifier extends Notifier<OutboxState> {
     ServerStatusManager.addListener(onReachabilityChanged);
 
     // Identity change (A -> B, login/logout): the queue view must switch to
-    // the new account's intents immediately instead of showing A's text.
-    void onSessionChanged() => service.onIdentityChanged();
+    // the new account's intents immediately instead of showing A's text, and
+    // a fresh login should replay whatever that account still owes instead of
+    // waiting for the 30s timer.
+    void onSessionChanged() {
+      service.onIdentityChanged();
+      if (SessionManager.isLoggedIn) unawaited(service.flush());
+    }
     SessionManager.addListener(onSessionChanged);
 
     _retryTimer = Timer.periodic(_outboxRetryInterval, (_) {

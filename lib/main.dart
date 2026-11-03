@@ -14,6 +14,7 @@ import 'package:song_mobile/core/network/api_service.dart';
 import 'package:song_mobile/core/network/session_manager.dart';
 import 'package:song_mobile/core/outbox/outbox_store.dart';
 import 'package:song_mobile/core/outbox/providers/outbox_provider.dart';
+import 'package:song_mobile/core/prefs/legacy_scope_migration.dart';
 import 'package:song_mobile/core/services/server_health_service.dart';
 import 'package:song_mobile/core/services/termux_service.dart';
 import 'package:song_mobile/shared/providers/server_status_provider.dart';
@@ -54,6 +55,12 @@ void main() async {
   // Restore the multi-user session cookie and Basic Auth credentials for
   // the effective server URL before any network activity.
   await SessionManager.hydrate(serverUrl);
+
+  // Claim the pre-scope preference keys once, using the identity the device
+  // was last used with.  Doing this before the first frame (instead of on the
+  // first read) stops a guest account from inheriting the owner's dictionary
+  // and book-language choices.
+  await migrateLegacyScopedPrefs();
 
   // Pending offline edits, read before the first frame so the reader can
   // paint them straight away instead of showing the stale server colour and
