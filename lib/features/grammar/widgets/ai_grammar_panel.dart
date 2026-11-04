@@ -801,6 +801,8 @@ class _AiErrorCard extends StatelessWidget {
     switch (kind) {
       case 'unconfigured':
         return 'AI not configured';
+      case 'unsupported':
+        return 'AI is turned off for this language';
       case 'auth':
         return 'AI authentication failed';
       case 'rate':

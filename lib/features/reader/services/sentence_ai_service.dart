@@ -52,7 +52,7 @@ class SentenceAiService {
       if (event != null) yield event;
     }
 
-    // Before the server-side upgrade, /ai/sentence could answer with a
+    // Before the server-side upgrade, the sentence endpoint could answer with a
     // one-line translation (plain text or a single JSON body) instead of SSE.
     // No SSE frame at all means we should treat the whole body as that old
     // answer rather than showing an empty result.

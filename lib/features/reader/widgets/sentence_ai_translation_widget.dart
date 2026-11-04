@@ -433,8 +433,8 @@ class _SegmentRow extends StatelessWidget {
     final colors = context.appColorScheme;
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.only(bottom: last ? 0 : 10),
-      margin: EdgeInsets.only(bottom: last ? 0 : 10),
+      padding: EdgeInsets.only(bottom: last ? 0 : 12),
+      margin: EdgeInsets.only(bottom: last ? 0 : 12),
       decoration: last
           ? null
           : BoxDecoration(
@@ -464,18 +464,20 @@ class _SegmentRow extends StatelessWidget {
                   segment.reading!,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: colors.text.secondary,
+                    fontSize: 13,
+                    height: 1.3,
                   ),
                 ),
               if (segment.role != null) _RolePill(text: segment.role!),
             ],
           ),
           if (segment.meaning != null) ...[
-            const SizedBox(height: 3),
+            const SizedBox(height: 5),
             Text(
               segment.meaning!,
               style: Theme.of(
                 context,
-              ).textTheme.bodyMedium?.copyWith(height: 1.4),
+              ).textTheme.bodyMedium?.copyWith(height: 1.5),
             ),
           ],
         ],
@@ -502,6 +504,7 @@ class _RolePill extends StatelessWidget {
         text,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
           color: colors.text.secondary,
+          fontSize: 12,
           fontWeight: FontWeight.w700,
         ),
       ),
@@ -547,12 +550,12 @@ class _GrammarRow extends StatelessWidget {
               ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
           if (item.explanation != null) ...[
-            const SizedBox(height: 2),
+            const SizedBox(height: 3),
             Text(
               item.explanation!,
               style: Theme.of(
                 context,
-              ).textTheme.bodySmall?.copyWith(height: 1.45),
+              ).textTheme.bodyMedium?.copyWith(height: 1.5),
             ),
           ],
           if (item.fragment != null) ...[
@@ -625,9 +628,9 @@ class _ExampleRow extends StatelessWidget {
             const SizedBox(height: 2),
             Text(
               example.translation!,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: colors.text.secondary,
-                height: 1.4,
+                height: 1.5,
               ),
             ),
           ],
@@ -703,6 +706,8 @@ class _ErrorView extends StatelessWidget {
     switch (kind) {
       case 'unconfigured':
         return 'AI not configured';
+      case 'unsupported':
+        return 'AI is turned off for this language';
       case 'auth':
         return 'AI authentication failed';
       case 'rate':

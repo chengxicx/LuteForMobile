@@ -1421,7 +1421,7 @@ class ApiService {
     );
   }
 
-  /// POST /ai/sentence —— server-side AI sentence translation/analysis,
+  /// POST /ai/translate —— server-side AI sentence translation/analysis,
   /// streamed as Server-Sent Events.  The `result` frame carries the
   /// structured translation, word segments, grammar, context and examples.
   Future<Response<ResponseBody>> postAiSentenceAnalysis({
@@ -1429,7 +1429,7 @@ class ApiService {
     required int langId,
   }) {
     return _postAiStream(
-      path: '/ai/sentence',
+      path: '/ai/translate',
       sentence: sentence,
       langId: langId,
     );

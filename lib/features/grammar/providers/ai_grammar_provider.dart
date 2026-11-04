@@ -213,6 +213,9 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
   void _setProviderError(String kind, String message) {
     final readable = switch (kind) {
       'unconfigured' => message,
+      'unsupported' =>
+        'AI grammar analysis is turned off for this language. '
+            'Turn it on in Language settings.',
       'auth' => 'The server\'s AI provider rejected its API key.',
       'rate' => 'The AI provider is rate-limiting requests. Try again in a moment.',
       'timeout' => 'The AI provider timed out. Try again.',

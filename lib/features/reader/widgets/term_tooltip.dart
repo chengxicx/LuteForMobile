@@ -400,8 +400,10 @@ class _TooltipContent extends ConsumerWidget {
                   (onGrammar != null && grammarEnabled) ||
                   onAiGrammar != null) ...[
                 const SizedBox(height: 8),
-                // 胶囊描边按钮带文字：36dp 高比 44dp 纯图标版小巧，12dp 间距
-                // 仍把两个命中区明确隔开。卡片已由 IntrinsicWidth 贴内容收宽，
+                // 胶囊描边按钮带文字：36dp 高比 44dp 纯图标版小巧，8dp 间距
+                // 仍把命中区隔开。三个按钮（Sentence / Grammar / AI）在 240dp
+                // 卡片里靠 8dp 内边距与 12sp 字号压住宽度，避免 FittedBox 把
+                // 整行缩得字号过小。卡片已由 IntrinsicWidth 贴内容收宽，
                 // 文字短时按钮行就是内容区全宽（贴 12dp 边距），长文本时经
                 // Center 居中。该句没有语法点时（预分析确认零命中）语法按钮
                 // 整个不显示，而不是置灰占位。
@@ -426,7 +428,7 @@ class _TooltipContent extends ConsumerWidget {
                         if (onSentenceTranslation != null &&
                             ((onGrammar != null && grammarEnabled) ||
                                 onAiGrammar != null))
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 8),
                         if (onGrammar != null && grammarEnabled)
                           _TooltipActionButton(
                             icon: Icons.spellcheck,
@@ -436,7 +438,7 @@ class _TooltipContent extends ConsumerWidget {
                         if (onGrammar != null &&
                             grammarEnabled &&
                             onAiGrammar != null)
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 8),
                         if (onAiGrammar != null)
                           _TooltipActionButton(
                             icon: Icons.auto_awesome,
@@ -480,13 +482,13 @@ class _TooltipActionButton extends StatelessWidget {
       style: OutlinedButton.styleFrom(
         foregroundColor: context.appColorScheme.material3.primary,
         minimumSize: const Size(0, 36),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         side: BorderSide(
           color: context.appColorScheme.border.outline,
           width: eink ? 1.5 : 1,
         ),
-        textStyle: const TextStyle(fontSize: 13),
+        textStyle: const TextStyle(fontSize: 12),
       ),
       icon: Icon(icon, size: 16),
       label: Text(label),

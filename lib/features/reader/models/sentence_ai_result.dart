@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import '../../../core/network/sse_parser.dart';
 
-/// Structured result of `POST /ai/sentence`.
+/// Structured result of `POST /ai/translate`.
 ///
 /// Field names follow the server contract exactly:
 /// `translation`, `segments`, `grammar`, `context`, `examples`.
@@ -199,11 +199,24 @@ SentenceAiEvent? parseSentenceAiEvent(SseEvent sse) {
       return SentenceAiTextEvent(text);
     case 'result':
       final payload = json.containsKey('result') ? json['result'] : json;
-      final result = parseSentenceAiResultPayload(payload);
-      final fallback = json['fallback'] == true
+      var result = parseSentenceAiResultPayload(payload);
+      var fallback = json['fallback'] == true
           ? _text(json['text']) ??
               (payload is String ? _text(payload) : null)
           : null;
+
+      // The server falls back to plain text when its own JSON parser rejects
+      // the model's reply.  Some replies are still a JSON object -- fenced, or
+      // missing the final brace after a long `examples` array -- so try to
+      // recover the structured sections instead of showing raw JSON.
+      if (fallback != null && stripJsonFence(fallback).startsWith('{')) {
+        final recovered = parseSentenceAiResultPayload(fallback);
+        if (recovered != null && !recovered.isEmpty) {
+          result = recovered;
+          fallback = null;
+        }
+      }
+
       if (result == null && fallback == null) {
         final text = _text(json['text']);
         if (text != null) {
@@ -235,27 +248,86 @@ SentenceAiResult? parseSentenceAiResultPayload(dynamic payload) {
   if (payload is String) {
     final text = stripJsonFence(payload);
     if (text.isEmpty) return null;
-    try {
-      final decoded = jsonDecode(text);
-      if (decoded is Map) {
-        return SentenceAiResult.fromJson(Map<String, dynamic>.from(decoded));
-      }
-    } catch (_) {
-      // Not JSON: the old endpoint returned a plain translation line.
+    final decoded = _decodeJsonObject(text);
+    if (decoded != null) {
+      return SentenceAiResult.fromJson(decoded);
     }
+    // Not JSON: the old endpoint returned a plain translation line.
     return SentenceAiResult(translation: text);
   }
   return null;
+}
+
+/// Decodes a JSON object, closing braces/brackets the model left off.
+///
+/// Real replies have arrived with the final `}` missing after a long
+/// `examples` array; the server then ships them as a text fallback.  A
+/// stack-based repair recovers those sections instead of showing raw JSON.
+Map<String, dynamic>? _decodeJsonObject(String text) {
+  for (final candidate in [text, _closeOpenJson(text)]) {
+    try {
+      final decoded = jsonDecode(candidate);
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      // Try the repaired candidate.
+    }
+  }
+  return null;
+}
+
+/// Appends the missing quote/brackets so a truncated JSON object parses.
+/// Returns the input unchanged when the braces already balance.
+String _closeOpenJson(String text) {
+  final stack = <String>[];
+  var inString = false;
+  var escaped = false;
+
+  for (var i = 0; i < text.length; i++) {
+    final ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        inString = false;
+      }
+      continue;
+    }
+    switch (ch) {
+      case '"':
+        inString = true;
+      case '{':
+        stack.add('}');
+      case '[':
+        stack.add(']');
+      case '}':
+      case ']':
+        if (stack.isNotEmpty && stack.last == ch) stack.removeLast();
+    }
+  }
+
+  if (!inString && stack.isEmpty) return text;
+
+  final fixed = StringBuffer(text);
+  if (inString) fixed.write('"');
+  for (var i = stack.length - 1; i >= 0; i--) {
+    fixed.write(stack[i]);
+  }
+  return fixed.toString();
 }
 
 /// Handles models that wrap JSON in ```json ... ``` even though the server
 /// asked for plain JSON.
 String stripJsonFence(String value) {
   var text = value.trim();
-  if (!text.startsWith('```')) return text;
-  final firstNewline = text.indexOf('\n');
-  if (firstNewline == -1) return text;
-  text = text.substring(firstNewline + 1).trimRight();
+  // Models sometimes open with ```json but forget the opening fence, ending
+  // the reply with ``` only; strip either side independently.
+  if (text.startsWith('```')) {
+    final firstNewline = text.indexOf('\n');
+    if (firstNewline == -1) return text;
+    text = text.substring(firstNewline + 1).trimRight();
+  }
   if (text.endsWith('```')) {
     text = text.substring(0, text.length - 3).trimRight();
   }

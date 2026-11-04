@@ -195,6 +195,9 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
   void _setProviderError(String kind, String message) {
     final readable = switch (kind) {
       'unconfigured' => message,
+      'unsupported' =>
+        'AI sentence translation is turned off for this language. '
+            'Turn it on in Language settings.',
       'auth' => 'The server\'s AI provider rejected its API key.',
       'rate' => 'The AI provider is rate-limiting requests. Try again in a moment.',
       'timeout' => 'The AI provider timed out. Try again.',
@@ -216,6 +219,14 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     }
     final raw = state.streamedText.trim();
     if (raw.isNotEmpty) {
+      final parsed = parseSentenceAiResultPayload(raw);
+      if (parsed != null && !parsed.isEmpty) {
+        state = state.copyWith(
+          status: SentenceAiStatus.done,
+          result: parsed,
+        );
+        return;
+      }
       state = state.copyWith(
         status: SentenceAiStatus.done,
         fallbackText: raw,

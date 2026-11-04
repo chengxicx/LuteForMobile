@@ -146,6 +146,36 @@ void main() {
       expect(result.fallbackText, '纯文本译文');
     });
 
+    test('recovers sections from a fenced fallback missing its last brace', () {
+      // Shape observed from production: the model wrapped the object in a
+      // fence and dropped the final `}`, so the server sent it as fallback
+      // text.  The app must still render the sections, not raw JSON.
+      const truncated =
+          '{"translation": "He went to the library yesterday.", '
+          '"segments": [{"part": "彼は", "reading": "かれは", '
+          '"meaning": "he", "role": "topic"}], '
+          '"grammar": [{"point": "past tense", '
+          '"explanation": "ました marks past", "fragment": "行きました"}], '
+          '"context": "A completed action.", '
+          '"examples": [{"source": "彼女は毎日電車に乗ります。", '
+          '"translation": "She rides the train every day."}]\n```';
+      final event = parseSentenceAiEvent(
+        SseEvent(
+          event: 'result',
+          data: jsonEncode({'fallback': true, 'text': truncated}),
+        ),
+      );
+
+      final result = event as SentenceAiResultEvent;
+      expect(result.fallbackText, isNull);
+      final parsed = result.result!;
+      expect(parsed.translation, 'He went to the library yesterday.');
+      expect(parsed.segments.single.part, '彼は');
+      expect(parsed.grammar.single.point, 'past tense');
+      expect(parsed.context, 'A completed action.');
+      expect(parsed.examples.single.source, '彼女は毎日電車に乗ります。');
+    });
+
     test('meta carries cache information', () {
       final event = parseSentenceAiEvent(
         const SseEvent(
@@ -174,6 +204,23 @@ void main() {
   });
 
   group('SentenceAiService', () {
+    test('posts to the server\'s /ai/translate endpoint', () async {
+      final adapter = _StreamAdapter(
+        _bytes([
+          'event: meta\n',
+          'data: {"cached":false,"provider":"openai","model":"m"}\n\n',
+        ]),
+      );
+      final dio = Dio()..httpClientAdapter = adapter;
+      final api = ApiService(baseUrl: 'http://test.local', dio: dio);
+
+      await SentenceAiService(
+        api,
+      ).analyze(sentence: 'Hello', langId: 1).toList();
+
+      expect(adapter.lastPath, '/ai/translate');
+    });
+
     test('decodes a chunked SSE stream into typed events', () async {
       final stream = _bytes([
         ': heartbeat\n\n',
@@ -275,6 +322,7 @@ Stream<Uint8List> _bytes(List<String> parts) {
 
 class _StreamAdapter implements HttpClientAdapter {
   final Stream<Uint8List> _body;
+  String? lastPath;
 
   _StreamAdapter(this._body);
 
@@ -284,6 +332,7 @@ class _StreamAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    lastPath = options.path;
     return ResponseBody(
       _body,
       200,
