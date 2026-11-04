@@ -1,54 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../settings/models/ai_settings.dart';
-import '../../settings/providers/ai_settings_provider.dart';
+
 import '../../../shared/theme/theme_extensions.dart';
 
-class SentenceAITranslationButton extends ConsumerStatefulWidget {
-  final String text;
-  final int sentenceId;
-  final int languageId;
-  final String language;
+/// Entry for the server-side AI sentence analysis.
+///
+/// The provider/key live on the server, so there is no on-device AI setting
+/// to gate this on: the button stays visible and an unconfigured server
+/// explains itself inside the panel (with a link to the web Settings page).
+class SentenceAITranslationButton extends ConsumerWidget {
   final VoidCallback? onTranslationRequested;
 
   const SentenceAITranslationButton({
     super.key,
-    required this.text,
-    required this.sentenceId,
-    required this.languageId,
-    required this.language,
     this.onTranslationRequested,
   });
 
   @override
-  ConsumerState<SentenceAITranslationButton> createState() =>
-      _SentenceAITranslationButtonState();
-}
-
-class _SentenceAITranslationButtonState
-    extends ConsumerState<SentenceAITranslationButton> {
-  @override
-  Widget build(BuildContext context) {
-    final aiSettings = ref.watch(aiSettingsProvider);
-    final provider = aiSettings.provider;
-    final sentenceConfig =
-        aiSettings.promptConfigs[AIPromptType.sentenceTranslation];
-
-    final shouldShow =
-        provider != AIProvider.none && sentenceConfig?.enabled == true;
-
-    if (!shouldShow) {
-      return const SizedBox.shrink();
-    }
-
+  Widget build(BuildContext context, WidgetRef ref) {
     final iconColor = context.appColorScheme.material3.primary;
 
     return IconButton(
       icon: const Icon(Icons.psychology),
       color: iconColor,
-      onPressed: () {
-        widget.onTranslationRequested?.call();
-      },
+      onPressed: onTranslationRequested,
       tooltip: 'Translate with AI',
     );
   }

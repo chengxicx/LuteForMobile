@@ -1,0 +1,283 @@
+import 'dart:convert';
+
+import '../../../core/network/sse_parser.dart';
+
+/// Structured result of `POST /ai/sentence`.
+///
+/// Field names follow the server contract exactly:
+/// `translation`, `segments`, `grammar`, `context`, `examples`.
+/// Every field is optional so an older server that still returns a one-line
+/// translation (or a cached result written before the upgrade) renders
+/// without errors.
+class SentenceAiResult {
+  final String? translation;
+  final List<SentenceAiSegment> segments;
+  final List<SentenceAiGrammar> grammar;
+  final String? context;
+  final List<SentenceAiExample> examples;
+
+  const SentenceAiResult({
+    this.translation,
+    this.segments = const [],
+    this.grammar = const [],
+    this.context,
+    this.examples = const [],
+  });
+
+  bool get isEmpty =>
+      translation == null &&
+      segments.isEmpty &&
+      grammar.isEmpty &&
+      context == null &&
+      examples.isEmpty;
+
+  factory SentenceAiResult.fromJson(Map<String, dynamic> json) {
+    return SentenceAiResult(
+      translation: _text(json['translation']),
+      segments: _mapList(json['segments'], SentenceAiSegment.fromJson),
+      grammar: _mapList(json['grammar'], SentenceAiGrammar.fromJson),
+      context: _text(json['context']),
+      examples: _mapList(json['examples'], SentenceAiExample.fromJson),
+    );
+  }
+}
+
+class SentenceAiSegment {
+  final String? part;
+  final String? reading;
+  final String? meaning;
+  final String? role;
+
+  const SentenceAiSegment({
+    this.part,
+    this.reading,
+    this.meaning,
+    this.role,
+  });
+
+  bool get isEmpty =>
+      part == null && reading == null && meaning == null && role == null;
+
+  factory SentenceAiSegment.fromJson(Map<String, dynamic> json) {
+    return SentenceAiSegment(
+      part: _text(json['part']),
+      reading: _text(json['reading']),
+      meaning: _text(json['meaning']),
+      role: _text(json['role']),
+    );
+  }
+}
+
+class SentenceAiGrammar {
+  final String? point;
+  final String? explanation;
+  final String? fragment;
+
+  const SentenceAiGrammar({
+    this.point,
+    this.explanation,
+    this.fragment,
+  });
+
+  bool get isEmpty => point == null && explanation == null && fragment == null;
+
+  factory SentenceAiGrammar.fromJson(Map<String, dynamic> json) {
+    return SentenceAiGrammar(
+      point: _text(json['point']),
+      explanation: _text(json['explanation']),
+      fragment: _text(json['fragment']),
+    );
+  }
+}
+
+class SentenceAiExample {
+  final String? source;
+  final String? translation;
+
+  const SentenceAiExample({this.source, this.translation});
+
+  bool get isEmpty => source == null && translation == null;
+
+  factory SentenceAiExample.fromJson(Map<String, dynamic> json) {
+    return SentenceAiExample(
+      source: _text(json['source']),
+      translation: _text(json['translation']),
+    );
+  }
+}
+
+sealed class SentenceAiEvent {
+  const SentenceAiEvent();
+}
+
+class SentenceAiMetaEvent extends SentenceAiEvent {
+  final bool cached;
+  final String? provider;
+  final String? model;
+
+  const SentenceAiMetaEvent({
+    this.cached = false,
+    this.provider,
+    this.model,
+  });
+}
+
+class SentenceAiTextEvent extends SentenceAiEvent {
+  final String text;
+
+  const SentenceAiTextEvent(this.text);
+}
+
+class SentenceAiResultEvent extends SentenceAiEvent {
+  final SentenceAiResult? result;
+
+  /// One-line legacy answer or the server's plain-text fallback.  It is the
+  /// whole translation, not a section.
+  final String? fallbackText;
+
+  const SentenceAiResultEvent({this.result, this.fallbackText});
+}
+
+class SentenceAiDoneEvent extends SentenceAiEvent {
+  const SentenceAiDoneEvent();
+}
+
+class SentenceAiErrorEvent extends SentenceAiEvent {
+  final String kind;
+  final String message;
+
+  const SentenceAiErrorEvent({required this.kind, required this.message});
+}
+
+/// Parses one SSE frame.  Like the grammar parser, unknown frames return null
+/// so future server additions cannot break an older app.
+SentenceAiEvent? parseSentenceAiEvent(SseEvent sse) {
+  final raw = sse.data.trim();
+  if (raw.isEmpty) {
+    return sse.event == 'done' ? const SentenceAiDoneEvent() : null;
+  }
+
+  dynamic decoded;
+  try {
+    decoded = jsonDecode(raw);
+  } catch (_) {
+    if (sse.event == 'error') {
+      return SentenceAiErrorEvent(kind: 'upstream', message: raw);
+    }
+    if (sse.event == 'text' || sse.event == 'message') {
+      return SentenceAiTextEvent(raw);
+    }
+    return null;
+  }
+
+  if (decoded is String) {
+    // A server may send a JSON string containing the answer.
+    if (sse.event == 'error') {
+      return SentenceAiErrorEvent(kind: 'upstream', message: decoded);
+    }
+    if (sse.event == 'result') {
+      return SentenceAiResultEvent(
+        result: parseSentenceAiResultPayload(decoded),
+      );
+    }
+    return SentenceAiTextEvent(decoded);
+  }
+  if (decoded is! Map) return null;
+
+  final json = Map<String, dynamic>.from(decoded);
+
+  switch (sse.event) {
+    case 'meta':
+      return SentenceAiMetaEvent(
+        cached: json['cached'] == true,
+        provider: _text(json['provider']),
+        model: _text(json['model']),
+      );
+    case 'text':
+      final text = json['text'];
+      if (text is! String || text.isEmpty) return null;
+      return SentenceAiTextEvent(text);
+    case 'result':
+      final payload = json.containsKey('result') ? json['result'] : json;
+      final result = parseSentenceAiResultPayload(payload);
+      final fallback = json['fallback'] == true
+          ? _text(json['text']) ??
+              (payload is String ? _text(payload) : null)
+          : null;
+      if (result == null && fallback == null) {
+        final text = _text(json['text']);
+        if (text != null) {
+          return SentenceAiResultEvent(fallbackText: text);
+        }
+        return null;
+      }
+      return SentenceAiResultEvent(result: result, fallbackText: fallback);
+    case 'done':
+      return const SentenceAiDoneEvent();
+    case 'error':
+      return SentenceAiErrorEvent(
+        kind: _text(json['kind']) ?? 'upstream',
+        message: _text(json['message']) ?? 'The AI request failed.',
+      );
+    default:
+      return null;
+  }
+}
+
+/// Parses an already-decoded payload, or a JSON string that may be wrapped in
+/// a ```json fence.  A non-JSON string becomes a translation-only result so
+/// the pre-upgrade one-line response still displays.
+SentenceAiResult? parseSentenceAiResultPayload(dynamic payload) {
+  if (payload == null) return null;
+  if (payload is Map) {
+    return SentenceAiResult.fromJson(Map<String, dynamic>.from(payload));
+  }
+  if (payload is String) {
+    final text = stripJsonFence(payload);
+    if (text.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        return SentenceAiResult.fromJson(Map<String, dynamic>.from(decoded));
+      }
+    } catch (_) {
+      // Not JSON: the old endpoint returned a plain translation line.
+    }
+    return SentenceAiResult(translation: text);
+  }
+  return null;
+}
+
+/// Handles models that wrap JSON in ```json ... ``` even though the server
+/// asked for plain JSON.
+String stripJsonFence(String value) {
+  var text = value.trim();
+  if (!text.startsWith('```')) return text;
+  final firstNewline = text.indexOf('\n');
+  if (firstNewline == -1) return text;
+  text = text.substring(firstNewline + 1).trimRight();
+  if (text.endsWith('```')) {
+    text = text.substring(0, text.length - 3).trimRight();
+  }
+  return text.trim();
+}
+
+String? _text(dynamic value) {
+  if (value == null) return null;
+  final text = '$value'.trim();
+  return text.isEmpty ? null : text;
+}
+
+List<T> _mapList<T>(dynamic value, T Function(Map<String, dynamic>) parse) {
+  if (value is! List) return const [];
+  final items = <T>[];
+  for (final item in value) {
+    if (item is! Map) continue;
+    final parsed = parse(Map<String, dynamic>.from(item));
+    if (parsed is SentenceAiSegment && parsed.isEmpty) continue;
+    if (parsed is SentenceAiGrammar && parsed.isEmpty) continue;
+    if (parsed is SentenceAiExample && parsed.isEmpty) continue;
+    items.add(parsed);
+  }
+  return items;
+}

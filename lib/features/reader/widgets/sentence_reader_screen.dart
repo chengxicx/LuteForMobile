@@ -832,12 +832,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
                 const Spacer(),
                 if (currentSentence != null) ...[
                   SentenceAITranslationButton(
-                    text: currentSentence.textItems
-                        .map((item) => item.text)
-                        .join(),
-                    sentenceId: currentSentence.id,
-                    languageId: currentSentence.textItems.first.langId ?? 0,
-                    language: 'English',
                     onTranslationRequested: () => _showAITranslation(
                       currentSentence.textItems.map((item) => item.text).join(),
                       currentSentence.textItems.first.langId ?? 0,
@@ -2143,10 +2137,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
   }
 
   void _showAITranslation(String sentence, int languageId) {
-    final currentBookState = ref.read(currentBookProvider);
-    final language =
-        currentBookState.languageName ??
-        (_languageIdToName[languageId] ?? 'English');
     final sentenceReader = ref.read(sentenceReaderProvider);
     final currentSentence = sentenceReader.currentSentence;
 
@@ -2158,7 +2148,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
         return SentenceAITranslationWidget(
           sentence: sentence,
           languageId: languageId,
-          language: language,
           onClose: () => Navigator.of(context).pop(),
           sentenceId: currentSentence?.id,
         );

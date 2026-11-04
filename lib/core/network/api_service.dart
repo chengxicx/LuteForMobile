@@ -1413,9 +1413,35 @@ class ApiService {
   Future<Response<ResponseBody>> postAiGrammarAnalysis({
     required String sentence,
     required int langId,
+  }) {
+    return _postAiStream(
+      path: '/ai/grammar/analyze',
+      sentence: sentence,
+      langId: langId,
+    );
+  }
+
+  /// POST /ai/sentence —— server-side AI sentence translation/analysis,
+  /// streamed as Server-Sent Events.  The `result` frame carries the
+  /// structured translation, word segments, grammar, context and examples.
+  Future<Response<ResponseBody>> postAiSentenceAnalysis({
+    required String sentence,
+    required int langId,
+  }) {
+    return _postAiStream(
+      path: '/ai/sentence',
+      sentence: sentence,
+      langId: langId,
+    );
+  }
+
+  Future<Response<ResponseBody>> _postAiStream({
+    required String path,
+    required String sentence,
+    required int langId,
   }) async {
     return await _dio.post<ResponseBody>(
-      '/ai/grammar/analyze',
+      path,
       data: jsonEncode({'q': sentence, 'lang': langId}),
       options: Options(
         contentType: Headers.jsonContentType,
