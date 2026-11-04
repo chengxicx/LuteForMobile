@@ -75,6 +75,78 @@ void main() {
     });
   });
 
+  group('AI sentence row', () {
+    const aiRow = '''
+<div class="dict_entry">
+  <select name="usefor-ai" disabled>
+    <option value="terms">Terms</option>
+    <option selected value="sentences">Sentences</option>
+  </select>
+  <select name="dicttype-ai" disabled><option selected value="AI">AI</option></select>
+  <input type="hidden" name="dicturi-ai" value="/ai/sentence?lang=13&amp;q=[LUTE]" />
+  <input type="checkbox" name="is_active-ai" checked value="y" />
+</div>
+''';
+    const normalA = '''
+<div class="dict_entry">
+  <select name="usefor-a"><option value="sentences" selected>Sentences</option></select>
+  <select name="dicttype-a"><option value="embeddedhtml" selected>Embedded</option></select>
+  <input type="hidden" name="dicturi-a" value="https://a.example/sentence?q={sentence}" />
+  <input type="checkbox" name="is_active-a" checked value="y" />
+</div>
+''';
+    const normalB = '''
+<div class="dict_entry">
+  <select name="usefor-b"><option value="sentences" selected>Sentences</option></select>
+  <select name="dicttype-b"><option value="embeddedhtml" selected>Embedded</option></select>
+  <input type="hidden" name="dicturi-b" value="https://b.example/sentence?q={sentence}" />
+  <input type="checkbox" name="is_active-b" checked value="y" />
+</div>
+''';
+
+    test('keeps the server order and names the AI row', () async {
+      final service = await makeService((_) async => normalA + aiRow + normalB);
+
+      final dicts = await service.getSentenceDictionariesForLanguage(13);
+
+      expect(dicts, hasLength(3));
+      expect(dicts[1].name, 'AI sentence translation');
+      expect(dicts[1].isServerAiSentence, isTrue);
+      expect(dicts[1].isLocalDictionary, isFalse);
+      expect(dicts[0].isServerAiSentence, isFalse);
+      expect(dicts[2].isServerAiSentence, isFalse);
+    });
+
+    test('an absent AI row is just one fewer tab', () async {
+      final service = await makeService((_) async => normalA + normalB);
+
+      final dicts = await service.getSentenceDictionariesForLanguage(13);
+
+      expect(dicts, hasLength(2));
+      expect(dicts.any((d) => d.isServerAiSentence), isFalse);
+    });
+
+    test('root-relative AI url is anchored to the server and filled', () async {
+      final service = await makeService((_) async => aiRow);
+      final dicts = await service.getSentenceDictionariesForLanguage(13);
+      final ai = dicts.single;
+
+      final url = service.buildDictionaryUrl(
+        term: '彼は昨日',
+        dictionary: ai,
+        languageId: 13,
+        serverUrl: 'https://www.metaman.dpdns.org',
+      );
+
+      expect(
+        url,
+        'https://www.metaman.dpdns.org/ai/sentence?lang=13'
+        '&q=${Uri.encodeComponent('彼は昨日')}',
+      );
+      expect(url, isNot(contains('[LUTE]')));
+    });
+  });
+
   group('sameDictionaries', () {
     test('同构列表视为无变化', () {
       final a = [

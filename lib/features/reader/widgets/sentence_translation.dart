@@ -764,13 +764,16 @@ class _SentenceTranslationWidgetState
       serverUrl: serverUrl,
     );
 
+    // The AI sentence row is served by our own server and needs the
+    // multi-user session just like a local dictionary does.
+    final isServerOwned =
+        dictionary.isLocalDictionary || dictionary.isServerAiSentence;
+
     return InAppWebView(
       initialUrlRequest: URLRequest(
         url: WebUri(url),
         // 凭证只发给自己的服务器，第三方在线词典不带。
-        headers: dictionary.isLocalDictionary
-            ? SessionManager.authHeaders()
-            : null,
+        headers: isServerOwned ? SessionManager.authHeaders() : null,
       ),
       initialSettings: DictionaryService.webviewSettings(
         localDictionary: dictionary.isLocalDictionary,
@@ -781,7 +784,7 @@ class _SentenceTranslationWidgetState
       onWebViewCreated: (controller) {
         _webviewControllers[dictionary.hashCode] = controller;
         // 首个请求带 header，页内后续导航只能靠 cookie store。
-        if (dictionary.isLocalDictionary) {
+        if (isServerOwned) {
           unawaited(DictionaryService.installSessionCookie(serverUrl));
         }
       },
@@ -789,7 +792,8 @@ class _SentenceTranslationWidgetState
         if (index == _currentPage) {
           _preloadAdjacentPages();
         }
-        if (!dictionary.isLocalDictionary) {
+        // Lute 自己的 AI 页面不能被第三方词典的修补脚本改写。
+        if (!isServerOwned) {
           DictionaryService.repairBrokenPage(controller);
         }
       },

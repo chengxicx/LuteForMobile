@@ -1560,15 +1560,18 @@ class HtmlParser {
       if (!isActive) continue;
       if (usefor != 'sentences') continue;
 
-      final isLocal =
-          _getSelectedOptionValue(
-            entry.querySelector('select[name*="dicttype"]'),
-          ) ==
-          'localdict';
+      final dictType = _getSelectedOptionValue(
+        entry.querySelector('select[name*="dicttype"]'),
+      );
+      final isLocal = dictType == 'localdict';
       final local = isLocal || looksLikeLocalDictFile(uri);
 
       String displayName;
-      if (local) {
+      if (dictType == 'AI' || _isAiSentenceUri(uri)) {
+        // Lute's AI tab is an ordinary sortable row in the Language form;
+        // its root-relative URL has no host, so name it explicitly.
+        displayName = 'AI sentence translation';
+      } else if (local) {
         displayName =
             _localDictionaryLabel(entry) ?? localDictFallbackName(uri);
       } else {
@@ -1585,6 +1588,11 @@ class HtmlParser {
     }
 
     return dictionaries;
+  }
+
+  bool _isAiSentenceUri(String uri) {
+    final path = uri.split('?').first;
+    return path == '/ai/sentence' || path.endsWith('/ai/sentence');
   }
 
   String _extractDictionaryName(String uri) {

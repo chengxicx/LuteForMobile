@@ -42,6 +42,14 @@ class DictionarySource {
   /// 老缓存里没有 `isLocal` 字段，靠模板形状兜底识别。
   bool get isLocalDictionary => isLocal || looksLikeLocalDictFile(urlTemplate);
 
+  /// 服务端 Language 页里的 AI 句译行（`/ai/sentence?lang=…`）。
+  ///
+  /// 它不是本地词典，但和本地词典一样属于自家服务器，请求要带会话凭证。
+  bool get isServerAiSentence {
+    final path = urlTemplate.split('?').first;
+    return path == '/ai/sentence' || path.endsWith('/ai/sentence');
+  }
+
   factory DictionarySource.fromJson(Map<String, dynamic> json) {
     final urlTemplate = json['urlTemplate'] as String? ?? '';
     final isLocal =
@@ -122,7 +130,18 @@ class DictionaryService {
         term: term,
       );
     }
-    return buildUrl(term, dictionary.urlTemplate);
+    final url = buildUrl(term, dictionary.urlTemplate);
+    // The Language form stores Lute's own AI tab as a root-relative URL
+    // (`/ai/sentence?...`); a WebView has no page context to resolve it,
+    // so anchor it to the configured server.
+    final parsed = Uri.tryParse(url);
+    if (parsed != null && !parsed.hasScheme) {
+      final base = Uri.tryParse(serverUrl);
+      if (base != null && base.host.isNotEmpty) {
+        return base.resolveUri(parsed).toString();
+      }
+    }
+    return url;
   }
 
   Future<List<DictionarySource>> getDictionariesForLanguage(
