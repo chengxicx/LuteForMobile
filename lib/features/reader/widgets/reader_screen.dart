@@ -2567,7 +2567,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 : () => _translateSentenceFromCard(item, langId),
             onGrammar: sentence.isEmpty
                 ? null
-                : () => _openSentenceGrammar(sentence),
+                : () => _openSentenceGrammar(sentence, langId: langId),
+            onAiGrammar: sentence.isEmpty || langId == null
+                ? null
+                : () => _openAiGrammar(sentence, langId),
             onDictLookup: tooltip.term.isEmpty
                 ? null
                 : () => _handleDictLookup(tooltip.term),
@@ -2618,7 +2621,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// The card goes first for the same reason as the translation: the grammar
   /// screen is pushed onto the navigator, and the card lives in the root
   /// overlay, which would otherwise float above it.
-  void _openSentenceGrammar(String sentence) {
+  void _openSentenceGrammar(
+    String sentence, {
+    int? langId,
+    int initialTab = 0,
+  }) {
     final page = ref.read(readerProvider).pageData;
     if (page == null) return;
     TermTooltipClass.close();
@@ -2628,9 +2635,27 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           sentenceText: sentence,
           bookId: page.bookId,
           pageNum: page.currentPage,
+          langId: langId,
+          initialTab: initialTab,
         ),
       ),
     );
+  }
+
+  /// AI grammar is server-side and online-only: no local fallback, no outbox.
+  /// The entry stays visible offline, but a tap explains why nothing opened.
+  void _openAiGrammar(String sentence, int langId) {
+    if (!ServerStatusManager.isReachable) {
+      TermTooltipClass.close();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('AI analysis needs a network connection.'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+    _openSentenceGrammar(sentence, langId: langId, initialTab: 1);
   }
 
   /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.

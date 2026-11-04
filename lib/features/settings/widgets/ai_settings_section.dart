@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:song_mobile/features/settings/models/ai_settings.dart';
 import 'package:song_mobile/features/settings/providers/ai_settings_provider.dart';
 import 'package:song_mobile/features/settings/widgets/model_selector.dart';
+import 'package:song_mobile/shared/providers/network_providers.dart';
 import 'package:song_mobile/shared/theme/theme_extensions.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class AISettingsSection extends ConsumerStatefulWidget {
   const AISettingsSection({super.key});
@@ -40,6 +42,8 @@ class _AISettingsSectionState extends ConsumerState<AISettingsSection> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _buildServerGrammarNote(context),
+                const SizedBox(height: 8),
                 DropdownButtonFormField<AIProvider>(
                   initialValue: provider,
                   decoration: const InputDecoration(
@@ -75,6 +79,73 @@ class _AISettingsSectionState extends ConsumerState<AISettingsSection> {
         ],
       ),
     );
+  }
+
+  /// Server-side AI grammar keeps its key on the server (web Settings), so
+  /// this section must not grow a second key field.  A note plus a shortcut to
+  /// the web page is enough.
+  Widget _buildServerGrammarNote(BuildContext context) {
+    final colors = context.appColorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.background.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 16, color: colors.text.secondary),
+              const SizedBox(width: 6),
+              Text(
+                'AI grammar analysis',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'The reader\'s AI analysis uses the AI provider configured on the '
+            'server. Set the OpenAI or Anthropic key in the web Settings page; '
+            'this section only configures on-device AI features.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: colors.text.secondary,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TextButton.icon(
+              onPressed: _openServerSettings,
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('Open web settings'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openServerSettings() async {
+    final base = ref.read(apiServiceProvider).baseUrl.trim();
+    if (base.isEmpty) return;
+    final root = base.endsWith('/')
+        ? base.substring(0, base.length - 1)
+        : base;
+    try {
+      await launchUrl(
+        Uri.parse('$root/settings/index'),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (_) {
+      // The note still tells the user where to go.
+    }
   }
 
   String _providerDisplayName(AIProvider provider) {

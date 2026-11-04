@@ -1397,6 +1397,36 @@ class ApiService {
     );
   }
 
+  /// POST /ai/grammar/analyze —— server-side AI grammar analysis, streamed as
+  /// Server-Sent Events.
+  ///
+  /// The AI provider and its API key live on the server (configured in the
+  /// web Settings page), so the app sends only the sentence and its language
+  /// id.  The response is `text/event-stream`; the caller parses it with
+  /// [SseParser].
+  ///
+  /// Flags are the same "the user is waiting, there is no local fallback"
+  /// contract as the term form: `noQueue` fails immediately when the app
+  /// already knows the server is unreachable, and `failFast` skips the health
+  /// probe on failure.  Neither may flip global reachability -- an AI failure
+  /// must not switch the reader's offline features off.
+  Future<Response<ResponseBody>> postAiGrammarAnalysis({
+    required String sentence,
+    required int langId,
+  }) async {
+    return await _dio.post<ResponseBody>(
+      '/ai/grammar/analyze',
+      data: jsonEncode({'q': sentence, 'lang': langId}),
+      options: Options(
+        contentType: Headers.jsonContentType,
+        responseType: ResponseType.stream,
+        headers: const {'Accept': 'text/event-stream'},
+        receiveTimeout: const Duration(seconds: 90),
+        extra: _failFastRead,
+      ),
+    );
+  }
+
   /// GET /term/sync —— 词库全量同步。服务端对全部词条算内容 hash，客户端带上
   /// 上次同步的 hash，没变化时只回 unchanged（几十字节），变了才回全量 JSON
   /// （约 2MB / 1.6 万词）。任何失败返回 null，调用方静默跳过——同步永远

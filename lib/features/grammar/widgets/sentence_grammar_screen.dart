@@ -6,28 +6,38 @@ import '../../../shared/theme/eink_scope.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../../reader/providers/current_book_provider.dart';
 import '../models/grammar_point.dart';
 import '../providers/sentence_grammar_provider.dart';
+import 'ai_grammar_panel.dart';
 import 'grammar_point_card.dart';
+import 'sentence_quote_header.dart';
 
 /// Grammar analysis of one sentence, opened from the word card's Grammar
 /// button.
 ///
-/// The reader pre-analyses the page a few seconds after it loads (same cache
-/// as the Grammar tab), so an ordinary open here is instant: the sentence is
-/// looked up in that cache, and only falls back to a one-sentence request
-/// when the pre-analysis cannot answer (page just turned, analysis failed,
-/// or the server's sentence splitting does not line up).
+/// Two tabs keep the two engines visibly separate: the local grammar library
+/// (the same `/read/grammar_analysis` cache the reader pre-analyses) and the
+/// server-side AI provider (`/ai/grammar/analyze`).
 class SentenceGrammarScreen extends ConsumerStatefulWidget {
   final String sentenceText;
   final int bookId;
   final int pageNum;
+
+  /// Language of the sentence, used by the AI tab.  Falls back to the
+  /// current book when the caller cannot supply it.
+  final int? langId;
+
+  /// 0 = local grammar library, 1 = AI analysis.
+  final int initialTab;
 
   const SentenceGrammarScreen({
     super.key,
     required this.sentenceText,
     required this.bookId,
     required this.pageNum,
+    this.langId,
+    this.initialTab = 0,
   });
 
   @override
@@ -35,16 +45,44 @@ class SentenceGrammarScreen extends ConsumerStatefulWidget {
       _SentenceGrammarScreenState();
 }
 
-class _SentenceGrammarScreenState extends ConsumerState<SentenceGrammarScreen> {
+class _SentenceGrammarScreenState extends ConsumerState<SentenceGrammarScreen>
+    with SingleTickerProviderStateMixin {
   bool _loading = true;
   String? _errorMessage;
   List<GrammarPoint> _points = const [];
 
+  late final TabController _tabController;
+  bool _aiActive = false;
+
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(
+      length: 2,
+      vsync: this,
+      initialIndex: widget.initialTab,
+    );
+    _aiActive = widget.initialTab == 1;
+    _tabController.addListener(_handleTabChanged);
     _load();
   }
+
+  @override
+  void dispose() {
+    _tabController.removeListener(_handleTabChanged);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _handleTabChanged() {
+    final active = _tabController.index == 1;
+    if (active != _aiActive) {
+      setState(() => _aiActive = active);
+    }
+  }
+
+  int? get _langId =>
+      widget.langId ?? ref.read(currentBookProvider).langId;
 
   Future<void> _load({bool force = false}) async {
     setState(() {
@@ -73,12 +111,31 @@ class _SentenceGrammarScreenState extends ConsumerState<SentenceGrammarScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Sentence grammar')),
-      body: _buildBody(context),
+      appBar: AppBar(
+        title: const Text('Sentence grammar'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'Grammar library'),
+            Tab(text: 'AI analysis'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildLocalBody(context),
+          AiGrammarPanel(
+            sentence: widget.sentenceText,
+            langId: _langId,
+            active: _aiActive,
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildBody(BuildContext context) {
+  Widget _buildLocalBody(BuildContext context) {
     if (_loading) {
       return const LoadingIndicator(message: 'Analyzing grammar...');
     }
@@ -95,7 +152,7 @@ class _SentenceGrammarScreenState extends ConsumerState<SentenceGrammarScreen> {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
-          _SentenceHeader(sentence: widget.sentenceText),
+          SentenceQuoteHeader(sentence: widget.sentenceText),
           const SizedBox(height: 12),
           if (_points.isEmpty)
             _buildEmpty(context)
@@ -156,64 +213,6 @@ class _SentenceGrammarScreenState extends ConsumerState<SentenceGrammarScreen> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _SentenceHeader extends StatelessWidget {
-  final String sentence;
-
-  const _SentenceHeader({required this.sentence});
-
-  @override
-  Widget build(BuildContext context) {
-    // Label follows the same CJK rule as the card's fold label.
-    final cjk =
-        RegExp(r'[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]').hasMatch(sentence);
-    final colors = context.appColorScheme;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.format_quote, size: 14, color: colors.text.secondary),
-            const SizedBox(width: 4),
-            Text(
-              cjk ? '原文' : 'Sentence',
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: colors.text.secondary,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        // Same quote-bar treatment as the example sentences in the cards
-        // below, so the page reads as one visual family.
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsetsDirectional.only(
-            start: 10,
-            end: 4,
-            top: 2,
-            bottom: 2,
-          ),
-          decoration: BoxDecoration(
-            border: BorderDirectional(
-              start: BorderSide(
-                color: context.eInk ? colors.text.primary : context.m3Primary,
-                width: 2,
-              ),
-            ),
-          ),
-          child: Text(
-            sentence,
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.5),
-          ),
-        ),
-      ],
     );
   }
 }
