@@ -507,6 +507,100 @@ class DictionaryService {
     );
   }
 
+  /// 让自家服务端渲染的 AI 句译页跟着 App 主题走。
+  ///
+  /// `/ai/sentence` 用的是 Lute 账号的主题（`/theme/current`），跟 App 的
+  /// 浅色/深色设置无关：App 浅色时页面可能是深色，反之亦然（词卡
+  /// Sentence 面板实测）。这里把 App 的主题色写进页面，覆盖服务端
+  /// 主题变量，正文、次级文字、背景、表格分隔线一次性对齐弹窗。
+  ///
+  /// [dark] 只影响 `color-scheme` 与错误提示的配色，其余全部走显式颜色。
+  static String serverPageThemeScript({
+    required String background,
+    required String surface,
+    required String primaryText,
+    required String secondaryText,
+    required String divider,
+    required String accent,
+    required bool dark,
+  }) {
+    final css = '''
+body {
+  --background-color: $background !important;
+  --font-color: $primaryText !important;
+  --panel-bg: $surface !important;
+  --light-grey: $secondaryText !important;
+  --link-color: $accent !important;
+  --home-link-color: $primaryText !important;
+  --menu-link-color: $primaryText !important;
+  --input-bg: $background !important;
+  --input-fg: $primaryText !important;
+  --input-placeholder-color: $secondaryText !important;
+  color-scheme: ${dark ? 'dark' : 'light'} !important;
+  background-color: $background !important;
+  color: $primaryText !important;
+}
+.ai-eyebrow, .ai-section-title, .ai-reading, .ai-example-translation,
+.ai-table th, .ai-guidance h1 {
+  color: $secondaryText !important;
+}
+.ai-table th, .ai-table td { border-bottom-color: $divider !important; }
+/* 服务端主题把全局 table 涂成暗色卡片（#2c2c2e / #242426，且带 !important），
+   AI 页的表格会整块黑在浅色弹窗里。这里按 AI 页原本的紧凑样式还原成
+   透明底 + 分隔线。 */
+.ai-table {
+  background-color: transparent !important;
+  color: $primaryText !important;
+  border: none !important;
+  border-radius: 0 !important;
+  border-spacing: 0 !important;
+  box-shadow: none !important;
+}
+.ai-table th, .ai-table td {
+  background-color: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid $divider !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0.3rem 0.45rem !important;
+  line-height: 1.4 !important;
+}
+.ai-table th {
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+  letter-spacing: 0.02em !important;
+}
+.ai-table td { font-size: 0.9rem !important; color: $primaryText !important; }
+.ai-table td .ai-reading { color: $secondaryText !important; }
+a, a:link, a:visited { color: $accent !important; }
+${dark ? '.ai-error { color: #FFB4AB !important; background: rgba(255, 180, 171, 0.14) !important; }' : ''}
+''';
+    return '''
+(function(){
+  var css = ${jsonEncode(css)};
+  function paint(){
+    var el = document.getElementById('lute-app-theme');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'lute-app-theme';
+      (document.head || document.documentElement).appendChild(el);
+    }
+    el.textContent = css;
+  }
+  paint();
+  setTimeout(paint, 300);
+  setTimeout(paint, 1200);
+  setTimeout(paint, 3000);
+})();
+''';
+  }
+
+  static void applyServerPageTheme(InAppWebViewController controller,
+      {required String script}) {
+    unawaited(controller.evaluateJavascript(source: script));
+  }
+
   InAppWebViewController? getCachedWebview(String cacheKey) {
     return _webviewCache[cacheKey];
   }

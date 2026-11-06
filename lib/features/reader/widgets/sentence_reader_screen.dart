@@ -30,7 +30,6 @@ import '../utils/sentence_parser.dart';
 import '../utils/term_selection.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../shared/providers/network_providers.dart';
-import '../../../shared/providers/server_status_provider.dart';
 import '../../../core/outbox/providers/outbox_provider.dart';
 import '../../../features/settings/providers/settings_provider.dart';
 import '../../../shared/widgets/loading_indicator.dart';
@@ -1445,9 +1444,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           onGrammar: sentence.isEmpty
               ? null
               : () => _openSentenceGrammar(sentence, langId: langId),
-          onAiGrammar: sentence.isEmpty || langId == null
-              ? null
-              : () => _openAiGrammar(sentence, langId),
           grammarEnabled: grammarPresence != GrammarPresence.no,
         );
       }
@@ -1491,22 +1487,6 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
         ),
       ),
     );
-  }
-
-  /// AI grammar is server-side and online-only; keep the offline path out of
-  /// this feature entirely.
-  void _openAiGrammar(String sentence, int langId) {
-    if (!ServerStatusManager.isReachable) {
-      TermTooltipClass.close();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('AI analysis needs a network connection.'),
-          duration: Duration(seconds: 4),
-        ),
-      );
-      return;
-    }
-    _openSentenceGrammar(sentence, langId: langId, initialTab: 1);
   }
 
   /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.

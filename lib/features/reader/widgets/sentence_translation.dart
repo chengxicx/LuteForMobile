@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -581,13 +582,15 @@ class _SentenceTranslationWidgetState
               Text(
                 'Original',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: context.m3Secondary,
+                  // m3Secondary 在深色预设里是 #625B71，压在 #48484A 上几乎
+                  // 看不见；次级文字统一用正文次级色。
+                  color: context.appColorScheme.text.secondary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               Icon(
                 _isOriginalCollapsed ? Icons.expand_more : Icons.expand_less,
-                color: context.m3Secondary,
+                color: context.appColorScheme.text.secondary,
               ),
             ],
           ),
@@ -769,12 +772,42 @@ class _SentenceTranslationWidgetState
     final isServerOwned =
         dictionary.isLocalDictionary || dictionary.isServerAiSentence;
 
+    // 服务端 AI 页按 Lute 账号主题渲染，和 App 的浅色/深色无关。把 App
+    // 的颜色注入页面，避免弹窗是浅色、内容区却是深色（或相反）。
+    final serverPageTheme = dictionary.isServerAiSentence
+        ? DictionaryService.serverPageThemeScript(
+            background: _cssColor(
+              context.appColorScheme.background.background,
+            ),
+            surface: _cssColor(context.appColorScheme.background.surface),
+            primaryText: _cssColor(context.appColorScheme.text.primary),
+            secondaryText: _cssColor(context.appColorScheme.text.secondary),
+            divider: _cssColor(context.appColorScheme.border.dividerColor),
+            // 深色下沿用 M3 深色主题的 primary（#6750A4 在深色背景上对比度
+            // 不够，链接会糊成一片）。
+            accent: _cssColor(
+              Theme.of(context).brightness == Brightness.dark
+                  ? const Color(0xFFD0BCFF)
+                  : context.appColorScheme.material3.primary,
+            ),
+            dark: Theme.of(context).brightness == Brightness.dark,
+          )
+        : null;
+
     return InAppWebView(
       initialUrlRequest: URLRequest(
         url: WebUri(url),
         // 凭证只发给自己的服务器，第三方在线词典不带。
         headers: isServerOwned ? SessionManager.authHeaders() : null,
       ),
+      initialUserScripts: serverPageTheme == null
+          ? null
+          : UnmodifiableListView<UserScript>([
+              UserScript(
+                source: serverPageTheme,
+                injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+              ),
+            ]),
       initialSettings: DictionaryService.webviewSettings(
         localDictionary: dictionary.isLocalDictionary,
       ),
@@ -795,6 +828,12 @@ class _SentenceTranslationWidgetState
         // Lute 自己的 AI 页面不能被第三方词典的修补脚本改写。
         if (!isServerOwned) {
           DictionaryService.repairBrokenPage(controller);
+        } else if (serverPageTheme != null) {
+          // 文档结束注入之后再补一次：服务端主题样式可能更晚生效。
+          DictionaryService.applyServerPageTheme(
+            controller,
+            script: serverPageTheme,
+          );
         }
       },
     );
@@ -981,9 +1020,20 @@ class _SentenceTranslationWidgetState
   }
 
   Widget _buildCloseButton(BuildContext context) {
+    // 深色预设的 primary 是 #6750A4，压在 #48484A 上对比度只有 ~1.9:1；
+    // 这里只调这颗按钮，浅色仍用主题 primary，不动全局按钮配色。
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return SizedBox(
       width: double.infinity,
-      child: TextButton(onPressed: widget.onClose, child: const Text('Close')),
+      child: TextButton(
+        style: TextButton.styleFrom(
+          foregroundColor: dark
+              ? const Color(0xFFD0BCFF)
+              : context.appColorScheme.material3.primary,
+        ),
+        onPressed: widget.onClose,
+        child: const Text('Close'),
+      ),
     );
   }
 
@@ -1112,4 +1162,10 @@ class _HeightAdjustmentDialogState extends State<_HeightAdjustmentDialog> {
       ],
     );
   }
+}
+
+/// CSS 不接受 Flutter 的 0xAARRGGBB，这里只取 RGB（主题色都是不透明的）。
+String _cssColor(Color color) {
+  final rgb = color.toARGB32() & 0xFFFFFF;
+  return '#${rgb.toRadixString(16).padLeft(6, '0').toUpperCase()}';
 }

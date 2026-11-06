@@ -2568,9 +2568,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             onGrammar: sentence.isEmpty
                 ? null
                 : () => _openSentenceGrammar(sentence, langId: langId),
-            onAiGrammar: sentence.isEmpty || langId == null
-                ? null
-                : () => _openAiGrammar(sentence, langId),
             onDictLookup: tooltip.term.isEmpty
                 ? null
                 : () => _handleDictLookup(tooltip.term),
@@ -2640,22 +2637,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         ),
       ),
     );
-  }
-
-  /// AI grammar is server-side and online-only: no local fallback, no outbox.
-  /// The entry stays visible offline, but a tap explains why nothing opened.
-  void _openAiGrammar(String sentence, int langId) {
-    if (!ServerStatusManager.isReachable) {
-      TermTooltipClass.close();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('AI analysis needs a network connection.'),
-          duration: Duration(seconds: 4),
-        ),
-      );
-      return;
-    }
-    _openSentenceGrammar(sentence, langId: langId, initialTab: 1);
   }
 
   /// Double tap on a word: cycle its status 1 -> 3 -> 99 -> 1.

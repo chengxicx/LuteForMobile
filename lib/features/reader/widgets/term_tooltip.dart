@@ -42,10 +42,6 @@ class _AnimatedTermTooltip extends StatefulWidget {
   /// the button.
   final VoidCallback? onGrammar;
 
-  /// Ask the server's AI provider to analyse the sentence.  Online-only;
-  /// null hides the button when the caller has no sentence/language.
-  final VoidCallback? onAiGrammar;
-
   /// Hand the term to a dictionary app (Eudic floating window / deep link).
   /// Null hides the corner button.
   final VoidCallback? onDictLookup;
@@ -74,7 +70,6 @@ class _AnimatedTermTooltip extends StatefulWidget {
     this.onSpeak,
     this.onSentenceTranslation,
     this.onGrammar,
-    this.onAiGrammar,
     this.onDictLookup,
     this.dictGloss,
     this.dictSenses = const [],
@@ -126,7 +121,6 @@ class _AnimatedTermTooltipState extends State<_AnimatedTermTooltip>
       onSpeak: widget.onSpeak,
       onSentenceTranslation: widget.onSentenceTranslation,
       onGrammar: widget.onGrammar,
-      onAiGrammar: widget.onAiGrammar,
       onDictLookup: widget.onDictLookup,
       dictGloss: widget.dictGloss,
       dictSenses: widget.dictSenses,
@@ -162,7 +156,6 @@ class _TooltipContent extends ConsumerWidget {
   final VoidCallback? onSpeak;
   final VoidCallback? onSentenceTranslation;
   final VoidCallback? onGrammar;
-  final VoidCallback? onAiGrammar;
   final VoidCallback? onDictLookup;
   final String? dictGloss;
   final List<String> dictSenses;
@@ -174,7 +167,6 @@ class _TooltipContent extends ConsumerWidget {
     this.onSpeak,
     this.onSentenceTranslation,
     this.onGrammar,
-    this.onAiGrammar,
     this.onDictLookup,
     this.dictGloss,
     this.dictSenses = const [],
@@ -397,11 +389,10 @@ class _TooltipContent extends ConsumerWidget {
                 ),
               ],
               if (onSentenceTranslation != null ||
-                  (onGrammar != null && grammarEnabled) ||
-                  onAiGrammar != null) ...[
+                  (onGrammar != null && grammarEnabled)) ...[
                 const SizedBox(height: 8),
                 // 胶囊描边按钮带文字：36dp 高比 44dp 纯图标版小巧，8dp 间距
-                // 仍把命中区隔开。三个按钮（Sentence / Grammar / AI）在 240dp
+                // 仍把命中区隔开。两个按钮（Sentence / Grammar）在 240dp
                 // 卡片里靠 8dp 内边距与 12sp 字号压住宽度，避免 FittedBox 把
                 // 整行缩得字号过小。卡片已由 IntrinsicWidth 贴内容收宽，
                 // 文字短时按钮行就是内容区全宽（贴 12dp 边距），长文本时经
@@ -426,24 +417,14 @@ class _TooltipContent extends ConsumerWidget {
                             onPressed: onSentenceTranslation!,
                           ),
                         if (onSentenceTranslation != null &&
-                            ((onGrammar != null && grammarEnabled) ||
-                                onAiGrammar != null))
+                            onGrammar != null &&
+                            grammarEnabled)
                           const SizedBox(width: 8),
                         if (onGrammar != null && grammarEnabled)
                           _TooltipActionButton(
                             icon: Icons.spellcheck,
                             label: 'Grammar',
                             onPressed: onGrammar!,
-                          ),
-                        if (onGrammar != null &&
-                            grammarEnabled &&
-                            onAiGrammar != null)
-                          const SizedBox(width: 8),
-                        if (onAiGrammar != null)
-                          _TooltipActionButton(
-                            icon: Icons.auto_awesome,
-                            label: 'AI',
-                            onPressed: onAiGrammar!,
                           ),
                       ],
                     ),
@@ -555,7 +536,6 @@ class TermTooltipClass {
     VoidCallback? onSpeak,
     VoidCallback? onSentenceTranslation,
     VoidCallback? onGrammar,
-    VoidCallback? onAiGrammar,
     VoidCallback? onDictLookup,
     String? dictGloss,
     List<String> dictSenses = const [],
@@ -581,7 +561,6 @@ class TermTooltipClass {
           onSpeak: onSpeak,
           onSentenceTranslation: onSentenceTranslation,
           onGrammar: onGrammar,
-          onAiGrammar: onAiGrammar,
           onDictLookup: onDictLookup,
           dictGloss: dictGloss,
           dictSenses: dictSenses,
@@ -641,7 +620,6 @@ class TermTooltipClass {
               onSpeak: onSpeak,
               onSentenceTranslation: onSentenceTranslation,
               onGrammar: onGrammar,
-              onAiGrammar: onAiGrammar,
               onDictLookup: onDictLookup,
               dictGloss: dictGloss,
               dictSenses: dictSenses,
