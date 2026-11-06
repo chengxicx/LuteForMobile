@@ -153,6 +153,20 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
   /// 看门狗的检查点(开口第 3、8 秒各查一次,减少误伤)。
   static const Set<int> _silentCheckSeconds = {3, 8};
 
+  /// 解析好的输入设备(内置麦优先),只算一次。
+  ///
+  /// 显式给 [RecordConfig.device] 是为了绕开 record_android 的
+  /// FormatCodecSelector.adjustToDeviceCapabilities():那里在 device 为
+  /// null 时会**真开一路 8kHz 采集**去探测默认输入设备(DeviceUtils.
+  /// getDefaultInputDevice 会 AudioRecord + startRecording),探测流刚
+  /// 收尾、我们的 48kHz 流就开了。Leaf5C 的 HAL 在这种两路采集重叠的
+  /// 时序里会把后开的那路塞进 compress-offload 录音用例
+  /// (audio-record-compress2),而它的 /dev/snd/comprC0D36 内核侧不存在,
+  /// 于是一帧不出、stop() 永挂(2026-11-06 实测:同一份配置第 3 通必中)。
+  /// 给了 device 后插件改走 setPreferredDevice,探测流整条消失,一通
+  /// take 只剩我们自己的一条输入流。
+  InputDevice? _inputDevice;
+
   AudioRecorder? _recorder;
   Timer? _recordingTimer;
 
@@ -216,6 +230,25 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
     final recorder = AudioRecorder();
     _recorder = recorder;
     return recorder;
+  }
+
+  /// 取一个明确的输入设备(内置麦优先),拿不到就回 null 让插件走默认
+  /// 探测——探测流只是偶发的 HAL 竞态来源,不该因为它把录音整个挡下。
+  Future<InputDevice?> _resolveInputDevice(AudioRecorder recorder) async {
+    final cached = _inputDevice;
+    if (cached != null) return cached;
+    try {
+      final devices =
+          await recorder.listInputDevices().timeout(_engineCallTimeout);
+      if (devices.isEmpty) return null;
+      final device = devices.firstWhere(
+        (d) => d.type == InputDeviceType.builtIn,
+        orElse: () => devices.first,
+      );
+      return _inputDevice = device;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 录音引擎挂死后的断舍离:实例整个作废(dispose 也可能挂,同样套
@@ -343,16 +376,20 @@ class ShadowingNotifier extends Notifier<ShadowingState> {
       // 即便如此,挂死仍可能发生(超时+看门狗兜底,见 _engineCallTimeout);
       // start 也可能挂死(HAL 被上一条僵尸流占着):同样超时作废。
       final recorder = _recorderInstance;
+      final device = await _resolveInputDevice(recorder);
       try {
         await recorder
             .start(
-              const RecordConfig(
+              RecordConfig(
                 encoder: AudioEncoder.aacLc,
                 sampleRate: 48000,
                 numChannels: 1,
                 bitRate: 48000,
                 echoCancel: false,
                 noiseSuppress: false,
+                // 显式设备:让 record_android 跳过每通前那次 8kHz 探测
+                // 采集(见 _inputDevice 的注释)。
+                device: device,
                 androidConfig: AndroidRecordConfig(
                   audioSource: AndroidAudioSource.voiceRecognition,
                 ),
