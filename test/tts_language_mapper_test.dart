@@ -79,6 +79,38 @@ void main() {
     });
   });
 
+  group('ttsLanguageNameForCode', () {
+    test('maps an EPUB lang attribute back to a language name', () {
+      expect(ttsLanguageNameForCode('ja-JP'), 'japanese');
+      expect(ttsLanguageNameForCode('ja'), 'japanese');
+      expect(ttsLanguageNameForCode('en-US'), 'english');
+      // 完整标签优先：繁体/粤语不能只按主语言子标签认成「中文」。
+      expect(ttsLanguageNameForCode('zh-TW'), 'traditional chinese');
+      expect(ttsLanguageNameForCode('zh-HK'), 'cantonese');
+    });
+
+    test('ignores case and separators', () {
+      expect(ttsLanguageNameForCode('JA-jp'), 'japanese');
+      expect(ttsLanguageNameForCode('ja_JP'), 'japanese');
+      expect(ttsLanguageNameForCode('  en  '), 'english');
+    });
+
+    test('returns null when nothing matches', () {
+      expect(ttsLanguageNameForCode(null), isNull);
+      expect(ttsLanguageNameForCode(''), isNull);
+      expect(ttsLanguageNameForCode('   '), isNull);
+      expect(ttsLanguageNameForCode('xx-YY'), isNull);
+    });
+
+    test('round-trips every known language name', () {
+      for (final tag in ttsLanguageNameToTag.values) {
+        final name = ttsLanguageNameForCode(tag);
+        expect(name, isNotNull, reason: tag);
+        expect(ttsLanguageCodeFor(name), tag, reason: tag);
+      }
+    });
+  });
+
   group('ttsSampleSentenceFor', () {
     test('取的是该语种的句子，而不是英文', () {
       expect(ttsSampleSentenceFor('ja-JP'), contains('テスト'));

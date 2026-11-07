@@ -72,6 +72,31 @@ String ttsLanguageCodeFor(String? languageName) {
   return ttsLanguageNameToTag[key] ?? defaultTtsLanguageTag;
 }
 
+/// 把语言标签（如 EPUB 的 `<html lang="ja-JP">`）反向映射回语言名。
+///
+/// 返回值是 [ttsLanguageNameToTag] 的键（小写），[ttsLanguageCodeFor] 换算时
+/// 大小写无关，所以直接交给 TTS 播放器即可。本地导入的书没有服务端的语言
+/// 记录，只能从章节 HTML 的 `lang` 属性推断；返回 null 时调用方沿用
+/// `loadPage` 的兜底语言。
+String? ttsLanguageNameForCode(String? code) {
+  if (code == null) return null;
+  final normalized = code.toLowerCase().trim();
+  if (normalized.isEmpty) return null;
+  // 先按完整标签匹配：zh-CN / zh-TW / zh-HK 的主语言子标签相同，
+  // 只按 primary 匹配会把繁体、粤语都认成中文。
+  for (final entry in ttsLanguageNameToTag.entries) {
+    if (entry.value.toLowerCase() == normalized) return entry.key;
+  }
+  final primary = normalized.split(RegExp(r'[-_]')).first;
+  if (primary.isEmpty) return null;
+  for (final entry in ttsLanguageNameToTag.entries) {
+    final tagPrimary =
+        entry.value.toLowerCase().split(RegExp(r'[-_]')).first;
+    if (tagPrimary == primary) return entry.key;
+  }
+  return null;
+}
+
 /// 各语言的「朗读测试」例句，按主语言子标签索引。
 ///
 /// 设置页的 Test Speech 必须用目标语种的句子：edge-tts 对「语音与文本语种

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart'
@@ -6,6 +7,7 @@ import 'package:flutter/gestures.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/logger/api_logger.dart';
@@ -16,8 +18,18 @@ import '../../../shared/theme/eink_scope.dart';
 import '../../books/models/book_create.dart';
 import '../../books/providers/books_provider.dart';
 import '../../reader/providers/epub_offline_provider.dart';
+import '../../reader/providers/sentence_tts_provider.dart';
+import '../../reader/providers/tts_player_provider.dart';
+import '../../reader/widgets/tts_player_widget.dart';
+import '../../settings/models/tts_settings.dart';
+import '../../settings/providers/settings_provider.dart';
+import '../../settings/providers/tts_settings_provider.dart';
+import '../../shadowing/models/shadowing_sentence.dart';
+import '../../shadowing/providers/shadowing_provider.dart';
+import '../../shadowing/widgets/shadowing_sheet.dart';
 import '../providers/local_book_providers.dart';
 import '../services/local_book_store.dart';
+import '../services/local_chapter_speech.dart';
 import '../services/local_epub_import.dart';
 import '../services/local_epub_page.dart' show localEpubPageVersion;
 import 'local_dict_lookup_sheet.dart';
@@ -54,18 +66,45 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
   double? _pendingScrollRestore;
   Uri? _chapterUrl;
 
+  /// Sentences of the current chapter, fed to the TTS player bar.
+  ///
+  /// Local chapters are plain extracted HTML without the server's token
+  /// stream, so [extractLocalChapterSpeech] splits them on sentence
+  /// punctuation (see that file for the trade-offs).
+  List<TTSPlayerSentence> _ttsSentences = const [];
+  List<ShadowingSentence> _shadowingSentences = const [];
+
+  /// Language inferred from the chapter's `<html lang>`, already in the
+  /// mapper's lowercase name form.
+  String? _speechLanguageName;
+
+  /// Server language id the shadowing endpoint scores against.  Resolved
+  /// lazily on the first 跟读 tap (it needs the server's language list,
+  /// and the book itself never stored one).
+  int? _shadowingLanguageId;
+
   static const String _nightPrefsKey = 'local_epub_night';
   static const String _fontPrefsKey = 'local_epub_font';
 
   @override
   void initState() {
     super.initState();
+    // 整本连续朗读（循环键第二档）读到本章最后一句时，播放器请这里
+    // 翻到下一章；本地阅读器的「下一页」就是下一章。
+    ref.read(ttsPlayerProvider.notifier).onRequestNextPage =
+        _advanceChapterForContinuousReading;
     _load();
   }
 
   @override
   void dispose() {
     _scrollFlushTimer?.cancel();
+    // 播放器持有的是 method 引用，不摘掉的话离开阅读页后仍在自动翻章。
+    final ttsNotifier = ref.read(ttsPlayerProvider.notifier);
+    if (ttsNotifier.onRequestNextPage == _advanceChapterForContinuousReading) {
+      ttsNotifier.onRequestNextPage = null;
+    }
+    unawaited(ttsNotifier.stop());
     if (_lastScrollTop > 0) {
       final chapter = _chapter;
       final top = _lastScrollTop;
@@ -127,6 +166,7 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
       widget.bookId,
       _chapter,
     );
+    unawaited(_loadSpeechForChapter(_chapter));
   }
 
   /// Resolves the current chapter's local-server URL.  The server is
@@ -148,6 +188,160 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
     } catch (_) {
       _chapterUrl = null;
     }
+  }
+
+  /// Whether the read-aloud bar should be visible for the current chapter.
+  ///
+  /// Same gate as the server reader (`showAudioPlayer` + a configured TTS
+  /// provider), plus "this chapter actually produced sentences".
+  bool _showTtsPlayer() {
+    if (!ref.read(settingsProvider).showAudioPlayer) return false;
+    if (ref.read(ttsSettingsProvider).provider == TTSProvider.none) {
+      return false;
+    }
+    return _ttsSentences.isNotEmpty;
+  }
+
+  /// Reads the chapter's extracted HTML and refreshes the player with its
+  /// sentences.
+  ///
+  /// The page markup is already on disk (the importer wrote it), so this is
+  /// a local file read, never a server round trip.
+  Future<void> _loadSpeechForChapter(int index) async {
+    final data = _data;
+    if (data == null || index < 0 || index >= data.chapters.length) return;
+
+    LocalChapterSpeech speech;
+    try {
+      final dir = await ref.read(localBookStoreProvider).bookDir(widget.bookId);
+      final file = File(
+        p.joinAll([dir, 'extract', ...data.chapters[index].path.split('/')]),
+      );
+      speech = extractLocalChapterSpeech(await file.readAsString());
+    } catch (e) {
+      ApiLogger.logError('localChapterSpeech', e, details: 'chapter=$index');
+      speech = const LocalChapterSpeech(
+        ttsSentences: [],
+        shadowingSentences: [],
+      );
+    }
+    // 读盘期间用户翻走了：这份结果属于旧章，丢掉。
+    if (!mounted || _chapter != index) return;
+
+    if (_speechLanguageName != speech.languageName) {
+      _speechLanguageName = speech.languageName;
+      // 换语言了，上一次解析出的跟读语言 id 不能再用。
+      _shadowingLanguageId = null;
+    }
+    setState(() {
+      _ttsSentences = speech.ttsSentences;
+      _shadowingSentences = speech.shadowingSentences;
+    });
+    if (!_showTtsPlayer()) {
+      unawaited(ref.read(ttsPlayerProvider.notifier).stop());
+      return;
+    }
+    ref
+        .read(ttsPlayerProvider.notifier)
+        .loadPage(
+          speech.ttsSentences,
+          // 章节 `<html lang>` 推出的语言名；取不到时播放器用设置里的
+          // 兜底语言码，并在播放条上说明。
+          bookLanguageName: speech.languageName,
+        );
+  }
+
+  /// Resolves the server language id shadowing scores against.
+  ///
+  /// Local imports never stored a language, so it is inferred from the
+  /// chapter's `<html lang>` ([_speechLanguageName]) and matched against the
+  /// server's language list.  Done lazily because only the shadowing panel
+  /// needs it -- TTS itself works from the name alone.
+  Future<int?> _resolveShadowingLanguageId() async {
+    final cached = _shadowingLanguageId;
+    if (cached != null) return cached;
+    final name = _speechLanguageName;
+    if (name == null || name.isEmpty) return null;
+    try {
+      final languages = await ref
+          .read(contentServiceProvider)
+          .getLanguagesWithIds();
+      for (final language in languages) {
+        if (language.name.toLowerCase().trim() == name) {
+          _shadowingLanguageId = language.id;
+          return language.id;
+        }
+      }
+    } catch (e) {
+      ApiLogger.logError('localShadowingLanguage', e, details: name);
+    }
+    return null;
+  }
+
+  /// Opens the shadowing panel on the sentence currently being read.
+  Future<void> _openShadowing() async {
+    final sentences = _shadowingSentences;
+    if (sentences.isEmpty) return;
+
+    final chapter = _chapter;
+    final languageId = await _resolveShadowingLanguageId();
+    if (!mounted || _chapter != chapter) return;
+
+    // 评分必须是带语言 id 的句子；解析不到就维持 null，面板会明说
+    // 「本页没有语言」，而不是拿错的语种乱打分。
+    final scored = languageId == null
+        ? sentences
+        : [
+            for (final sentence in sentences)
+              ShadowingSentence(
+                sentenceId: sentence.sentenceId,
+                tokens: sentence.tokens,
+                languageId: languageId,
+                displayText: sentence.displayText,
+              ),
+          ];
+
+    var initialIndex = 0;
+    final playingId = ref.read(ttsPlayerProvider).currentSnippet?.sentenceId;
+    if (playingId != null) {
+      for (var i = 0; i < scored.length; i++) {
+        if (scored[i].sentenceId == playingId) {
+          initialIndex = i;
+          break;
+        }
+      }
+    }
+
+    // 录音、回放、听原句共用出声通道，开面板前把正在念的停掉。
+    unawaited(ref.read(ttsPlayerProvider.notifier).stop());
+    unawaited(ref.read(sentenceTTSProvider.notifier).stop());
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0x00000000),
+      builder: (context) => ShadowingSheet(
+        sentences: scored,
+        initialIndex: initialIndex,
+      ),
+    ).then((_) {
+      if (mounted) {
+        unawaited(ref.read(shadowingProvider.notifier).reset());
+      }
+    });
+  }
+
+  /// Continuous read-aloud asked for "the next page": for a local book that
+  /// is the next chapter.  Returns false at the end of the book so the
+  /// player stops instead of looping.
+  Future<bool> _advanceChapterForContinuousReading() async {
+    final data = _data;
+    if (data == null) return false;
+    final next = _chapter + 1;
+    if (next >= data.chapters.length) return false;
+    await _goToChapter(next, loadSpeech: false);
+    await _loadSpeechForChapter(next);
+    return _ttsSentences.isNotEmpty;
   }
 
   void _onWebViewCreated(InAppWebViewController controller) {
@@ -273,7 +467,7 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
     );
   }
 
-  Future<void> _goToChapter(int index) async {
+  Future<void> _goToChapter(int index, {bool loadSpeech = true}) async {
     final data = _data;
     if (data == null || index < 0 || index >= data.chapters.length) return;
     // Flush the old chapter's position before switching.
@@ -292,6 +486,8 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
     if (url != null) {
       await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(url.toString())));
     }
+    // 连续朗读的跨章路径自己等待这一份（见 _advanceChapterForContinuousReading）。
+    if (loadSpeech) unawaited(_loadSpeechForChapter(index));
   }
 
   Future<void> _uploadToServer() async {
@@ -336,6 +532,11 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
     final record = _record;
     final title = record?.title ?? data?.title ?? 'Local book';
     final chapterCount = data?.chapters.length ?? 0;
+    final showTtsPlayer =
+        ref.watch(settingsProvider.select((s) => s.showAudioPlayer)) &&
+        ref.watch(ttsSettingsProvider.select((s) => s.provider)) !=
+            TTSProvider.none &&
+        _ttsSentences.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -413,6 +614,14 @@ class _LocalBookReaderScreenState extends ConsumerState<LocalBookReaderScreen> {
             )
           : Column(
               children: [
+                // 朗读条与服务器阅读页同一套：句子来自本章 HTML，
+                // 跟读入口在句子表非空时可用。
+                if (showTtsPlayer)
+                  TTSPlayerWidget(
+                    onShadowing: _shadowingSentences.isEmpty
+                        ? null
+                        : _openShadowing,
+                  ),
                 Expanded(
                   child: _chapterUrl == null
                       ? Center(
