@@ -312,10 +312,23 @@ class ReaderNotifier extends Notifier<ReaderState> {
       final localPageCached =
           localPage != null && await _isPageCached(bookId, localPage);
       if (gen != _loadGeneration) return false; // superseded while probing
+      // A chapter that has never been read has no remembered page.  If the
+      // previous chapter warmed its first page (see [_prefetchNextChapter]),
+      // render it from disk instead of asking the server and sitting on a
+      // full-screen spinner.
+      var resumePage = localPage;
+      var resumePageCached = localPageCached;
+      if (pageNum == null && localPage == null) {
+        if (await _isPageCached(bookId, 1)) {
+          resumePage = 1;
+          resumePageCached = true;
+        }
+        if (gen != _loadGeneration) return false;
+      }
       final strategy = resolvePageLoadStrategy(
         requestedPage: pageNum,
-        localPage: localPage,
-        localPageCached: localPageCached,
+        localPage: resumePage,
+        localPageCached: resumePageCached,
         serverReachable: ServerStatusManager.isReachable,
       );
 
@@ -336,7 +349,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
       if (resumeFromLocal || strategy == PageLoadStrategy.recordNetwork) {
         // A remembered page that is *not* cached still beats letting the
         // server choose: the network branch below fetches this exact page.
-        effectivePageNum = localPage;
+        effectivePageNum = resumePage;
       }
     }
 
@@ -685,6 +698,10 @@ class ReaderNotifier extends Notifier<ReaderState> {
   /// -- for manga -- the next page's image into the disk cache.
   void _triggerNextPagePreload(PageData pageData) {
     _startFullBookPreload(pageData);
+    // EPUB chapters are separate books, so the page cache and the next-page
+    // preload never see the chapter boundary.  Warm the next chapter here,
+    // while the reader is still on this one.
+    _enqueuePrefetch(() => _prefetchNextChapter(pageData));
     if (pageData.currentPage >= pageData.pageCount) return;
 
     _enqueuePrefetch(() async {
@@ -695,6 +712,35 @@ class ReaderNotifier extends Notifier<ReaderState> {
       unawaited(_preloadNextMangaImage(pageData));
     });
     _enqueuePrefetch(() => preloadTooltipsForNextPage());
+  }
+
+  /// Warms the first page of [PageData.seriesNextBookId] (pack + Hive page
+  /// cache) so the next chapter opens from disk instead of a network load.
+  ///
+  /// Best effort: an offline or failed warm-up only means the chapter opens
+  /// the way it did before.  Duplicate work is filtered by
+  /// [EpubOfflinePrefetch]'s own per-book/page guard.
+  Future<void> _prefetchNextChapter(PageData pageData) async {
+    if (!pageData.isEpub) return;
+    final nextBookId = pageData.seriesNextBookId;
+    if (nextBookId == null) return;
+    if (!ServerStatusManager.isReachable) return;
+    try {
+      await ref.read(epubOfflinePrefetchProvider).prefetchNearby(
+            bookId: nextBookId,
+            page: 1,
+            pageCount: 1,
+            // The next chapter's real pageCount is unknown here; this call
+            // must not mark its pack as complete.
+            updatePageCount: false,
+          );
+    } catch (e) {
+      ApiLogger.logError(
+        'prefetchNextChapter',
+        e,
+        details: 'bookId=$nextBookId',
+      );
+    }
   }
 
   int? _fullPreloadBookId;

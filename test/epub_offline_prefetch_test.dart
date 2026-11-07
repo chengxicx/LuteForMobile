@@ -187,6 +187,29 @@ void main() {
     expect(saved.complete, isFalse);
   });
 
+  test('prefetchNearby warms one page without completing the pack', () async {
+    stubPage(6, 1, samplePage);
+    stubAssets();
+    when(() => api.postShadowingReadings(any())).thenAnswer(
+      (_) async => _stringResponse('{"tokens":[]}'),
+    );
+
+    await prefetch.prefetchNearby(
+      bookId: 6,
+      page: 1,
+      pageCount: 1,
+      updatePageCount: false,
+    );
+
+    expect(await store.hasPage(6, 1), isTrue);
+    verify(() => content.preloadPage(6, 1)).called(1);
+
+    final manifest = await store.manifestFor(6);
+    expect(manifest, isNotNull);
+    expect(manifest!.pageCount, 0);
+    expect(manifest.complete, isFalse);
+  });
+
   test('asset failures do not abort the download', () async {
     stubPage(5, 1, samplePage);
     when(() => api.downloadAsset(any())).thenThrow(Exception('asset down'));

@@ -210,15 +210,24 @@ class EpubOfflinePrefetch {
     required int bookId,
     required int page,
     required int pageCount,
+    bool updatePageCount = true,
   }) async {
     if (_runningBooks.contains(bookId)) return;
     final pages = {page, if (page + 1 <= pageCount) page + 1};
 
     try {
+      // A caller that only knows one page of a book (the reader warming the
+      // next chapter's first page) must not declare the pack complete: a
+      // 300-page book with one cached page would otherwise look fully
+      // downloaded.  Its real pageCount arrives when that chapter is opened
+      // and prefetchNearby runs with the usual updatePageCount.
       final manifest =
           await store.manifestFor(bookId) ??
-          EpubPackManifest(bookId: bookId, pageCount: pageCount);
-      manifest.pageCount = pageCount;
+          EpubPackManifest(
+            bookId: bookId,
+            pageCount: updatePageCount ? pageCount : 0,
+          );
+      if (updatePageCount) manifest.pageCount = pageCount;
       var changed = false;
 
       for (final p in pages) {
