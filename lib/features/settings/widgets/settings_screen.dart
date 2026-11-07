@@ -47,6 +47,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _authPasswordController = TextEditingController();
   final _luteUserController = TextEditingController();
   final _lutePasswordController = TextEditingController();
+  final _luteUserFocus = FocusNode();
+  final _loginExpansion = ExpansibleController();
   bool _obscureLutePassword = true;
   String _protocolValue = 'https';
   int _buildCount = 0;
@@ -83,6 +85,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _authPasswordController.dispose();
     _luteUserController.dispose();
     _lutePasswordController.dispose();
+    _luteUserFocus.dispose();
     super.dispose();
   }
 
@@ -129,6 +132,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _connectionTestPassed = false;
         }
       });
+      if (result.requiresLogin) {
+        // 服务器可达但要多用户登录:直接把登录块展开并聚焦用户名,
+        // 省掉用户「接下来该点哪」的一步。
+        _loginExpansion.expand();
+        _luteUserFocus.requestFocus();
+      }
       // Test passes ⇒ save. Replaces the old separate Save Settings button.
       if (_connectionTestPassed && mounted) {
         await _persistConnection();
@@ -162,6 +171,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // when no server is configured yet. Otherwise a cookie could end up
     // associated with a URL the user never saved.
     final formUrl = _buildFullUrl();
+    final prefs = await SharedPreferences.getInstance();
+    final oldUrl = prefs.getString('local_url') ?? '';
     if (SessionManager.serverUrl.isEmpty ||
         SessionManager.serverUrl != formUrl) {
       SessionManager.updateServerUrl(formUrl);
@@ -177,8 +188,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
 
     if (result.success && mounted) {
-      // 连接配置随登录一并落盘（host、Basic Auth），用户不必再单独点
-      // Save Settings；Save 按钮保留给「改了 host 想先测连通性」的场景。
+      if (oldUrl != formUrl) {
+        // 地址确实变了:复用 Test & Save 的收尾(落盘 host/Basic Auth、
+        // 清书、提示、重启),不再出现「登录也换了服务器，但 App 不重启」
+        // 这条和 _persistConnection 不一致的路径。
+        await _persistConnection();
+        return;
+      }
+      // 连接配置随登录一并落盘（host、Basic Auth）。
       await ref
           .read(settingsProvider.notifier)
           .updateBasicAuth(
@@ -214,7 +231,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   /// Persists the connection form (URL + Basic Auth). Called automatically
   /// when a connection test succeeds — there is no separate Save button:
-  /// "Test Connection" IS the save, so a host change can't be saved without
+  /// "Test & Save Server" IS the save, so a host change can't be saved without
   /// also proving it reachable.
   Future<void> _persistConnection() async {
     final newUrl = _buildFullUrl();
@@ -469,8 +486,69 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
+                      // Test & Save 只管「地址 + Basic Auth」,放在登录块之前,
+                      // 让「服务器配置」和「账号会话」的层级一眼可见。
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _isTesting ? null : _testConnection,
+                          child: _isTesting
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Test & Save Server'),
+                        ),
+                      ),
+                      if (_connectionStatus != null) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: _connectionTestPassed
+                                ? context.success.withValues(alpha: 0.1)
+                                : context.error.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: _connectionTestPassed
+                                  ? context.success
+                                  : context.error,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _connectionTestPassed
+                                    ? Icons.check_circle
+                                    : Icons.error,
+                                color: _connectionTestPassed
+                                    ? context.success
+                                    : context.error,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _connectionStatus!,
+                                  style: TextStyle(
+                                    color: _connectionTestPassed
+                                        ? context.success
+                                        : context.error,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
                       ExpansionTile(
-                        title: const Text('Song Account Login'),
+                        controller: _loginExpansion,
+                        title: const Text(
+                          'Sign in to lute account (multi-user servers only)',
+                        ),
                         subtitle: const Text(
                           'Multi-user mode (lute v3.12+), session kept ~30 days',
                         ),
@@ -482,6 +560,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               children: [
                                 TextFormField(
                                   controller: _luteUserController,
+                                  focusNode: _luteUserFocus,
                                   decoration: const InputDecoration(
                                     labelText: 'Song Username',
                                     hintText: 'Your lute account username',
@@ -597,62 +676,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 24),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          onPressed: _isTesting ? null : _testConnection,
-                          child: _isTesting
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Text('Test Connection & Save'),
-                        ),
-                      ),
-                      if (_connectionStatus != null) ...[
-                        const SizedBox(height: 16),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: _connectionTestPassed
-                                ? context.success.withValues(alpha: 0.1)
-                                : context.error.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: _connectionTestPassed
-                                  ? context.success
-                                  : context.error,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _connectionTestPassed
-                                    ? Icons.check_circle
-                                    : Icons.error,
-                                color: _connectionTestPassed
-                                    ? context.success
-                                    : context.error,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  _connectionStatus!,
-                                  style: TextStyle(
-                                    color: _connectionTestPassed
-                                        ? context.success
-                                        : context.error,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
                       if (!kIsWeb &&
                           defaultTargetPlatform == TargetPlatform.android) ...[
                         const SizedBox(height: 16),
