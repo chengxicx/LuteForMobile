@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:collection' show UnmodifiableListView;
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/foundation.dart' show Factory, setEquals;
 import 'package:flutter/gestures.dart'
     show EagerGestureRecognizer, OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
@@ -208,6 +208,11 @@ class EpubChapterView extends StatefulWidget {
       onMultiTermSelectionComplete;
   final VoidCallback? onMultiTermSelectionCancel;
 
+  /// Sentence ids currently being spoken by the TTS player (or the line a
+  /// media cue resolved to).  Mirrors [TextDisplay.highlightedSentenceIds]
+  /// so EPUB chapters get the same playback highlight and follow-scroll.
+  final Set<int> highlightedSentenceIds;
+
   const EpubChapterView({
     super.key,
     required this.bookId,
@@ -232,6 +237,7 @@ class EpubChapterView extends StatefulWidget {
     this.languageId,
     this.textSize = 18,
     this.lineSpacing = 1.5,
+    this.highlightedSentenceIds = const {},
     required this.onTap,
     required this.onDoubleTap,
     this.onTripleTap,
@@ -330,6 +336,11 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   double _lastScrollTop = 0;
   Timer? _scrollFlushTimer;
 
+  /// Latest sentence ids painted into the page.  Null means "the current
+  /// document has not been told yet" -- set back on every load so the
+  /// highlight is re-asserted after a reload.
+  Set<int>? _pushedSentenceIds;
+
   /// A multi-word selection the page opened and has not reported back on.
   ///
   /// The reader holds its own `_isMultiTermSelecting` for the duration,
@@ -400,6 +411,9 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     await _pushTextStyle();
     await _pushPagedMode();
     _revealChapter();
+    // After the veil: `_chapterReady` gates the normal push, and this is
+    // the first moment the sentence wrappers are guaranteed to exist.
+    _pushSentenceHighlight(force: true);
   }
 
   /// Where the first navigation goes.
@@ -1192,6 +1206,40 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
   }
 
+  /// Paints the TTS player's current sentence into the chapter and brings
+  /// it into view.
+  ///
+  /// The web reader wraps every sentence in `.textsentence` with the same
+  /// `data-sentence-id` the token stream carries; the Flutter text path
+  /// already highlights those ids, the WebView chapter path never did.
+  /// A stylesheet + one DOM pass per sentence change keeps this cheap
+  /// (one JS round trip every few seconds, not per word).
+  ///
+  /// In paged mode the viewport is driven by the column transform, so
+  /// scrolling here would fight it; the mark is painted but follow-scroll
+  /// waits until that mode grows a real page-follow.
+  void _pushSentenceHighlight({bool force = false}) {
+    if (!_pageReady || (!_chapterReady && !force)) return;
+    final ids = widget.highlightedSentenceIds;
+    if (!force && setEquals(_pushedSentenceIds, ids)) return;
+    _pushedSentenceIds = ids;
+
+    final background = _cssRgb(context.playingLineHighlight);
+    final foreground = _cssRgb(context.playingLineText);
+    final follow = !widget.paged;
+    unawaited(_runJs(buildEpubSentenceHighlightScript(
+      ids: ids,
+      background: background,
+      foreground: foreground,
+      follow: follow,
+    )));
+  }
+
+  String _cssRgb(Color color) {
+    final argb = color.toARGB32() & 0xFFFFFF;
+    return '#${argb.toRadixString(16).padLeft(6, '0')}';
+  }
+
   /// 墨水屏纸张（Kaleido 3）：最白底、最黑正文、浅彩状态词块。
   ///
   /// 样式本体在 `shared/theme/eink_paper.dart`，与本地书阅读页共用一份 ——
@@ -1478,6 +1526,16 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       unawaited(_controller?.reload());
     }
 
+    // Playback follows the player: same sentence highlight as the
+    // Flutter-rendered text, painted into the chapter's .textsentence
+    // wrappers instead of rebuilding items.
+    if (!setEquals(
+      oldWidget.highlightedSentenceIds,
+      widget.highlightedSentenceIds,
+    )) {
+      _pushSentenceHighlight();
+    }
+
     // The end-of-chapter block is reconciled from [build] rather than here:
     // it depends on a list that arrives when it arrives, and a build is the
     // one moment guaranteed to follow every change of that list.
@@ -1501,6 +1559,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     // previous one carried into the page is gone with it.
     _chapterMounted = false;
     _navPushed = null;
+    _pushedSentenceIds = null;
     // 翻页模式的状态跟着文档走：新章节从第 1 屏重新计数（页码随分栏
     // 就绪后的 luteEpubPage 上报刷新）。
     _pageIndex = 0;
@@ -2780,4 +2839,59 @@ const String _marginsScript = r"""
   return tighter ? 'tight' : 'keep';
 })();
 """;
+
+/// Builds the JS that marks (or clears) the TTS player's current sentence
+/// inside an EPUB chapter and, when [follow] is true, scrolls the first
+/// wrapped sentence into view.
+///
+/// Kept as a pure string builder so the selector/escaping can be unit-tested
+/// without a WebView.  Sentence ids come from the same token stream the
+/// Flutter text view uses, and the page exposes them as
+/// `.textsentence[data-sentence-id="..."]`.
+String buildEpubSentenceHighlightScript({
+  required Set<int> ids,
+  required String background,
+  required String foreground,
+  required bool follow,
+}) {
+  return '''
+(function () {
+  var ids = ${jsonEncode(ids.toList())};
+  var style = document.getElementById('lute-tts-playback-style');
+  if (!ids.length) {
+    document.querySelectorAll('.textsentence.lute-tts-playing').forEach(function (el) {
+      el.classList.remove('lute-tts-playing');
+    });
+    if (style) style.textContent = '';
+    return;
+  }
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'lute-tts-playback-style';
+    (document.head || document.documentElement).appendChild(style);
+  }
+  style.textContent =
+    '.textsentence.lute-tts-playing, .textsentence.lute-tts-playing span.word {' +
+    'background-color: $background !important;' +
+    'color: $foreground !important;' +
+    'border-radius: 0 !important; }';
+  document.querySelectorAll('.textsentence.lute-tts-playing').forEach(function (el) {
+    el.classList.remove('lute-tts-playing');
+  });
+  var first = null;
+  ids.forEach(function (id) {
+    document.querySelectorAll('.textsentence[data-sentence-id="' + id + '"]').forEach(function (el) {
+      el.classList.add('lute-tts-playing');
+      if (!first) first = el;
+    });
+  });
+  if (first && $follow) {
+    var rect = first.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > window.innerHeight) {
+      first.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+  }
+})();
+''';
+}
 

@@ -2138,6 +2138,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             ),
             enableTripleTap: settings.enableTripleTapToMarkKnown,
             paged: settings.epubPagedMode,
+            // The TTS player highlights sentence ids for the Flutter text
+            // path; the WebView chapter path paints the same ids into the
+            // page so EPUB playback follows along too.
+            highlightedSentenceIds: highlightedSentenceIds,
             localServer: ref.watch(epubLocalServerProvider),
             refreshPackAssets: () {
               final prefetch = ref.read(epubOfflinePrefetchProvider);
