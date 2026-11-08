@@ -459,27 +459,20 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _offlineLabelRow(
+            context,
+            icon: Icons.cloud_download,
+            text: _downloadingLabel(task),
+          ),
           Row(
+            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              Icon(
-                Icons.cloud_download,
-                size: 20,
-                color: context.appColorScheme.text.secondary,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  _downloadingLabel(task),
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
               TextButton(
                 onPressed: () => _offlineService.cancel(_displayBook.id),
                 child: const Text('Cancel'),
               ),
             ],
           ),
-          const SizedBox(height: 8),
           LinearProgressIndicator(value: task.fraction, minHeight: 2),
           if (secondary != null) ...[const SizedBox(height: 8), secondary],
         ],
@@ -490,20 +483,15 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          _offlineLabelRow(
+            context,
+            icon: Icons.cloud_off_outlined,
+            text: 'Offline: not downloaded',
+          ),
+          Wrap(
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Icon(
-                Icons.cloud_off_outlined,
-                size: 20,
-                color: context.appColorScheme.text.secondary,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Offline: not downloaded',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
               TextButton.icon(
                 onPressed: _startOfflineDownload,
                 icon: const Icon(Icons.download, size: 18),
@@ -520,22 +508,19 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
+        // 标签独占一行：漫画/EPUB 的文案较长，挤在按钮同一行会被压成
+        // 三四行（"page images (incom plete)"），按钮另起一行右对齐。
+        _offlineLabelRow(
+          context,
+          icon: complete
+              ? Icons.cloud_done_outlined
+              : Icons.cloud_download_outlined,
+          text: _offlineLabel(status),
+        ),
+        Wrap(
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Icon(
-              complete
-                  ? Icons.cloud_done_outlined
-                  : Icons.cloud_download_outlined,
-              size: 20,
-              color: context.appColorScheme.text.secondary,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                _offlineLabel(status),
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ),
             TextButton.icon(
               onPressed: () =>
                   _startOfflineDownload(forceRefresh: status.isEpub),
@@ -550,6 +535,22 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
           ],
         ),
         if (secondary != null) ...[const SizedBox(height: 8), secondary],
+      ],
+    );
+  }
+
+  Widget _offlineLabelRow(
+    BuildContext context, {
+    required IconData icon,
+    required String text,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: context.appColorScheme.text.secondary),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(text, style: Theme.of(context).textTheme.bodyMedium),
+        ),
       ],
     );
   }
