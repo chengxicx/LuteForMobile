@@ -23,12 +23,11 @@ void main() {
   });
 
   /// 每个 test 独立 box，互不串味。
-  AiAnalysisCacheService service({Duration? ttl, int? maxEntries}) {
+  AiAnalysisCacheService service({int? maxCacheSizeBytes}) {
     boxSeq++;
     return AiAnalysisCacheService(
       boxName: 'ai_cache_test_$boxSeq',
-      ttl: ttl,
-      maxEntries: maxEntries,
+      maxCacheSizeBytes: maxCacheSizeBytes,
     );
   }
 
@@ -106,13 +105,29 @@ void main() {
     expect(await cache.getFromCache(key), isNull);
   });
 
-  test('过期条目视为 miss 并被删除（TTL 可注入以便测试）', () async {
-    // 负 TTL：刚写入的条目也必然「已过期」，避免毫秒抖动造成 flaky。
-    final cache = service(ttl: const Duration(seconds: -1));
+  test('永久保留：几百天前写入的条目仍命中（没有 TTL）', () async {
+    final cache = service();
+    await cache.initialize();
     final key = AiAnalysisCacheService.cacheKey(7, '雨だ。');
+    final box = await Hive.openBox<String>(cache.boxName);
 
-    await cache.saveToCache(key: key, fallbackText: 'It is raining.');
-    expect(await cache.getFromCache(key), isNull);
+    // 直接塞一条「很老」的条目，模拟长期未用的缓存。
+    final oldTs = DateTime.now()
+        .subtract(const Duration(days: 400))
+        .millisecondsSinceEpoch;
+    await box.put(
+      key,
+      jsonEncode(<String, dynamic>{
+        'v': 1,
+        'ts': oldTs,
+        'sz': 40,
+        'fallback': 'It is raining.',
+      }),
+    );
+
+    final entry = await cache.getFromCache(key);
+    expect(entry, isNotNull);
+    expect(entry!.fallbackText, 'It is raining.');
   });
 
   test('坏 JSON 返回 null 而不抛', () async {
@@ -128,21 +143,54 @@ void main() {
     expect(await cache.getFromCache('wrong-shape'), isNull);
   });
 
-  test('超过条数上限时按最旧淘汰（上限可注入以便测试）', () async {
-    final cache = service(maxEntries: 3);
-    await cache.initialize();
-
+  test('只按体积淘汰，且 pinned（离线下载）条目不参与淘汰', () async {
+    // 1 字节上限：任何非 pinned 条目写入后都超限，会被立刻淘汰到 0。
+    final cache = service(maxCacheSizeBytes: 1);
     String keyOf(String text) => AiAnalysisCacheService.cacheKey(7, text);
-    for (final text in ['一', '二', '三', '四']) {
-      await cache.saveToCache(key: keyOf(text), fallbackText: text);
-      // saveToCache 的时间戳是毫秒级，强制拉开一毫秒保证「最旧」可判定。
-      await Future<void>.delayed(const Duration(milliseconds: 2));
-    }
+
+    await cache.saveToCache(key: keyOf('一'), fallbackText: '一');
+    expect(await cache.getFromCache(keyOf('一')), isNull);
+
+    await cache.saveToCache(
+      key: keyOf('二'),
+      fallbackText: '二',
+      pinned: true,
+    );
+    await cache.saveToCache(key: keyOf('三'), fallbackText: '三');
+
+    expect(await cache.getFromCache(keyOf('二')), isNotNull);
+    expect(await cache.getFromCache(keyOf('三')), isNull);
 
     final stats = await cache.getCacheStats();
-    expect(stats['totalEntries'], 3);
-    expect(await cache.getFromCache(keyOf('一')), isNull); // 最旧的被淘汰
-    expect(await cache.getFromCache(keyOf('四')), isNotNull); // 最新的还在
+    expect(stats['pinnedEntries'], 1);
+  });
+
+  test('payloadHash 忽略键序，内容变化才变化', () {
+    final a = AiAnalysisCacheService.payloadHash(
+      {
+        'translation': 'x',
+        'segments': [
+          {'part': 'a', 'meaning': 'b'},
+        ],
+      },
+      null,
+    );
+    final b = AiAnalysisCacheService.payloadHash(
+      {
+        'segments': [
+          {'meaning': 'b', 'part': 'a'},
+        ],
+        'translation': 'x',
+      },
+      null,
+    );
+    expect(a, b);
+
+    final c = AiAnalysisCacheService.payloadHash(
+      {'translation': 'y'},
+      null,
+    );
+    expect(a, isNot(c));
   });
 
   test('clearAllCache 清空全部', () async {

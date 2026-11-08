@@ -9,6 +9,7 @@ import '../../../core/cache/providers/ai_analysis_cache_provider.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../../shared/providers/server_status_provider.dart';
 import '../models/sentence_ai_result.dart';
 import '../services/sentence_ai_service.dart';
 
@@ -27,6 +28,11 @@ class SentenceAiState {
   final String? errorMessage;
   final String? errorDetail;
 
+  /// 本地缓存的内容仍按原样展示，但后台比对发现服务端这次给出的结果
+  /// 不一样（换了 provider/模型，或服务端缓存被清后重算）。面板据此
+  /// 提示「有更新」并给一个刷新入口，而不是静默继续用旧值。
+  final bool serverUpdateAvailable;
+
   const SentenceAiState({
     this.status = SentenceAiStatus.idle,
     this.sentence,
@@ -38,6 +44,7 @@ class SentenceAiState {
     this.errorKind,
     this.errorMessage,
     this.errorDetail,
+    this.serverUpdateAvailable = false,
   });
 
   bool get isCached => meta?.cached ?? false;
@@ -56,6 +63,7 @@ class SentenceAiState {
     String? errorKind,
     String? errorMessage,
     String? errorDetail,
+    bool? serverUpdateAvailable,
   }) {
     return SentenceAiState(
       status: status ?? this.status,
@@ -68,6 +76,8 @@ class SentenceAiState {
       errorKind: errorKind ?? this.errorKind,
       errorMessage: errorMessage ?? this.errorMessage,
       errorDetail: errorDetail ?? this.errorDetail,
+      serverUpdateAvailable:
+          serverUpdateAvailable ?? this.serverUpdateAvailable,
     );
   }
 }
@@ -176,6 +186,15 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
         if (generation != _generation) return;
         if (entry != null) {
           state = _stateFromCacheEntry(entry, sentence, langId);
+          // 缓存是永久的，但服务端结果可能已经变了（换模型、清缓存重算）。
+          // 先按本地内容即时显示，再在后台比对一次；有差异就挂个提示。
+          _scheduleServerCheck(
+            key: key,
+            sentence: sentence,
+            langId: langId,
+            cached: entry,
+            generation: generation,
+          );
           return;
         }
       }
@@ -242,12 +261,110 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     }
   }
 
+  /// 服务端比对的最小间隔：每句每天最多比对一次。服务端自己也有结果缓存，
+  /// 命中时这次请求几乎不花代价；限频只是避免每次开面板都白跑一趟网络。
+  static const int _serverCheckIntervalMs = 24 * 60 * 60 * 1000;
+
+  void _scheduleServerCheck({
+    required String key,
+    required String sentence,
+    required int langId,
+    required AiAnalysisCacheEntry cached,
+    required int generation,
+  }) {
+    if (!ServerStatusManager.isReachable) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = cached.verifiedAt;
+    if (last != null && now - last < _serverCheckIntervalMs) return;
+    unawaited(
+      _checkServer(
+        key: key,
+        sentence: sentence,
+        langId: langId,
+        cached: cached,
+        generation: generation,
+      ),
+    );
+  }
+
+  /// 在线比对：取服务端「现在」的答案，与本地缓存的内容指纹比较。
+  ///
+  /// 只提示、不覆盖 —— 用户点了刷新才重新流式拉取并落缓存。服务端没有
+  /// 版本号/updated_at（加字段要另发一轮服务端），但结果内容本身就是它
+  /// 现在的答案，指纹一变就说明确实变了。
+  Future<void> _checkServer({
+    required String key,
+    required String sentence,
+    required int langId,
+    required AiAnalysisCacheEntry cached,
+    required int generation,
+  }) async {
+    final payload = await _consumeStream(
+      sentence: sentence,
+      langId: langId,
+      logTag: 'sentenceAi.check',
+    );
+    // 失败不算「比对过」：下次打开面板还能再试。
+    if (payload.errorKind != null || !payload.hasContent) return;
+
+    await ref.read(sentenceAiCacheServiceProvider).markVerified(key);
+    if (generation != _generation) return;
+
+    final serverHash = AiAnalysisCacheService.payloadHash(
+      payload.result?.toJson(),
+      payload.fallbackText,
+    );
+    final cachedHash = AiAnalysisCacheService.payloadHash(
+      cached.result,
+      cached.fallbackText,
+    );
+    if (serverHash == cachedHash) return;
+
+    debugPrint('[sentence-ai] server payload changed key=$key');
+    state = state.copyWith(serverUpdateAvailable: true);
+  }
+
   /// Consumes a full analysis stream without touching UI state and caches
   /// the final payload.  Returns null on any failure.
   Future<AiAnalysisCacheEntry?> _analyzeAndCache({
     required String sentence,
     required int langId,
     required String key,
+  }) async {
+    final payload = await _consumeStream(
+      sentence: sentence,
+      langId: langId,
+      logTag: 'sentenceAi.prefetch',
+    );
+    if (payload.errorKind != null) {
+      if (payload.errorKind == 'unsupported') _unsupportedLangs.add(langId);
+      return null;
+    }
+    if (!payload.hasContent) return null;
+
+    await ref.read(sentenceAiCacheServiceProvider).saveToCache(
+          key: key,
+          result: payload.result?.toJson(),
+          fallbackText: payload.fallbackText,
+          provider: payload.provider,
+          model: payload.model,
+        );
+    return AiAnalysisCacheEntry(
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+      sizeInBytes: 0,
+      result: payload.result?.toJson(),
+      fallbackText: payload.fallbackText,
+      provider: payload.provider,
+      model: payload.model,
+      verifiedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// 吃完整条 SSE 流，不碰 UI、不写缓存。预取和在线比对共用。
+  Future<_AiPayload> _consumeStream({
+    required String sentence,
+    required int langId,
+    required String logTag,
   }) async {
     final streamed = StringBuffer();
     SentenceAiResult? result;
@@ -278,13 +395,13 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
         }
       }
     } catch (error, stackTrace) {
-      ApiLogger.logError('sentenceAi.prefetch', error, stackTrace: stackTrace);
-      return null;
+      ApiLogger.logError(logTag, error, stackTrace: stackTrace);
+      return const _AiPayload(errorKind: 'network');
     }
 
     if (errorKind != null) {
       if (errorKind == 'unsupported') _unsupportedLangs.add(langId);
-      return null;
+      return _AiPayload(errorKind: errorKind);
     }
 
     // Same end-of-stream fallbacks as the panel's [_onDone].
@@ -299,21 +416,9 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
         }
       }
     }
-    if (result == null && (fallbackText == null || fallbackText.isEmpty)) {
-      return null;
-    }
 
-    await ref.read(sentenceAiCacheServiceProvider).saveToCache(
-          key: key,
-          result: result?.toJson(),
-          fallbackText: fallbackText,
-          provider: provider,
-          model: model,
-        );
-    return AiAnalysisCacheEntry(
-      timestamp: DateTime.now().millisecondsSinceEpoch,
-      sizeInBytes: 0,
-      result: result?.toJson(),
+    return _AiPayload(
+      result: result,
       fallbackText: fallbackText,
       provider: provider,
       model: model,
@@ -527,3 +632,23 @@ final sentenceAiProvider =
     NotifierProvider<SentenceAiNotifier, SentenceAiState>(
   () => SentenceAiNotifier(),
 );
+
+/// [_consumeStream] 的返回值：服务端这次给出的内容与来源。
+class _AiPayload {
+  final SentenceAiResult? result;
+  final String? fallbackText;
+  final String? provider;
+  final String? model;
+  final String? errorKind;
+
+  const _AiPayload({
+    this.result,
+    this.fallbackText,
+    this.provider,
+    this.model,
+    this.errorKind,
+  });
+
+  bool get hasContent =>
+      result != null || (fallbackText != null && fallbackText!.isNotEmpty);
+}

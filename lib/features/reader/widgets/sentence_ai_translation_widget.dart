@@ -289,6 +289,20 @@ class _SentenceAITranslationWidgetState
             ],
           ),
           const SizedBox(height: 8),
+          // 缓存是永久的，但服务端可能已经给出不同结果（换模型 / 服务端
+          // 缓存被清后重算）。这里只提示，不擅自替换用户正在读的内容。
+          if (state.serverUpdateAvailable) ...[
+            _ServerUpdateNotice(
+              onRefresh: () => ref
+                  .read(sentenceAiProvider.notifier)
+                  .analyze(
+                    sentence: widget.sentence,
+                    langId: widget.languageId,
+                    forceNetwork: true,
+                  ),
+            ),
+            const SizedBox(height: 8),
+          ],
           if (translation != null && translation.isNotEmpty)
             _TranslationCard(text: translation),
           if (result != null) ...[
@@ -353,6 +367,55 @@ class _SentenceAITranslationWidgetState
       case SentenceTTSStatus.idle:
         return 'Play';
     }
+  }
+}
+
+/// 「服务端结果有更新」的提示条。
+///
+/// 缓存改永久之后不能静默用旧值：比对发现服务端现有答案与本地不一致时
+/// 才出现，刷新是显式动作（重新走一次流式请求并覆盖缓存）。
+class _ServerUpdateNotice extends StatelessWidget {
+  final VoidCallback onRefresh;
+
+  const _ServerUpdateNotice({required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.appColorScheme;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: context.eInk
+            ? colors.background.surface
+            : context.m3SecondaryContainer.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+        border: context.eInk
+            ? Border.all(color: colors.border.outline, width: 1.5)
+            : null,
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.sync_problem_outlined,
+            size: 18,
+            color: context.m3Secondary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'The server has a newer version of this explanation.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          TextButton(
+            onPressed: onRefresh,
+            child: const Text('Refresh'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
