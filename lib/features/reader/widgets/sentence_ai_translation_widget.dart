@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -31,6 +33,13 @@ class SentenceAITranslationWidget extends ConsumerStatefulWidget {
 
 class _SentenceAITranslationWidgetState
     extends ConsumerState<SentenceAITranslationWidget> {
+  /// 服务端先回 meta（常常带 cache 标记）、正文帧却卡住时，界面以前是纯空白：
+  /// 用户既不知道在等什么，也没有重试入口。给「多久没动静算卡住」一个阈值，
+  /// 到点才出现 Retry —— 正常几秒的等待不该先弹重试。
+  static const Duration _stallTimeout = Duration(seconds: 10);
+
+  Timer? _stallTimer;
+  bool _stalled = false;
   bool _originalExpanded = true;
 
   @override
@@ -44,10 +53,41 @@ class _SentenceAITranslationWidgetState
             sentence: widget.sentence,
             langId: widget.languageId,
           );
+      // meta 可能比本 widget 先到（缓存命中的路径），listen 不会补发旧状态，
+      // 所以这里也武装一次。
+      _armStallTimer(ref.read(sentenceAiProvider));
     });
   }
 
+  @override
+  void dispose() {
+    _stallTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 只有「在等、且还没有一个字」的阶段才需要卡住检测；正文开始流出或已经
+  /// 完成就把计时收掉。
+  void _armStallTimer(SentenceAiState state) {
+    _stallTimer?.cancel();
+    final waiting =
+        (state.isWaiting && state.streamedText.trim().isEmpty) ||
+        !_belongs(state);
+    if (!waiting) {
+      if (_stalled) _stalled = false;
+      return;
+    }
+    _stallTimer = Timer(_stallTimeout, () {
+      if (!mounted) return;
+      setState(() => _stalled = true);
+    });
+  }
+
+  bool _belongs(SentenceAiState state) =>
+      state.sentence == widget.sentence && state.langId == widget.languageId;
+
   void _retry() {
+    _stalled = false;
+    _armStallTimer(ref.read(sentenceAiProvider));
     ref
         .read(sentenceAiProvider.notifier)
         .analyze(
@@ -180,16 +220,15 @@ class _SentenceAITranslationWidgetState
 
   Widget _buildContent(BuildContext context) {
     final state = ref.watch(sentenceAiProvider);
-    final belongs =
-        state.sentence == widget.sentence &&
-        state.langId == widget.languageId;
+    // 状态每次变化都重估卡住计时：正文开始流出、或已经完成，就把它收掉。
+    ref.listen<SentenceAiState>(sentenceAiProvider, (_, next) {
+      _armStallTimer(next);
+    });
+    final belongs = _belongs(state);
 
-    if (!belongs) {
-      if (state.isCached) return const SizedBox.shrink();
-      return const LoadingIndicator(message: 'Analyzing sentence...');
-    }
-
-    if (state.status == SentenceAiStatus.error && state.errorMessage != null) {
+    if (belongs &&
+        state.status == SentenceAiStatus.error &&
+        state.errorMessage != null) {
       return _ErrorView(
         kind: state.errorKind,
         message: state.errorMessage!,
@@ -200,13 +239,17 @@ class _SentenceAITranslationWidgetState
       );
     }
 
-    if (state.isWaiting) {
-      final streamed = state.streamedText.trim();
+    if (!belongs || state.isWaiting) {
+      final streamed = belongs ? state.streamedText.trim() : '';
       if (streamed.isNotEmpty) return _StreamView(text: streamed);
-      // A cached answer arrives without generation delay; do not flash a
-      // spinner for it.
-      if (state.isCached) return const SizedBox.shrink();
-      return const LoadingIndicator(message: 'Analyzing sentence...');
+      // 以前 meta 带 cache 标记时这里直接 `SizedBox.shrink()`：弱网下服务端
+      // 先回 meta、正文帧卡住，整个面板就是一片空白 —— 既看不出在等什么，
+      // 也没有重试入口。现在始终说明"在等什么"，卡住超时后再给 Retry。
+      return _WaitingView(
+        cached: belongs && state.isCached,
+        stalled: _stalled,
+        onRetry: _retry,
+      );
     }
 
     final result = state.result;
@@ -640,6 +683,66 @@ class _ExampleRow extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 等待 AI 正文时的可见状态。
+///
+/// 弱网下最糟的一种是「服务端回了 meta（还标着 cache 命中），正文帧却一直
+/// 不到」—— 这种时候必须让用户看到还在等，并在真的卡住之后给一个重试入口。
+class _WaitingView extends StatelessWidget {
+  final bool cached;
+  final bool stalled;
+  final VoidCallback onRetry;
+
+  const _WaitingView({
+    required this.cached,
+    required this.stalled,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.appColorScheme;
+    if (!stalled) {
+      return LoadingIndicator(
+        message: cached
+            ? 'Loaded from cache · preparing answer...'
+            : 'Analyzing sentence...',
+      );
+    }
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          const SizedBox(height: 24),
+          Icon(Icons.hourglass_empty, size: 40, color: colors.text.secondary),
+          const SizedBox(height: 12),
+          Text(
+            cached
+                ? 'The cached answer is not arriving yet.'
+                : 'The AI answer is not arriving yet.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'The connection may be weak. You can retry, or close this panel '
+            'and keep reading.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: colors.text.secondary,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('Retry'),
+          ),
         ],
       ),
     );
