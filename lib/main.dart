@@ -68,13 +68,53 @@ void main() async {
   final outboxStore = HiveOutboxStore();
   final initialOutbox = await outboxStore.readAll();
 
-  Future<bool>? androidHealthCheck;
-  if (useTermux && serverUrl == Settings.termuxUrl) {
-    androidHealthCheck = TermuxService.isServerRunning(serverUrl);
-  }
+  // 健康检查 / 自动重登挪到首帧之后。
+  //
+  // 这一段原本整段挡在 runApp 前：服务器连不上时要先吃满 connect 5s，
+  // 需要重登时再叠上 15s，期间界面一个字都出不来。现在先让首帧落地
+  // （书架从本地缓存渲染），检查结果回来再写进 ServerStatusManager ——
+  // BooksProvider、ApiRequestQueue、outbox 都挂了它的监听，可达性一翻
+  // 它们就各自自愈，和原来「启动时就已知不可达」的路径是同一套。
+  //
+  // 检查期间的语义与「先检查再启动」保持一致：ServerStatusManager 的
+  // 可达性默认是 true（见 server_status_provider.dart），首屏那几个请求
+  // 照常发出；真的连不上时 Dio 拦截器会把可达性翻成 false，随后的检查
+  // 只是确认这个判定。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(
+      _checkServerAfterFirstFrame(
+        serverUrl: serverUrl,
+        useTermux: useTermux,
+        basicAuthUser: basicAuthUser,
+        basicAuthPassword: basicAuthPassword,
+      ),
+    );
+  });
 
-  if (androidHealthCheck != null) {
-    final isRunning = await androidHealthCheck;
+  runApp(
+    ProviderScope(
+      overrides: [
+        initialServerUrlProvider.overrideWithValue(serverUrl),
+        initialOutboxEntriesProvider.overrideWithValue(initialOutbox),
+        outboxStoreProvider.overrideWithValue(outboxStore),
+      ],
+      child: const App(),
+    ),
+  );
+}
+
+/// 首帧之后才开始的服务端探测：可达性判定、失效会话的静默重登、
+/// 以及顺带的自动备份对账。
+///
+/// 与原来的 main() 同步版本逐条对应，唯一区别是它不再挡住首帧。
+Future<void> _checkServerAfterFirstFrame({
+  required String serverUrl,
+  required bool useTermux,
+  required String basicAuthUser,
+  required String basicAuthPassword,
+}) async {
+  if (useTermux && serverUrl == Settings.termuxUrl) {
+    final isRunning = await TermuxService.isServerRunning(serverUrl);
     print('main.dart: Android server check: $isRunning');
     ServerStatusManager.setReachable(isRunning);
   } else if (serverUrl.isNotEmpty) {
@@ -124,15 +164,4 @@ void main() async {
     // 启动照样会查。
     Future.delayed(const Duration(seconds: 8), apiService.triggerAutoBackup);
   }
-
-  runApp(
-    ProviderScope(
-      overrides: [
-        initialServerUrlProvider.overrideWithValue(serverUrl),
-        initialOutboxEntriesProvider.overrideWithValue(initialOutbox),
-        outboxStoreProvider.overrideWithValue(outboxStore),
-      ],
-      child: const App(),
-    ),
-  );
 }
