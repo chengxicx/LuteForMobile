@@ -4,6 +4,7 @@ import 'audio_cache_service.dart';
 import 'term_cache_service.dart';
 import 'terms_list_cache_service.dart';
 import 'tooltip_cache_service.dart';
+import 'ai_analysis_cache_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/reader/services/page_cache_service.dart';
 import '../../features/reader/services/sentence_cache_service.dart';
@@ -24,6 +25,8 @@ class CacheManager {
   final TermCacheService _termCache;
   final TermsListCacheService _termsListCache;
   final TooltipCacheService _tooltipCache;
+  final AiAnalysisCacheService _sentenceAiCache;
+  final AiAnalysisCacheService _grammarAiCache;
   final PageCacheService _pageCache;
   final SentenceCacheService _sentenceCache;
   final StatsRepository _statsRepository;
@@ -35,6 +38,8 @@ class CacheManager {
     required TermCacheService termCache,
     required TermsListCacheService termsListCache,
     required TooltipCacheService tooltipCache,
+    required AiAnalysisCacheService sentenceAiCache,
+    required AiAnalysisCacheService grammarAiCache,
     required PageCacheService pageCache,
     required SentenceCacheService sentenceCache,
     required StatsRepository statsRepository,
@@ -44,6 +49,8 @@ class CacheManager {
        _termCache = termCache,
        _termsListCache = termsListCache,
        _tooltipCache = tooltipCache,
+       _sentenceAiCache = sentenceAiCache,
+       _grammarAiCache = grammarAiCache,
        _pageCache = pageCache,
        _sentenceCache = sentenceCache,
        _statsRepository = statsRepository,
@@ -60,6 +67,8 @@ class CacheManager {
       _termCache.clearAll(),
       _termsListCache.clearAll(),
       _tooltipCache.clearAllCache(),
+      _sentenceAiCache.clearAllCache(),
+      _grammarAiCache.clearAllCache(),
       _pageCache.clearAllCache(),
       _sentenceCache.clearAllCache(),
       _statsRepository.clearCache(),
@@ -94,14 +103,16 @@ class CacheManager {
 
   /// 页面/词条类缓存的总字节数，供设置页显示。
   ///
-  /// 只累加能报出体积的那几个（页面、句子、词条、词卡提示）；书架缓存与
-  /// 词条列表缓存是纯文本元数据，几十 KB 量级，报出来对用户没有意义。
+  /// 只累加能报出体积的那几个（页面、句子、词条、词卡提示、AI 面板结果）；
+  /// 书架缓存与词条列表缓存是纯文本元数据，几十 KB 量级，报出来对用户没有意义。
   Future<int> getPageCacheBytes() async {
     final stats = await Future.wait([
       _pageCache.getCacheStats(),
       _sentenceCache.getCacheStats(),
       _termCache.getCacheStats(),
       _tooltipCache.getCacheStats(),
+      _sentenceAiCache.getCacheStats(),
+      _grammarAiCache.getCacheStats(),
     ]);
     var total = 0;
     for (final stat in stats) {

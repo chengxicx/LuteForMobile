@@ -52,6 +52,25 @@ class AiGrammarResult {
       pitfalls: _pitfalls(json['pitfalls']),
     );
   }
+
+  /// Field names mirror the server contract; null and empty-list fields are
+  /// omitted so [fromJson]'s defaults round-trip losslessly.
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (translation != null) json['translation'] = translation;
+    if (!skeleton.isEmpty) json['skeleton'] = skeleton.toJson();
+    if (clauses.isNotEmpty) {
+      json['clauses'] = clauses.map((e) => e.toJson()).toList();
+    }
+    if (grammarPoints.isNotEmpty) {
+      json['grammar_points'] = grammarPoints.map((e) => e.toJson()).toList();
+    }
+    if (tenseVoice != null && !tenseVoice!.isEmpty) {
+      json['tense_voice'] = tenseVoice!.toJson();
+    }
+    if (pitfalls.isNotEmpty) json['pitfalls'] = pitfalls;
+    return json;
+  }
 }
 
 class AiGrammarSkeleton {
@@ -70,6 +89,14 @@ class AiGrammarSkeleton {
       object: _text(json['object']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (subject != null) json['subject'] = subject;
+    if (verb != null) json['verb'] = verb;
+    if (object != null) json['object'] = object;
+    return json;
+  }
 }
 
 class AiGrammarClause {
@@ -85,6 +112,14 @@ class AiGrammarClause {
       text: _text(json['text']),
       role: _text(json['role']),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (type != null) json['type'] = type;
+    if (text != null) json['text'] = text;
+    if (role != null) json['role'] = role;
+    return json;
   }
 }
 
@@ -104,6 +139,14 @@ class AiGrammarPoint {
       fragment: _text(json['fragment']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (name != null) json['name'] = name;
+    if (role != null) json['role'] = role;
+    if (fragment != null) json['fragment'] = fragment;
+    return json;
+  }
 }
 
 class AiGrammarTenseVoice {
@@ -121,6 +164,14 @@ class AiGrammarTenseVoice {
       voice: _text(json['voice']),
       aspect: _text(json['aspect']),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (tense != null) json['tense'] = tense;
+    if (voice != null) json['voice'] = voice;
+    if (aspect != null) json['aspect'] = aspect;
+    return json;
   }
 }
 

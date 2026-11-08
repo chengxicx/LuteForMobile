@@ -67,7 +67,13 @@ class _AiGrammarPanelState extends ConsumerState<AiGrammarPanel> {
     if (langId == null) return;
     ref
         .read(aiGrammarProvider.notifier)
-        .analyze(sentence: widget.sentence, langId: langId);
+        .analyze(
+          sentence: widget.sentence,
+          langId: langId,
+          // A retry asks for a fresh answer; the cache-first path would just
+          // re-serve the cached payload again.
+          forceNetwork: true,
+        );
   }
 
   Future<void> _openWebSettings() async {

@@ -13,6 +13,7 @@ import '../models/term_form.dart';
 import '../models/term_tooltip.dart';
 import '../providers/reader_provider.dart';
 import '../providers/sentence_reader_provider.dart';
+import '../providers/sentence_ai_provider.dart';
 import '../providers/sentence_tts_provider.dart';
 import '../providers/current_book_provider.dart';
 import '../../grammar/providers/grammar_provider.dart';
@@ -383,6 +384,7 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
       setState(() {
         _currentSentenceId = currentSentence.id;
       });
+      _scheduleAiPrefetch(sentenceReader, currentSentence);
     }
 
     if (isVisible && readerState.pageData != null && !readerState.isLoading) {
@@ -2114,6 +2116,30 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
         );
       },
     );
+  }
+
+  /// While the user keeps reading the current sentence, prefetch the AI
+  /// translation of the next ones in reading order, so the AI card on them
+  /// opens instantly.  The notifier dedupes, rate-limits and caches.
+  void _scheduleAiPrefetch(
+    SentenceReaderState sentenceReader,
+    CustomSentence currentSentence,
+  ) {
+    final index = sentenceReader.currentSentenceIndex;
+    final sentences = sentenceReader.customSentences;
+    final upcoming = <String>[];
+    for (var i = index + 1;
+        i < sentences.length && upcoming.length < 2;
+        i++) {
+      upcoming.add(sentences[i].textItems.map((item) => item.text).join());
+    }
+    if (upcoming.isEmpty) return;
+    ref
+        .read(sentenceAiProvider.notifier)
+        .schedulePrefetch(
+          upcoming: upcoming,
+          langId: currentSentence.textItems.first.langId ?? 0,
+        );
   }
 
   void _showAITranslation(String sentence, int languageId) {

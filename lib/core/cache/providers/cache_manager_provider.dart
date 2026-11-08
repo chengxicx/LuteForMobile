@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cache_manager.dart';
+import 'ai_analysis_cache_provider.dart';
 import 'book_progress_provider.dart';
 import 'books_cache_provider.dart';
 import 'term_cache_provider.dart';
@@ -16,6 +17,8 @@ final cacheManagerProvider = Provider<CacheManager>((ref) {
     termCache: ref.watch(termCacheServiceProvider),
     termsListCache: ref.watch(termsListCacheServiceProvider),
     tooltipCache: ref.watch(tooltipCacheServiceProvider),
+    sentenceAiCache: ref.watch(sentenceAiCacheServiceProvider),
+    grammarAiCache: ref.watch(aiGrammarCacheServiceProvider),
     pageCache: ref.watch(pageCacheServiceProvider),
     sentenceCache: ref.watch(sentenceCacheServiceProvider),
     statsRepository: ref.watch(statsRepositoryProvider),

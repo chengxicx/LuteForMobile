@@ -40,6 +40,24 @@ class SentenceAiResult {
       examples: _mapList(json['examples'], SentenceAiExample.fromJson),
     );
   }
+
+  /// Field names mirror the server contract; null and empty-list fields are
+  /// omitted so [fromJson]'s defaults round-trip losslessly.
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (translation != null) json['translation'] = translation;
+    if (segments.isNotEmpty) {
+      json['segments'] = segments.map((e) => e.toJson()).toList();
+    }
+    if (grammar.isNotEmpty) {
+      json['grammar'] = grammar.map((e) => e.toJson()).toList();
+    }
+    if (context != null) json['context'] = context;
+    if (examples.isNotEmpty) {
+      json['examples'] = examples.map((e) => e.toJson()).toList();
+    }
+    return json;
+  }
 }
 
 class SentenceAiSegment {
@@ -66,6 +84,15 @@ class SentenceAiSegment {
       role: _text(json['role']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (part != null) json['part'] = part;
+    if (reading != null) json['reading'] = reading;
+    if (meaning != null) json['meaning'] = meaning;
+    if (role != null) json['role'] = role;
+    return json;
+  }
 }
 
 class SentenceAiGrammar {
@@ -88,6 +115,14 @@ class SentenceAiGrammar {
       fragment: _text(json['fragment']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (point != null) json['point'] = point;
+    if (explanation != null) json['explanation'] = explanation;
+    if (fragment != null) json['fragment'] = fragment;
+    return json;
+  }
 }
 
 class SentenceAiExample {
@@ -103,6 +138,13 @@ class SentenceAiExample {
       source: _text(json['source']),
       translation: _text(json['translation']),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (source != null) json['source'] = source;
+    if (translation != null) json['translation'] = translation;
+    return json;
   }
 }
 

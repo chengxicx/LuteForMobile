@@ -4,6 +4,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/ai_analysis_cache_service.dart';
+import '../../../core/cache/providers/ai_analysis_cache_provider.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/network_providers.dart';
@@ -109,10 +111,33 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
     analyze(sentence: sentence, langId: langId);
   }
 
-  void analyze({required String sentence, required int langId}) {
+  void analyze({
+    required String sentence,
+    required int langId,
+    bool forceNetwork = false,
+  }) {
+    unawaited(_analyze(sentence: sentence, langId: langId, forceNetwork: forceNetwork));
+  }
+
+  Future<void> _analyze({
+    required String sentence,
+    required int langId,
+    required bool forceNetwork,
+  }) async {
     final generation = ++_generation;
     unawaited(_subscription?.cancel());
     _subscription = null;
+
+    if (!forceNetwork) {
+      final entry = await ref
+          .read(aiGrammarCacheServiceProvider)
+          .getFromCache(AiAnalysisCacheService.cacheKey(langId, sentence));
+      if (generation != _generation) return;
+      if (entry != null) {
+        state = _stateFromCacheEntry(entry, sentence, langId);
+        return;
+      }
+    }
 
     state = AiGrammarState(
       status: AiGrammarStatus.streaming,
@@ -120,9 +145,10 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
       langId: langId,
     );
 
-    final stream = ref
-        .read(aiGrammarServiceProvider)
-        .analyze(sentence: sentence, langId: langId);
+    final stream = ref.read(aiGrammarAnalyzeProvider)(
+      sentence: sentence,
+      langId: langId,
+    );
 
     _subscription = stream.listen(
       (event) {
@@ -138,6 +164,32 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
         _onDone();
       },
       cancelOnError: true,
+    );
+  }
+
+  /// Rebuilds a finished panel state from a cached payload; `cached: true`
+  /// marks the answer as served from the local cache.
+  AiGrammarState _stateFromCacheEntry(
+    AiAnalysisCacheEntry entry,
+    String sentence,
+    int langId,
+  ) {
+    AiGrammarResult? result;
+    if (entry.result != null) {
+      final parsed = AiGrammarResult.fromJson(entry.result!);
+      if (!parsed.isEmpty) result = parsed;
+    }
+    return AiGrammarState(
+      status: AiGrammarStatus.done,
+      sentence: sentence,
+      langId: langId,
+      meta: AiGrammarMetaEvent(
+        cached: true,
+        provider: entry.provider,
+        model: entry.model,
+      ),
+      result: result,
+      fallbackText: entry.fallbackText,
     );
   }
 
@@ -233,6 +285,7 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
     if (state.status == AiGrammarStatus.error) return;
     if (state.result != null || state.fallbackText != null) {
       state = state.copyWith(status: AiGrammarStatus.done);
+      _cacheCurrentResult();
       return;
     }
     final raw = state.streamedText.trim();
@@ -241,6 +294,7 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
         status: AiGrammarStatus.done,
         fallbackText: raw,
       );
+      _cacheCurrentResult();
       return;
     }
     state = state.copyWith(
@@ -249,10 +303,47 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
       errorMessage: 'The AI returned no result. Try again.',
     );
   }
+
+  /// Persists the result the panel just streamed in, so re-opening this
+  /// sentence (even in a later session) never pays for the request again.
+  void _cacheCurrentResult() {
+    final sentence = state.sentence;
+    final langId = state.langId;
+    if (sentence == null || langId == null) return;
+    final result = state.result;
+    final fallbackText = state.fallbackText;
+    if (result == null && (fallbackText == null || fallbackText.isEmpty)) {
+      return;
+    }
+    unawaited(
+      ref
+          .read(aiGrammarCacheServiceProvider)
+          .saveToCache(
+            key: AiAnalysisCacheService.cacheKey(langId, sentence),
+            result: result?.toJson(),
+            fallbackText: fallbackText,
+            provider: state.meta?.provider,
+            model: state.meta?.model,
+          ),
+    );
+  }
 }
+
+/// The streaming endpoint, as a function so tests can fake it
+/// (see [aiGrammarAnalyzeProvider]).
+typedef AiGrammarAnalyzeFn = Stream<AiGrammarEvent> Function({
+  required String sentence,
+  required int langId,
+});
 
 final aiGrammarServiceProvider = Provider<AiGrammarService>((ref) {
   return AiGrammarService(ref.watch(apiServiceProvider));
+});
+
+final aiGrammarAnalyzeProvider = Provider<AiGrammarAnalyzeFn>((ref) {
+  final service = ref.watch(aiGrammarServiceProvider);
+  return ({required String sentence, required int langId}) =>
+      service.analyze(sentence: sentence, langId: langId);
 });
 
 final aiGrammarProvider = NotifierProvider<AiGrammarNotifier, AiGrammarState>(

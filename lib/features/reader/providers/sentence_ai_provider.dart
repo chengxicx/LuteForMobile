@@ -4,6 +4,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/ai_analysis_cache_service.dart';
+import '../../../core/cache/providers/ai_analysis_cache_provider.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/network_providers.dart';
@@ -70,9 +72,54 @@ class SentenceAiState {
   }
 }
 
+/// The streaming endpoint, as a function so tests can fake it
+/// (see [sentenceAiAnalyzeProvider]).
+typedef SentenceAiAnalyzeFn = Stream<SentenceAiEvent> Function({
+  required String sentence,
+  required int langId,
+});
+
+final sentenceAiServiceProvider = Provider<SentenceAiService>((ref) {
+  return SentenceAiService(ref.watch(apiServiceProvider));
+});
+
+final sentenceAiAnalyzeProvider = Provider<SentenceAiAnalyzeFn>((ref) {
+  final service = ref.watch(sentenceAiServiceProvider);
+  return ({required String sentence, required int langId}) =>
+      service.analyze(sentence: sentence, langId: langId);
+});
+
 class SentenceAiNotifier extends Notifier<SentenceAiState> {
   StreamSubscription<SentenceAiEvent>? _subscription;
   int _generation = 0;
+
+  /// Requests currently running on the network, keyed by cache key.  The
+  /// panel joins an in-flight prefetch instead of firing a duplicate; the
+  /// prefetcher skips sentences a panel request is already fetching.
+  final Map<String, Future<AiAnalysisCacheEntry?>> _inFlight = {};
+
+  /// Cache key -> epoch ms of the last failed prefetch; retries are held
+  /// off for [_failureCooldown] so a dead network doesn't get hammered.
+  final Map<String, int> _failedAt = {};
+
+  /// Languages the server answered `unsupported` for; prefetching them is
+  /// stopped for the rest of the session (the panel itself still shows the
+  /// real error when the user opens it).
+  final Set<int> _unsupportedLangs = {};
+
+  Timer? _prefetchTimer;
+  Future<void> _prefetchQueue = Future.value();
+
+  final Duration _prefetchDwell;
+  final Duration _failureCooldown;
+  static const _prefetchLimit = 2;
+
+  /// [prefetchDwell] and [failureCooldown] exist so tests can shrink them;
+  /// production waits 4s of reading dwell before prefetching and cools down
+  /// a failed sentence for 60s.
+  SentenceAiNotifier({Duration? prefetchDwell, Duration? failureCooldown})
+      : _prefetchDwell = prefetchDwell ?? const Duration(seconds: 4),
+        _failureCooldown = failureCooldown ?? const Duration(seconds: 60);
 
   @override
   SentenceAiState build() {
@@ -80,6 +127,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
       _generation++;
       unawaited(_subscription?.cancel());
       _subscription = null;
+      _prefetchTimer?.cancel();
     });
     return const SentenceAiState();
   }
@@ -90,23 +138,203 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
         state.status != SentenceAiStatus.idle) {
       return;
     }
-    analyze(sentence: sentence, langId: langId);
+    unawaited(analyze(sentence: sentence, langId: langId));
   }
 
-  void analyze({required String sentence, required int langId}) {
+  Future<void> analyze({
+    required String sentence,
+    required int langId,
+    bool forceNetwork = false,
+  }) async {
     final generation = ++_generation;
     unawaited(_subscription?.cancel());
     _subscription = null;
 
+    final key = AiAnalysisCacheService.cacheKey(langId, sentence);
+
+    if (!forceNetwork) {
+      // A prefetch for this very sentence may already be running: join it
+      // instead of issuing a second request for the same text.
+      final running = _inFlight[key];
+      if (running != null) {
+        state = SentenceAiState(
+          status: SentenceAiStatus.streaming,
+          sentence: sentence,
+          langId: langId,
+        );
+        final entry = await running;
+        if (generation != _generation) return;
+        if (entry != null) {
+          state = _stateFromCacheEntry(entry, sentence, langId);
+          return;
+        }
+        // Prefetch failed -- fall through and let the panel try live; the
+        // user is watching this sheet, so a visible retry is worth it.
+      } else {
+        final entry =
+            await ref.read(sentenceAiCacheServiceProvider).getFromCache(key);
+        if (generation != _generation) return;
+        if (entry != null) {
+          state = _stateFromCacheEntry(entry, sentence, langId);
+          return;
+        }
+      }
+    }
+
+    _startStream(sentence: sentence, langId: langId, generation: generation);
+  }
+
+  /// Schedules background prefetches for the sentences that follow the one
+  /// the user is currently reading, so opening the AI card on them is
+  /// instant.  Called by the sentence reader screen on every sentence change.
+  void schedulePrefetch({required List<String> upcoming, required int langId}) {
+    _prefetchTimer?.cancel();
+    if (_unsupportedLangs.contains(langId)) return;
+    final sentences = upcoming
+        .map((text) => text.trim())
+        .where((text) => text.isNotEmpty)
+        .take(_prefetchLimit)
+        .toList();
+    if (sentences.isEmpty) return;
+    // The dwell lets quick paging / fast scrolling through sentences go by
+    // without costing any request at all.
+    _prefetchTimer = Timer(_prefetchDwell, () {
+      for (final sentence in sentences) {
+        _prefetchQueue = _prefetchQueue.then(
+          (_) => _prefetchOne(sentence: sentence, langId: langId),
+        );
+      }
+    });
+  }
+
+  Future<void> _prefetchOne({
+    required String sentence,
+    required int langId,
+  }) async {
+    if (_unsupportedLangs.contains(langId)) return;
+
+    final key = AiAnalysisCacheService.cacheKey(langId, sentence);
+    final failedAt = _failedAt[key];
+    if (failedAt != null &&
+        DateTime.now().millisecondsSinceEpoch - failedAt <
+            _failureCooldown.inMilliseconds) {
+      return;
+    }
+    if (_inFlight.containsKey(key)) return;
+
+    final cached =
+        await ref.read(sentenceAiCacheServiceProvider).getFromCache(key);
+    if (cached != null) return;
+
+    final future = _analyzeAndCache(
+      sentence: sentence,
+      langId: langId,
+      key: key,
+    );
+    _inFlight[key] = future;
+    try {
+      final entry = await future;
+      if (entry == null) {
+        _failedAt[key] = DateTime.now().millisecondsSinceEpoch;
+      }
+    } finally {
+      _inFlight.remove(key);
+    }
+  }
+
+  /// Consumes a full analysis stream without touching UI state and caches
+  /// the final payload.  Returns null on any failure.
+  Future<AiAnalysisCacheEntry?> _analyzeAndCache({
+    required String sentence,
+    required int langId,
+    required String key,
+  }) async {
+    final streamed = StringBuffer();
+    SentenceAiResult? result;
+    String? fallbackText;
+    String? provider;
+    String? model;
+    String? errorKind;
+
+    try {
+      final stream = ref.read(sentenceAiAnalyzeProvider)(
+        sentence: sentence,
+        langId: langId,
+      );
+      await for (final event in stream) {
+        switch (event) {
+          case SentenceAiMetaEvent():
+            provider = event.provider;
+            model = event.model;
+          case SentenceAiTextEvent():
+            streamed.write(event.text);
+          case SentenceAiResultEvent():
+            result = event.result;
+            fallbackText = event.fallbackText;
+          case SentenceAiErrorEvent():
+            errorKind = event.kind;
+          case SentenceAiDoneEvent():
+            break;
+        }
+      }
+    } catch (error, stackTrace) {
+      ApiLogger.logError('sentenceAi.prefetch', error, stackTrace: stackTrace);
+      return null;
+    }
+
+    if (errorKind != null) {
+      if (errorKind == 'unsupported') _unsupportedLangs.add(langId);
+      return null;
+    }
+
+    // Same end-of-stream fallbacks as the panel's [_onDone].
+    if (result == null && fallbackText == null) {
+      final raw = streamed.toString().trim();
+      if (raw.isNotEmpty) {
+        final parsed = parseSentenceAiResultPayload(raw);
+        if (parsed != null && !parsed.isEmpty) {
+          result = parsed;
+        } else {
+          fallbackText = raw;
+        }
+      }
+    }
+    if (result == null && (fallbackText == null || fallbackText.isEmpty)) {
+      return null;
+    }
+
+    await ref.read(sentenceAiCacheServiceProvider).saveToCache(
+          key: key,
+          result: result?.toJson(),
+          fallbackText: fallbackText,
+          provider: provider,
+          model: model,
+        );
+    return AiAnalysisCacheEntry(
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+      sizeInBytes: 0,
+      result: result?.toJson(),
+      fallbackText: fallbackText,
+      provider: provider,
+      model: model,
+    );
+  }
+
+  void _startStream({
+    required String sentence,
+    required int langId,
+    required int generation,
+  }) {
     state = SentenceAiState(
       status: SentenceAiStatus.streaming,
       sentence: sentence,
       langId: langId,
     );
 
-    final stream = ref
-        .read(sentenceAiServiceProvider)
-        .analyze(sentence: sentence, langId: langId);
+    final stream = ref.read(sentenceAiAnalyzeProvider)(
+      sentence: sentence,
+      langId: langId,
+    );
 
     _subscription = stream.listen(
       (event) {
@@ -122,6 +350,33 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
         _onDone();
       },
       cancelOnError: true,
+    );
+  }
+
+  /// Rebuilds a finished panel state from a cached payload.  `cached: true`
+  /// in the meta means "served from the local cache", which keeps the
+  /// widget's cached indicator truthful.
+  SentenceAiState _stateFromCacheEntry(
+    AiAnalysisCacheEntry entry,
+    String sentence,
+    int langId,
+  ) {
+    SentenceAiResult? result;
+    if (entry.result != null) {
+      final parsed = SentenceAiResult.fromJson(entry.result!);
+      if (!parsed.isEmpty) result = parsed;
+    }
+    return SentenceAiState(
+      status: SentenceAiStatus.done,
+      sentence: sentence,
+      langId: langId,
+      meta: SentenceAiMetaEvent(
+        cached: true,
+        provider: entry.provider,
+        model: entry.model,
+      ),
+      result: result,
+      fallbackText: entry.fallbackText,
     );
   }
 
@@ -215,6 +470,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     if (state.status == SentenceAiStatus.error) return;
     if (state.result != null || state.fallbackText != null) {
       state = state.copyWith(status: SentenceAiStatus.done);
+      _cacheCurrentResult();
       return;
     }
     final raw = state.streamedText.trim();
@@ -225,12 +481,14 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
           status: SentenceAiStatus.done,
           result: parsed,
         );
+        _cacheCurrentResult();
         return;
       }
       state = state.copyWith(
         status: SentenceAiStatus.done,
         fallbackText: raw,
       );
+      _cacheCurrentResult();
       return;
     }
     state = state.copyWith(
@@ -239,11 +497,31 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
       errorMessage: 'The AI returned no result. Try again.',
     );
   }
-}
 
-final sentenceAiServiceProvider = Provider<SentenceAiService>((ref) {
-  return SentenceAiService(ref.watch(apiServiceProvider));
-});
+  /// Persists the result the panel just streamed in, so re-opening this
+  /// sentence (even in a later session) never pays for the request again.
+  void _cacheCurrentResult() {
+    final sentence = state.sentence;
+    final langId = state.langId;
+    if (sentence == null || langId == null) return;
+    final result = state.result;
+    final fallbackText = state.fallbackText;
+    if (result == null && (fallbackText == null || fallbackText.isEmpty)) {
+      return;
+    }
+    unawaited(
+      ref
+          .read(sentenceAiCacheServiceProvider)
+          .saveToCache(
+            key: AiAnalysisCacheService.cacheKey(langId, sentence),
+            result: result?.toJson(),
+            fallbackText: fallbackText,
+            provider: state.meta?.provider,
+            model: state.meta?.model,
+          ),
+    );
+  }
+}
 
 final sentenceAiProvider =
     NotifierProvider<SentenceAiNotifier, SentenceAiState>(

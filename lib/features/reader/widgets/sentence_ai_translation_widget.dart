@@ -50,7 +50,13 @@ class _SentenceAITranslationWidgetState
   void _retry() {
     ref
         .read(sentenceAiProvider.notifier)
-        .analyze(sentence: widget.sentence, langId: widget.languageId);
+        .analyze(
+          sentence: widget.sentence,
+          langId: widget.languageId,
+          // A retry asks for a fresh answer; the cache-first path would just
+          // re-serve the cached payload again.
+          forceNetwork: true,
+        );
   }
 
   Future<void> _openWebSettings() async {
