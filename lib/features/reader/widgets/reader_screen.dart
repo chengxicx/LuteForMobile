@@ -2125,7 +2125,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           )
         : epubChapter != null
         ? EpubChapterView(
-            key: _pageKey,
+            // 章节复用同一个 WebView：key 只认书，不认页码。以前这里用
+            // _pageKey（bookId-pageNum），每翻一章都要新建整个 platform
+            // view，Chromium 冷启动是翻章延迟的大头。换章时 EpubChapterView
+            // 自己导航到新文档（见 didUpdateWidget 的 pageNum 分支）。
+            key: ValueKey('${pageData.bookId}-epub'),
             bookId: pageData.bookId,
             pageNum: pageData.currentPage,
             serverUrl: settings.serverUrl,

@@ -460,6 +460,50 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     });
   }
 
+  /// 换章导航：同一个 WebView 载入新章节，不重建 platform view。
+  ///
+  /// 与 [_retryChapterFromServer] 同一套路：先把旧文档的阅读位置落盘，
+  /// 再把「新文档还没就绪」的闸门全部重置（veil 重新盖住，旧章残影与
+  /// 裸标记都不会露出来），最后 loadUrl 到新文档。
+  Future<void> _navigateToChapter() async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    // 旧章的滚动位置先落盘：滚动模式的键按书存，和旧的「换页即 dispose」
+    // 路径写的是同一个值。
+    if (_lastScrollTop > 0) unawaited(_flushScroll());
+
+    setState(() {
+      _chapterUnavailable = false;
+      _fellBackToLocal = false;
+      _urlOverride = null;
+      _chapterReady = false;
+      _veilGone = false;
+      _pendingThemeCss = null;
+      _pendingScrollRestore = null;
+      _restoredThisLoad = false;
+      _lastScrollTop = 0;
+      _pushedSentenceIds = null;
+      _pageIndex = 0;
+      _pageCount = 1;
+      _pendingPageRestore = null;
+      _lastPersistedPage = null;
+    });
+    _revealTimer?.cancel();
+    _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
+
+    // 阅读位置按新章节重读（翻页页码的键带 pageNum）；[_decideInitialUrl]
+    // 也按新章节重新决定用离线包还是服务器地址。
+    await _loadSavedScroll();
+    await _decideInitialUrl();
+    if (!mounted) return;
+    try {
+      await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_pageUrl)));
+    } catch (_) {
+      // 加载失败会走 _onReceivedError（离线兜底 / 本页不可用提示）。
+    }
+  }
+
   /// The pack's background refresh: static assets and theme, off the
   /// critical path.  When the theme on the server differs from the
   /// packed copy, its CSS is carried over to the loaded page -- either
@@ -1491,6 +1535,22 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   void didUpdateWidget(EpubChapterView oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    // 换章：复用同一个 WebView，只导航到新文档。
+    //
+    // key 不再随页码变（见 ReaderScreen 的 EpubChapterView），所以换章
+    // 落到这里而不是重建。旧文档的一切状态要么在下面对新文档重新建立，
+    // 要么由 _onLoadStop 的「新文档」重置覆盖。
+    if (widget.pageNum != oldWidget.pageNum) {
+      if (oldWidget.scroll != widget.scroll) {
+        if (oldWidget.scroll?._turn == _turnByScreen) {
+          oldWidget.scroll?._turn = null;
+        }
+        widget.scroll?._turn = _turnByScreen;
+      }
+      unawaited(_navigateToChapter());
+      return;
+    }
+
     // Look / furigana / zoom-relevant settings changed: push them down.
     if (oldWidget.scroll != widget.scroll) {
       if (oldWidget.scroll?._turn == _turnByScreen) {
@@ -1905,7 +1965,9 @@ class _EpubChapterViewState extends State<EpubChapterView> {
             unawaited(_flickTurn(dx < 0 ? 1 : -1));
           },
           child: InAppWebView(
-            key: ValueKey('epub-webview-${widget.bookId}-${widget.pageNum}'),
+            // 只认书：换章走 [_navigateToChapter] 的 loadUrl 复用这个
+            // platform view，而不是新建一个（见 didUpdateWidget）。
+            key: ValueKey('epub-webview-${widget.bookId}'),
             initialUrlRequest: URLRequest(url: WebUri(_pageUrl)),
             // 每次主框架导航（首发、reload、离线兜底）都在文档开始解析前
             // 注入字号护甲；固定版式走 fit/zoom，不装。
