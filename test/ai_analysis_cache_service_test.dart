@@ -201,4 +201,91 @@ void main() {
     await cache.clearAllCache();
     expect(await cache.getFromCache(key), isNull);
   });
+
+  // 离线整本下载只打包「已有的」AI 解释：按 bookId 认领 + 老条目靠句子
+  // 缓存回填，pin 住之后不参与体积淘汰。这几个用例锁住认领规则。
+  test('pinForBook 认领 bookId 归属于自己的条目，并回填 legacy 条目', () async {
+    final cache = service();
+    String keyOf(String text) => AiAnalysisCacheService.cacheKey(7, text);
+
+    await cache.saveToCache(
+      key: keyOf('拥有'),
+      fallbackText: 'owned',
+      bookId: 5,
+    );
+    await cache.saveToCache(
+      key: keyOf('别的书'),
+      fallbackText: 'other book',
+      bookId: 7,
+    );
+    // 升级前写入的条目：没有 bookId，只能靠句子缓存给的 legacy key 认回来。
+    await cache.saveToCache(key: keyOf('老条目'), fallbackText: 'legacy');
+
+    final matched = await cache.pinForBook(
+      bookId: 5,
+      legacyKeys: [keyOf('老条目')],
+    );
+
+    expect(matched, 2);
+    final owned = (await cache.getFromCache(keyOf('拥有'))!)!;
+    expect(owned.pinned, isTrue);
+    final legacy = (await cache.getFromCache(keyOf('老条目'))!)!;
+    expect(legacy.pinned, isTrue);
+    expect(legacy.bookIds, [5]);
+    // 别的书的条目不该被顺手 pin 住。
+    final other = (await cache.getFromCache(keyOf('别的书'))!)!;
+    expect(other.pinned, isFalse);
+  });
+
+  test('countForBook 只数已 pin 且归到该书的条目', () async {
+    final cache = service();
+    String keyOf(String text) => AiAnalysisCacheService.cacheKey(7, text);
+
+    await cache.saveToCache(
+      key: keyOf('未 pin'),
+      fallbackText: 'unpinned',
+      bookId: 5,
+    );
+    await cache.saveToCache(
+      key: keyOf('已 pin'),
+      fallbackText: 'pinned',
+      bookId: 5,
+      pinned: true,
+    );
+
+    // 没 pin 的随时可能被体积淘汰，不能算进覆盖口径。
+    expect(await cache.countForBook(5), 1);
+    expect(await cache.countForBook(7), 0);
+  });
+
+  test('刷新（再次写入）保留 pinned 与 bookIds', () async {
+    final cache = service();
+    final key = AiAnalysisCacheService.cacheKey(7, '雨だ。');
+
+    await cache.saveToCache(
+      key: key,
+      result: resultJson(translation: '旧'),
+      bookId: 5,
+    );
+    await cache.pinForBook(bookId: 5);
+
+    // 用户点刷新（服务端结果变化）后覆盖写入：不能把离线资产变回可淘汰。
+    await cache.saveToCache(
+      key: key,
+      result: resultJson(translation: '新'),
+      bookId: 5,
+    );
+
+    final entry = (await cache.getFromCache(key))!;
+    expect(entry.result!['translation'], '新');
+    expect(entry.pinned, isTrue);
+    expect(entry.bookIds, [5]);
+    expect(await cache.countForBook(5), 1);
+  });
+
+  test('这本书没缓存过任何解释时 pinForBook 是空操作', () async {
+    final cache = service();
+    expect(await cache.pinForBook(bookId: 5), 0);
+    expect(await cache.countForBook(5), 0);
+  });
 }

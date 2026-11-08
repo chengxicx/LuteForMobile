@@ -26,6 +26,13 @@ class AiAnalysisCacheEntry {
   /// 最多比对一次，避免每次开面板都白跑一趟网络。
   final int? verifiedAt;
 
+  /// 这条结果是在读哪本书时产生的。
+  ///
+  /// 缓存以（语言, 句子）为身份，一句话可能出现在多本书里，所以是集合。
+  /// 离线整本下载靠它把「这本书的」解释认出来 pin 住并给出覆盖条数；
+  /// 升级前写入的条目没有这个字段，由离线下载按句子缓存回填。
+  final List<int>? bookIds;
+
   const AiAnalysisCacheEntry({
     required this.timestamp,
     required this.sizeInBytes,
@@ -35,6 +42,7 @@ class AiAnalysisCacheEntry {
     this.model,
     this.pinned = false,
     this.verifiedAt,
+    this.bookIds,
   });
 
   /// Tolerant decode: corrupt or future-version data returns null instead of
@@ -56,6 +64,11 @@ class AiAnalysisCacheEntry {
         model: json['model'] is String ? json['model'] as String : null,
         pinned: json['pinned'] == true,
         verifiedAt: json['verifiedAt'] is int ? json['verifiedAt'] as int : null,
+        bookIds: (json['books'] is List)
+            ? (json['books'] as List)
+                .whereType<int>()
+                .toList(growable: false)
+            : null,
       );
     } catch (_) {
       return null;
@@ -67,6 +80,7 @@ class AiAnalysisCacheEntry {
     int? sizeInBytes,
     int? verifiedAt,
     bool? pinned,
+    List<int>? bookIds,
   }) {
     return AiAnalysisCacheEntry(
       timestamp: timestamp ?? this.timestamp,
@@ -77,6 +91,7 @@ class AiAnalysisCacheEntry {
       model: model,
       pinned: pinned ?? this.pinned,
       verifiedAt: verifiedAt ?? this.verifiedAt,
+      bookIds: bookIds ?? this.bookIds,
     );
   }
 
@@ -91,6 +106,7 @@ class AiAnalysisCacheEntry {
       if (model != null) 'model': model,
       if (pinned) 'pinned': true,
       if (verifiedAt != null) 'verifiedAt': verifiedAt,
+      if (bookIds != null && bookIds!.isNotEmpty) 'books': bookIds,
     };
   }
 }
@@ -214,6 +230,10 @@ class AiAnalysisCacheService {
   ///
   /// [pinned] marks an entry written by the offline full-book download: it is
   /// never evicted by the size cap.
+  ///
+  /// [bookId] 记下这条结果是读哪本书时产生的（离线下载据此给出覆盖条数）。
+  /// 覆盖写入时保留原条目的 pinned 与 bookIds：用户点刷新会重写内容，但
+  /// 不该因此把一条已 pin 的离线资产变回可淘汰。
   Future<bool> saveToCache({
     required String key,
     Map<String, dynamic>? result,
@@ -221,6 +241,7 @@ class AiAnalysisCacheService {
     String? provider,
     String? model,
     bool pinned = false,
+    int? bookId,
   }) async {
     try {
       if (!_isInitialized) {
@@ -237,6 +258,11 @@ class AiAnalysisCacheService {
       // 内容刚来自服务端，等同于刚比对过 —— 记下 verifiedAt，别的面板
       // 打开时不必再为它跑一次比对。
       final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final existing = AiAnalysisCacheEntry.parse(_box!.get(key));
+      final books = <int>{
+        ...?existing?.bookIds,
+        if (bookId != null) bookId,
+      }.toList(growable: false);
       final entry = AiAnalysisCacheEntry(
         timestamp: timestamp,
         sizeInBytes: 0,
@@ -244,8 +270,9 @@ class AiAnalysisCacheService {
         fallbackText: fallbackText,
         provider: provider,
         model: model,
-        pinned: pinned,
+        pinned: pinned || (existing?.pinned ?? false),
         verifiedAt: timestamp,
+        bookIds: books.isEmpty ? null : books,
       );
 
       await _putMeasured(key, entry);
@@ -257,6 +284,58 @@ class AiAnalysisCacheService {
       CacheLogger.logError('$_boxName.saveToCache', e);
       return false;
     }
+  }
+
+  /// 把 [bookId] 这本书**已有的**解释标成 pinned，返回归到这本书的条目数
+  /// —— 就是离线下载结果里「已包含 N 条解释」的 N。全程不发任何 AI 请求。
+  ///
+  /// 两个来源：条目自己记着 bookId；或者条目是升级前写的（没有 bookId），
+  /// 但它的句子出现在 [legacyKeys] 里 —— 那批顺手补上 bookId，以后就不必
+  /// 再依赖句子缓存（句子缓存有 14 天 TTL，AI 缓存是永久的）。
+  Future<int> pinForBook({
+    required int bookId,
+    Iterable<String> legacyKeys = const [],
+  }) async {
+    if (!_isInitialized) await initialize();
+    final box = _box;
+    if (box == null) return 0;
+
+    final legacy = legacyKeys.toSet();
+    final keys = box.keys.toList(growable: false);
+    var matched = 0;
+    for (final key in keys) {
+      final entry = AiAnalysisCacheEntry.parse(box.get(key));
+      if (entry == null) continue;
+      final owned = entry.bookIds?.contains(bookId) ?? false;
+      if (!owned && !legacy.contains(key)) continue;
+      matched++;
+      if (owned && entry.pinned) continue;
+      await _putMeasured(
+        key,
+        entry.copyWith(
+          pinned: true,
+          bookIds: <int>{...?entry.bookIds, bookId}.toList(growable: false),
+        ),
+      );
+    }
+    CacheLogger.log('$_boxName PIN book=$bookId entries=$matched');
+    return matched;
+  }
+
+  /// 已随包保留（pinned）且归到某本书的解释条数，只读不写盘。
+  /// 离线下载入口用它显示覆盖范围：只有 pin 过的才会在离线包里留着，
+  /// 普通缓存条目随时可能被体积淘汰，不能算进「已包含」。
+  Future<int> countForBook(int bookId) async {
+    if (!_isInitialized) await initialize();
+    final box = _box;
+    if (box == null) return 0;
+    var count = 0;
+    for (final key in box.keys.toList(growable: false)) {
+      final entry = AiAnalysisCacheEntry.parse(box.get(key));
+      if (entry == null || !entry.pinned) continue;
+      if (entry.bookIds?.contains(bookId) ?? false) count++;
+    }
+    return count;
   }
 
   /// 只记「已与服务端比对过」，不动内容。

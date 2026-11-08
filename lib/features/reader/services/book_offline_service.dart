@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/ai_analysis_cache_service.dart';
 import '../../../core/cache/audio_cache_service.dart';
+import '../../../core/cache/providers/ai_analysis_cache_provider.dart';
 import '../../../core/cache/providers/audio_cache_provider.dart';
 import '../../../core/cache/providers/page_cache_provider.dart';
 import '../../../core/network/content_service.dart';
@@ -11,11 +13,13 @@ import '../../books/models/book.dart';
 import '../models/page_cache_entry.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../providers/epub_offline_provider.dart';
+import '../providers/sentence_reader_provider.dart';
 import 'epub_offline_prefetch.dart';
 import 'epub_offline_store.dart';
 import 'manga_image_cache.dart';
 import 'page_cache_service.dart';
 import 'pdf_file_service.dart';
+import 'sentence_cache_service.dart';
 
 /// Download progress / state of one book's offline copy.
 ///
@@ -126,6 +130,8 @@ class BookOfflineService {
     required AudioCacheService audioCache,
     required PdfFileService pdfFile,
     required MangaImageCache mangaCache,
+    required SentenceCacheService sentenceCache,
+    required AiAnalysisCacheService aiCache,
     required String Function() serverUrl,
   }) : _pageCache = pageCache,
        _contentService = contentService,
@@ -134,6 +140,8 @@ class BookOfflineService {
        _audioCache = audioCache,
        _pdfFile = pdfFile,
        _mangaCache = mangaCache,
+       _sentenceCache = sentenceCache,
+       _aiCache = aiCache,
        _serverUrl = serverUrl;
 
   final PageCacheService _pageCache;
@@ -143,6 +151,8 @@ class BookOfflineService {
   final AudioCacheService _audioCache;
   final PdfFileService _pdfFile;
   final MangaImageCache _mangaCache;
+  final SentenceCacheService _sentenceCache;
+  final AiAnalysisCacheService _aiCache;
   final String Function() _serverUrl;
 
   /// Live task state, keyed by book id. The dialog listens to it, so a
@@ -220,7 +230,15 @@ class BookOfflineService {
   /// Starts (or resumes) a whole-book offline download.
   ///
   /// Idempotent per book: a second call while the first runs is ignored.
-  Future<void> download(Book book, {bool forceRefresh = false}) async {
+  ///
+  /// [includeAiExplanations]（默认开）只做「打包已有的」：把这本书本地
+  /// 已经缓存过的 AI 句子解释标成 pinned 随包保留，**不发任何 AI 请求**，
+  /// 所以下载耗时与流量不因此变化。没有缓存过解释的书只是一个空操作。
+  Future<void> download(
+    Book book, {
+    bool forceRefresh = false,
+    bool includeAiExplanations = true,
+  }) async {
     final bookId = book.id;
     if (_running.contains(bookId)) return;
 
@@ -245,6 +263,9 @@ class BookOfflineService {
           await _downloadPdf(book);
         default:
           await _downloadPages(book);
+      }
+      if (includeAiExplanations && !_isCancelled(bookId)) {
+        await pinAiExplanations(bookId);
       }
       final status = await statusFor(book);
       _publish(
@@ -298,6 +319,35 @@ class BookOfflineService {
   }
 
   bool _isCancelled(int bookId) => _cancelFlags[bookId] ?? false;
+
+  /// 每本书已 pin 的解释条数（详情页的覆盖口径，一次扫描后记住）。
+  final Map<int, int> _aiIncluded = <int, int>{};
+
+  /// 把这本书**已有的** AI 解释标成 pinned，返回条数。
+  ///
+  /// 纯本地操作：只查缓存，不发任何 AI 请求。升级前写入的条目没有
+  /// bookId 标记，用句子缓存把它们认回来（见
+  /// [AiAnalysisCacheService.pinForBook]）。
+  Future<int> pinAiExplanations(int bookId) async {
+    final legacy = <String>{};
+    for (final (langId, sentence) in await _sentenceCache.sentencesForBook(
+      bookId,
+    )) {
+      legacy.add(AiAnalysisCacheService.cacheKey(langId, sentence));
+    }
+    final count = await _aiCache.pinForBook(bookId: bookId, legacyKeys: legacy);
+    _aiIncluded[bookId] = count;
+    return count;
+  }
+
+  /// 归到这本书的解释条数（只读本地，不联网）。
+  Future<int> aiIncludedCount(int bookId) async {
+    final known = _aiIncluded[bookId];
+    if (known != null) return known;
+    final count = await _aiCache.countForBook(bookId);
+    _aiIncluded[bookId] = count;
+    return count;
+  }
 
   Future<void> _downloadEpub(Book book, {required bool forceRefresh}) async {
     await _pageCache.pinBook(book.id);
@@ -497,6 +547,8 @@ final bookOfflineServiceProvider = Provider<BookOfflineService>((ref) {
     audioCache: ref.watch(audioCacheServiceProvider),
     pdfFile: ref.watch(pdfFileServiceProvider),
     mangaCache: ref.watch(mangaImageCacheProvider),
+    sentenceCache: ref.watch(sentenceCacheServiceProvider),
+    aiCache: ref.watch(sentenceAiCacheServiceProvider),
     serverUrl: () => ref.read(settingsProvider).serverUrl,
   );
 });

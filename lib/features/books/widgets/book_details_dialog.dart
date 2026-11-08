@@ -35,6 +35,13 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
   bool _offlineKnown = false;
   BookOfflineTask? _task;
 
+  /// 下载时是否把这本书已有的 AI 句子解释一起打包（默认勾选）。
+  /// 只 pin 本地已有的条目，不发 AI 请求，下载耗时不变。
+  bool _includeAi = true;
+
+  /// 这本书随包保留的解释条数；0 或 null 时不显示覆盖口径。
+  int _aiIncluded = 0;
+
   /// Resolved once in initState: `ref.read` is not reliable in dispose.
   BookOfflineService? _service;
 
@@ -79,17 +86,23 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
 
   Future<void> _loadOfflineState() async {
     final status = await _offlineService.statusFor(_displayBook);
+    final aiIncluded = await _offlineService.aiIncludedCount(_displayBook.id);
     if (!mounted) return;
     setState(() {
       _offline = status;
       _offlineKnown = true;
       _task = _offlineService.tasks.value[_displayBook.id];
+      _aiIncluded = aiIncluded;
     });
   }
 
   Future<void> _startOfflineDownload({bool forceRefresh = false}) async {
     try {
-      await _offlineService.download(_displayBook, forceRefresh: forceRefresh);
+      await _offlineService.download(
+        _displayBook,
+        forceRefresh: forceRefresh,
+        includeAiExplanations: _includeAi,
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -488,6 +501,7 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
             icon: Icons.cloud_off_outlined,
             text: 'Offline: not downloaded',
           ),
+          _aiToggleRow(context),
           Wrap(
             alignment: WrapAlignment.end,
             crossAxisAlignment: WrapCrossAlignment.center,
@@ -517,6 +531,8 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
               : Icons.cloud_download_outlined,
           text: _offlineLabel(status),
         ),
+        if (_aiIncluded > 0) _aiCoverageRow(context),
+        _aiToggleRow(context),
         Wrap(
           alignment: WrapAlignment.end,
           crossAxisAlignment: WrapCrossAlignment.center,
@@ -569,6 +585,60 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
           'Audio cached: ${_formatBytes(status.audioBytes)}',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
             color: context.appColorScheme.text.secondary,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 下载开关：把这本书本地已经缓存过的 AI 句子解释 pin 住一起带走。
+  /// 只打包已有的，不发 AI 请求，所以下载耗时不变；没缓存过解释的书
+  /// 勾着也只是空操作。
+  Widget _aiToggleRow(BuildContext context) {
+    final running = _task?.running ?? false;
+    return Row(
+      children: [
+        Icon(
+          Icons.auto_awesome,
+          size: 18,
+          color: context.appColorScheme.text.secondary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            'Include AI explanations (cached only)',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: context.appColorScheme.text.secondary,
+            ),
+          ),
+        ),
+        Switch(
+          value: _includeAi,
+          onChanged: running
+              ? null
+              : (value) => setState(() => _includeAi = value),
+        ),
+      ],
+    );
+  }
+
+  /// 覆盖口径：只说「已包含 N 条」，绝不说「全部已包含」——本地没解释
+  /// 过的句子离线打开时不会凭空有内容。
+  Widget _aiCoverageRow(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          Icons.auto_awesome,
+          size: 16,
+          color: context.appColorScheme.text.secondary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            '$_aiIncluded AI explanations included (cached sentences only)',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: context.appColorScheme.text.secondary,
+            ),
           ),
         ),
       ],

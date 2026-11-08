@@ -135,6 +135,43 @@ class SentenceCacheService {
     }
   }
 
+  /// 这本书本地缓存过的所有句子（语言 id + 送 AI 时用的原字符串）。
+  ///
+  /// 只给离线整本下载用：升级前写进 AI 缓存的条目没有 bookId 标记，靠这份
+  /// 句子清单把它们认回来（[AiAnalysisCacheService.pinForBook]）。已过期
+  /// 的页不参与 —— 那批句子本来也不在「现在能读到」的范围内。
+  Future<List<(int, String)>> sentencesForBook(int bookId) async {
+    final out = <(int, String)>[];
+    try {
+      final box = await _getBox();
+      final prefix = '$_cachePrefix${bookId}_';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final key in box.keys) {
+        final keyStr = key as String;
+        if (!keyStr.startsWith(prefix)) continue;
+        final entry = box.get(key);
+        if (entry == null) continue;
+        if (now - entry.timestamp > _ttl.inMilliseconds) continue;
+        final parts = keyStr.substring(prefix.length).split('_');
+        if (parts.length < 3) continue;
+        final langId = int.tryParse(parts[1]);
+        if (langId == null) continue;
+        for (final sentence in entry.sentences) {
+          out.add((langId, sentence.fullText));
+          // 面板里实际送出去的是 textItems 拼起来的字符串，某些语言下它
+          // 与 fullText（做过空白归一）并不相等，两种都算一遍。
+          final joined = sentence.textItems.map((item) => item.text).join();
+          if (joined != sentence.fullText && joined.isNotEmpty) {
+            out.add((langId, joined));
+          }
+        }
+      }
+    } catch (e) {
+      CacheLogger.logError('sentencesForBook', e);
+    }
+    return out;
+  }
+
   Future<Map<String, dynamic>> getCacheStats() async {
     try {
       final box = await _getBox();

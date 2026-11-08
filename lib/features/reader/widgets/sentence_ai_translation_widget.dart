@@ -18,12 +18,17 @@ class SentenceAITranslationWidget extends ConsumerStatefulWidget {
   final VoidCallback onClose;
   final int? sentenceId;
 
+  /// 产生这句解释时读的是哪本书。离线整本下载据此把「这本书的」解释
+  /// pin 住随包保留，与展示无关。
+  final int? bookId;
+
   const SentenceAITranslationWidget({
     super.key,
     required this.sentence,
     required this.languageId,
     required this.onClose,
     this.sentenceId,
+    this.bookId,
   });
 
   @override
@@ -52,6 +57,7 @@ class _SentenceAITranslationWidgetState
           .ensureAnalyzed(
             sentence: widget.sentence,
             langId: widget.languageId,
+            bookId: widget.bookId,
           );
       // meta 可能比本 widget 先到（缓存命中的路径），listen 不会补发旧状态，
       // 所以这里也武装一次。
@@ -93,6 +99,7 @@ class _SentenceAITranslationWidgetState
         .analyze(
           sentence: widget.sentence,
           langId: widget.languageId,
+          bookId: widget.bookId,
           // A retry asks for a fresh answer; the cache-first path would just
           // re-serve the cached payload again.
           forceNetwork: true,
@@ -298,6 +305,7 @@ class _SentenceAITranslationWidgetState
                   .analyze(
                     sentence: widget.sentence,
                     langId: widget.languageId,
+                    bookId: widget.bookId,
                     forceNetwork: true,
                   ),
             ),

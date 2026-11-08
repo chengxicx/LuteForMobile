@@ -2139,6 +2139,7 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
         .schedulePrefetch(
           upcoming: upcoming,
           langId: currentSentence.textItems.first.langId ?? 0,
+          bookId: ref.read(readerProvider).pageData?.bookId,
         );
   }
 
@@ -2156,6 +2157,7 @@ class SentenceReaderScreenState extends ConsumerState<SentenceReaderScreen>
           languageId: languageId,
           onClose: () => Navigator.of(context).pop(),
           sentenceId: currentSentence?.id,
+          bookId: ref.read(readerProvider).pageData?.bookId,
         );
       },
     );

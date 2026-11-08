@@ -33,6 +33,10 @@ class SentenceAiState {
   /// 提示「有更新」并给一个刷新入口，而不是静默继续用旧值。
   final bool serverUpdateAvailable;
 
+  /// 这条解释是在读哪本书时拿到的。只用于让离线整本下载把「这本书的」
+  /// 缓存认出来 pin 住，不影响展示。
+  final int? bookId;
+
   const SentenceAiState({
     this.status = SentenceAiStatus.idle,
     this.sentence,
@@ -45,6 +49,7 @@ class SentenceAiState {
     this.errorMessage,
     this.errorDetail,
     this.serverUpdateAvailable = false,
+    this.bookId,
   });
 
   bool get isCached => meta?.cached ?? false;
@@ -64,6 +69,7 @@ class SentenceAiState {
     String? errorMessage,
     String? errorDetail,
     bool? serverUpdateAvailable,
+    int? bookId,
   }) {
     return SentenceAiState(
       status: status ?? this.status,
@@ -78,6 +84,7 @@ class SentenceAiState {
       errorDetail: errorDetail ?? this.errorDetail,
       serverUpdateAvailable:
           serverUpdateAvailable ?? this.serverUpdateAvailable,
+      bookId: bookId ?? this.bookId,
     );
   }
 }
@@ -142,18 +149,23 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     return const SentenceAiState();
   }
 
-  void ensureAnalyzed({required String sentence, required int langId}) {
+  void ensureAnalyzed({
+    required String sentence,
+    required int langId,
+    int? bookId,
+  }) {
     if (state.sentence == sentence &&
         state.langId == langId &&
         state.status != SentenceAiStatus.idle) {
       return;
     }
-    unawaited(analyze(sentence: sentence, langId: langId));
+    unawaited(analyze(sentence: sentence, langId: langId, bookId: bookId));
   }
 
   Future<void> analyze({
     required String sentence,
     required int langId,
+    int? bookId,
     bool forceNetwork = false,
   }) async {
     final generation = ++_generation;
@@ -171,11 +183,12 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
           status: SentenceAiStatus.streaming,
           sentence: sentence,
           langId: langId,
+          bookId: bookId,
         );
         final entry = await running;
         if (generation != _generation) return;
         if (entry != null) {
-          state = _stateFromCacheEntry(entry, sentence, langId);
+          state = _stateFromCacheEntry(entry, sentence, langId, bookId);
           return;
         }
         // Prefetch failed -- fall through and let the panel try live; the
@@ -185,7 +198,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
             await ref.read(sentenceAiCacheServiceProvider).getFromCache(key);
         if (generation != _generation) return;
         if (entry != null) {
-          state = _stateFromCacheEntry(entry, sentence, langId);
+          state = _stateFromCacheEntry(entry, sentence, langId, bookId);
           // 缓存是永久的，但服务端结果可能已经变了（换模型、清缓存重算）。
           // 先按本地内容即时显示，再在后台比对一次；有差异就挂个提示。
           _scheduleServerCheck(
@@ -200,13 +213,22 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
       }
     }
 
-    _startStream(sentence: sentence, langId: langId, generation: generation);
+    _startStream(
+      sentence: sentence,
+      langId: langId,
+      bookId: bookId,
+      generation: generation,
+    );
   }
 
   /// Schedules background prefetches for the sentences that follow the one
   /// the user is currently reading, so opening the AI card on them is
   /// instant.  Called by the sentence reader screen on every sentence change.
-  void schedulePrefetch({required List<String> upcoming, required int langId}) {
+  void schedulePrefetch({
+    required List<String> upcoming,
+    required int langId,
+    int? bookId,
+  }) {
     _prefetchTimer?.cancel();
     if (_unsupportedLangs.contains(langId)) return;
     final sentences = upcoming
@@ -220,7 +242,11 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     _prefetchTimer = Timer(_prefetchDwell, () {
       for (final sentence in sentences) {
         _prefetchQueue = _prefetchQueue.then(
-          (_) => _prefetchOne(sentence: sentence, langId: langId),
+          (_) => _prefetchOne(
+            sentence: sentence,
+            langId: langId,
+            bookId: bookId,
+          ),
         );
       }
     });
@@ -229,6 +255,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
   Future<void> _prefetchOne({
     required String sentence,
     required int langId,
+    int? bookId,
   }) async {
     if (_unsupportedLangs.contains(langId)) return;
 
@@ -249,6 +276,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
       sentence: sentence,
       langId: langId,
       key: key,
+      bookId: bookId,
     );
     _inFlight[key] = future;
     try {
@@ -330,6 +358,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     required String sentence,
     required int langId,
     required String key,
+    int? bookId,
   }) async {
     final payload = await _consumeStream(
       sentence: sentence,
@@ -348,6 +377,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
           fallbackText: payload.fallbackText,
           provider: payload.provider,
           model: payload.model,
+          bookId: bookId,
         );
     return AiAnalysisCacheEntry(
       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -429,11 +459,13 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     required String sentence,
     required int langId,
     required int generation,
+    int? bookId,
   }) {
     state = SentenceAiState(
       status: SentenceAiStatus.streaming,
       sentence: sentence,
       langId: langId,
+      bookId: bookId,
     );
 
     final stream = ref.read(sentenceAiAnalyzeProvider)(
@@ -465,6 +497,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     AiAnalysisCacheEntry entry,
     String sentence,
     int langId,
+    int? bookId,
   ) {
     SentenceAiResult? result;
     if (entry.result != null) {
@@ -482,6 +515,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
       ),
       result: result,
       fallbackText: entry.fallbackText,
+      bookId: bookId,
     );
   }
 
@@ -499,6 +533,9 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
           result: event.result,
           fallbackText: event.fallbackText,
         );
+        // 服务端送完结果不一定立刻关连接（长连接 keep-alive），不能只靠
+        // onDone 落缓存，否则这条解释永远进不了本地，离线时也就没有内容。
+        _cacheCurrentResult();
       case SentenceAiErrorEvent():
         _setProviderError(event.kind, event.message);
       case SentenceAiDoneEvent():
@@ -623,6 +660,7 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
             fallbackText: fallbackText,
             provider: state.meta?.provider,
             model: state.meta?.model,
+            bookId: state.bookId,
           ),
     );
   }
