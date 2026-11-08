@@ -52,6 +52,7 @@ import '../../grammar/providers/grammar_provider.dart';
 import '../../grammar/providers/sentence_grammar_provider.dart';
 import '../../grammar/widgets/sentence_grammar_screen.dart';
 import '../utils/playing_line.dart';
+import '../utils/furigana_annotator.dart';
 import '../utils/player_lifecycle.dart';
 import '../utils/app_bar_layout.dart';
 import '../utils/term_selection.dart';
@@ -938,14 +939,21 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   }
 
   /// Groups the page's text items into whole sentences (preserving order).
+  ///
+  /// 有读音（ruby）的词元念读音而不是表层汉字：TTS 引擎按拼写发音，多音字
+  /// 会念错（「張」被读成「はり」）。读音可能还没到（每段一次请求，异步），
+  /// 那份晚到的数据由 build 里的 furiganaProvider 监听负责重装句子表。
   List<TTSPlayerSentence> _sentencesForPage(PageData pageData) {
+    final readings = ref.read(furiganaProvider).readings;
     final order = <int>[];
     final buffers = <int, StringBuffer>{};
     for (final paragraph in pageData.paragraphs) {
       for (final item in paragraph.textItems) {
         final buffer = buffers[item.sentenceId] ??= StringBuffer();
         if (buffer.isEmpty) order.add(item.sentenceId);
-        buffer.write(item.text);
+        buffer.write(
+          readings.isEmpty ? item.text : spokenTextForItem(item, readings),
+        );
       }
     }
     return [
@@ -1266,6 +1274,27 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         ref.read(settingsProvider.notifier).updateCurrentBookPage(page),
       );
     });
+    // 读音（ruby）晚到时重装朗读句子表。
+    //
+    // 句子表在 loadPage 那一刻就把文本定死了，而读音是**每段一次请求**异步
+    // 回来的：打开一页立刻按播放，TTS 拿到的仍是裸汉字（「張」→「はり」）。
+    // 只在播放器还没开口（idle）时重装，正在念的那句不打断；在念的句子用的
+    // 是已经到手的读音版本。
+    ref.listen<FuriganaState>(furiganaProvider, (previous, next) {
+      if (next.readings.isEmpty) return;
+      if (previous != null &&
+          previous.readings.length == next.readings.length) {
+        return;
+      }
+      if (ref.read(ttsPlayerProvider).status != TTSPlayerStatus.idle) return;
+      final data = ref.read(readerProvider).pageData;
+      if (data == null || !_showTtsPlayer(data, ref.read(settingsProvider))) {
+        return;
+      }
+      _lastTtsPageKey = null;
+      _loadTtsIfNeeded(data);
+    });
+
     ref.watch(ttsSettingsProvider);
     final playerMode = ref.watch(playerModeProvider);
     final playerCollapsed = ref.watch(playerCollapsedProvider);

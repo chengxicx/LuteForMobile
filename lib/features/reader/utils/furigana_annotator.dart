@@ -137,3 +137,22 @@ void mergeBatchReadings(
     out[item.renderKey] = reading;
   }
 }
+
+/// 假名（平假名 / 片假名 / 长音），即「可以直接念出来」的那种注音。
+final RegExp _kanaPattern = RegExp(r'^[\u3040-\u30ff\u3005\s]+$');
+
+/// 朗读时该送进 TTS 的文本：有能念的读音就用读音，否则用字面文本。
+///
+/// TTS 引擎按表层拼写发音，多音字与人名就会念错 —— 实测 on-device 日语
+/// 引擎把「張」读成「はり」（应为「ちょう」），而读音其实早在页面打开时
+/// 就由 `/read/shadowing/readings` 取回、并已经标在字的上方。整页朗读因此
+/// 不该继续把裸汉字送给引擎。
+///
+/// 只接受假名读音：其他语言的注音是罗马字 / 拼音 / 泰语转写，送进 TTS 会
+/// 被当成另一种文字念（日语引擎收到拼音只会念出字母），比汉字更糟。
+String spokenTextForItem(TextItem item, Map<String, String> readings) {
+  final reading = readings[item.renderKey]?.trim();
+  if (reading == null || reading.isEmpty) return item.text;
+  if (!_kanaPattern.hasMatch(reading)) return item.text;
+  return reading;
+}

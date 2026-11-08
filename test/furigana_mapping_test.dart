@@ -282,4 +282,31 @@ void main() {
       expect(out, isEmpty);
     });
   });
+
+  // 整页朗读把读音送给 TTS 的规则：有假名读音就用读音。
+  //
+  // 实测 on-device 日语引擎把裸「張」读成「はり」（应念「ちょう」），而读音
+  // 早在页面打开时就取回并标在字上方了。罗马字 / 拼音 / 泰语转写不能替进去
+  // —— 送进日语引擎只会被当成字母念出来，比汉字更糟。
+  group('spokenTextForItem', () {
+    test('uses the kana reading instead of the surface kanji', () {
+      final item = _item('張', wordId: 7, order: 3);
+      expect(
+        spokenTextForItem(item, {item.renderKey: 'ちょう'}),
+        'ちょう',
+      );
+    });
+
+    test('falls back to the surface text when there is no reading', () {
+      final item = _item('張', wordId: 7, order: 3);
+      expect(spokenTextForItem(item, const {}), '張');
+      expect(spokenTextForItem(item, {item.renderKey: '  '}), '張');
+    });
+
+    test('rejects romanized / latin readings', () {
+      final item = _item('張', wordId: 7, order: 3);
+      expect(spokenTextForItem(item, {item.renderKey: 'chou'}), '張');
+      expect(spokenTextForItem(item, {item.renderKey: 'zhang'}), '張');
+    });
+  });
 }
