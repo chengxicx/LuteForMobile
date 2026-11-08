@@ -779,6 +779,13 @@ class TTSPlayerNotifier extends Notifier<TTSPlayerState> {
       return;
     }
 
+    // 进 loading 就把位置心跳停掉：它只该在真的出声时走。
+    //
+    // 原来换句时旧心跳继续跑，落到新句上按 250ms 累加 —— 弱网下服务端还没
+    // 回音，进度条已经"播完"了一大截（用户看到时间在走、进度在动，耳朵里却
+    // 一点声音都没有）。心跳由 [_startPositionTimer] 在 speak 落地后重启。
+    _positionTimer?.cancel();
+
     // 归一化后什么都不剩的句子不能送去合成：它拼出来是 `/tts/<lang>/`，末段
     // 为空，服务端的 path 转换器（要求至少一个字符）同样匹配不上 → 404 →
     // 被当成真实错误弹横幅、卡住整页。这类"幽灵句"在页面上只占标点或空白，

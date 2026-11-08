@@ -203,6 +203,15 @@ class OnDeviceTTSService implements TTSService {
   /// so they are re-applied after recovery.
   TTSSettingsConfig? _config;
 
+  /// 本句是否真的开口过（引擎回了 onStart）。
+  ///
+  /// 用来识别「引擎收下了、却一声不出就报完成」：本机 Google TTS 在没有
+  /// Play 商店时语音数据加载失败（`synthesizeWithoutLoadingVoice() failed`），
+  /// 错误又不上报（`Skipping Synthesiscallback.error()`），最后只来一个
+  /// onDone —— 播放器于是把这句当成念完了，整页变成"静音连播"（进度在走、
+  /// 一点声音都没有）。完成时必须核对 onStart 来过没有。
+  bool _utteranceStarted = false;
+
   /// How long the platform call may take to *accept* an utterance. Acceptance
   /// is a local enqueue (no synthesis happens yet), sub-100ms on a live
   /// engine -- anything longer means the call was parked (see [speak]).
@@ -223,9 +232,23 @@ class OnDeviceTTSService implements TTSService {
     // completion handler on utterance end regardless of this flag.
     _flutterTts.awaitSpeakCompletion(false);
     _flutterTts.setStartHandler(() {
+      _utteranceStarted = true;
       _playerStateController.add(PlayerState.playing);
     });
     _flutterTts.setCompletionHandler(() {
+      // 只来过 onDone、从没来过 onStart = 引擎一声没出。那不是「念完了」，
+      // 是引擎没有可用的语音数据；当作播完就会整页静音连播（见
+      // [_utteranceStarted]）。走错误通道让播放器停下来、把原因说出来。
+      if (!_utteranceStarted) {
+        _engineErrorController.add(
+          TTSException(
+            'On-device TTS produced no audio: no usable voice data for this '
+            'language (install the system speech data, or switch back to the '
+            'server voice).',
+          ),
+        );
+        return;
+      }
       _playerStateController.add(PlayerState.completed);
     });
     _flutterTts.setErrorHandler((msg) {
@@ -238,6 +261,8 @@ class OnDeviceTTSService implements TTSService {
 
   @override
   Future<void> speak(String text) async {
+    // 每一句都重新核对「是否真的开口过」（见 [_utteranceStarted]）。
+    _utteranceStarted = false;
     try {
       // Resolves once the engine has accepted the utterance, not when it
       // finishes speaking (see awaitSpeakCompletion above).
@@ -273,6 +298,8 @@ class OnDeviceTTSService implements TTSService {
     await _flushEngineQueue();
     await _rebuildEngine();
     await _flushEngineQueue();
+    // 重建后重念是一句新话：旧句的 onStart 不能算在这句头上。
+    _utteranceStarted = false;
     await _flutterTts.speak(text).timeout(
       _speakAcceptTimeout,
       onTimeout: () => throw TTSException(
