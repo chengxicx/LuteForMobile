@@ -583,6 +583,10 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
       return 'Offline pack: ${status.packedPages}/${status.totalPages} '
           'chapters$incomplete';
     }
+    if (status.isManga) {
+      return 'Offline: ${status.imageFiles}/${status.totalPages} '
+          'page images$incomplete';
+    }
     return 'Offline: ${status.cachedPages}/${status.totalPages} pages$incomplete';
   }
 

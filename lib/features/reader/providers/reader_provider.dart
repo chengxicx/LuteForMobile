@@ -7,7 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:meta/meta.dart';
 import '../../../core/logger/api_logger.dart';
 import '../../../core/network/content_service.dart';
-import '../../../core/network/session_manager.dart';
 import '../models/manga_page.dart';
 import '../models/page_data.dart';
 import '../models/paragraph.dart';
@@ -711,7 +710,7 @@ class ReaderNotifier extends Notifier<ReaderState> {
       // Fire and forget: a page image is multi-MB, and holding the serial
       // prefetch queue (status refresh, tooltips) behind its download
       // would trade one latency for another.
-      unawaited(_preloadNextMangaImage(pageData));
+      unawaited(_preloadNearbyMangaImages(pageData));
     });
     _enqueuePrefetch(() => preloadTooltipsForNextPage());
   }
@@ -862,43 +861,56 @@ class ReaderNotifier extends Notifier<ReaderState> {
     }
   }
 
-  /// If the page just loaded is manga, prefetch the next page's image into
-  /// the disk cache.  Runs after [preloadNextPage] has cached the next
-  /// page's HTML, which is where the image path comes from.
-  Future<void> _preloadNextMangaImage(PageData currentPageData) async {
+  /// 漫画图片预取半径（当前页 ±N）。
+  ///
+  /// 原来是「下一页」一张：往回翻或快速连翻时都得等网络。窗口重叠加
+  /// 自管磁盘缓存后，翻一页只会真正新增一页的 HTML 与图片。
+  static const int _mangaPrefetchRadius = 3;
+
+  /// 把当前页 ±3 的漫画页图和 HTML 预热进各自缓存。
+  ///
+  /// 只对漫画页生效；显式下载（pin）的书里这些图不会被全局配额淘汰。
+  Future<void> _preloadNearbyMangaImages(PageData currentPageData) async {
     try {
       if (currentPageData.mangaPage == null) return;
-      final nextPageNum = currentPageData.currentPage + 1;
-      if (nextPageNum > currentPageData.pageCount) return;
+      final bookId = currentPageData.bookId;
+      final pageCache = ref.read(pageCacheServiceProvider);
+      final parser = ref.read(contentServiceProvider).parser;
+      final prefetcher = ref.read(mangaImagePrefetchProvider);
 
-      final cached = await ref
-          .read(pageCacheServiceProvider)
-          .getFromCache(currentPageData.bookId, nextPageNum);
-      if (cached == null) return;
+      final first = currentPageData.currentPage - _mangaPrefetchRadius;
+      final last = currentPageData.currentPage + _mangaPrefetchRadius;
+      String? metadata = await pageCache.getMetadataFromCache(
+        bookId,
+        currentPageData.currentPage,
+      );
 
-      final nextManga = ref
-          .read(contentServiceProvider)
-          .parser
-          .parsePage(
-            cached.pageTextHtml,
-            cached.metadataHtml,
-            bookId: currentPageData.bookId,
-          )
-          .mangaPage;
-      if (nextManga == null || nextManga.imagePath.isEmpty) return;
+      for (var page = first; page <= last; page++) {
+        if (page < 1 || page > currentPageData.pageCount) continue;
 
-      final serverUrl = ref.read(settingsProvider).serverUrl;
-      if (serverUrl.isEmpty) return;
+        var cached = await pageCache.getFromCache(bookId, page);
+        if (cached == null) {
+          // 窗口内的页还没有 HTML：先取一份，再按其中的 imagePath 预热图片。
+          await ref
+              .read(contentServiceProvider)
+              .preloadPage(bookId, page, cachedMetadataHtml: metadata);
+          cached = await pageCache.getFromCache(bookId, page);
+          if (cached == null) continue;
+        }
+        metadata ??= cached.metadataHtml;
 
-      final headers = SessionManager.authHeaders();
-      await ref
-          .read(mangaImagePrefetchProvider)
-          .prefetch(
-            '$serverUrl${nextManga.imagePath}',
-            headers.isEmpty ? null : headers,
-          );
+        final manga = parser
+            .parsePage(
+              cached.pageTextHtml,
+              cached.metadataHtml,
+              bookId: bookId,
+            )
+            .mangaPage;
+        if (manga == null || manga.imagePath.isEmpty) continue;
+        await prefetcher.prefetch(bookId: bookId, imagePath: manga.imagePath);
+      }
     } catch (e) {
-      ApiLogger.logError('preloadNextMangaImage', e);
+      ApiLogger.logError('preloadNearbyMangaImages', e);
     }
   }
 

@@ -8,10 +8,12 @@ import '../../../core/network/content_service.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../../books/models/book.dart';
+import '../models/page_cache_entry.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../providers/epub_offline_provider.dart';
 import 'epub_offline_prefetch.dart';
 import 'epub_offline_store.dart';
+import 'manga_image_cache.dart';
 import 'page_cache_service.dart';
 import 'pdf_file_service.dart';
 
@@ -123,6 +125,7 @@ class BookOfflineService {
     required EpubOfflineStore epubStore,
     required AudioCacheService audioCache,
     required PdfFileService pdfFile,
+    required MangaImageCache mangaCache,
     required String Function() serverUrl,
   }) : _pageCache = pageCache,
        _contentService = contentService,
@@ -130,6 +133,7 @@ class BookOfflineService {
        _epubStore = epubStore,
        _audioCache = audioCache,
        _pdfFile = pdfFile,
+       _mangaCache = mangaCache,
        _serverUrl = serverUrl;
 
   final PageCacheService _pageCache;
@@ -138,6 +142,7 @@ class BookOfflineService {
   final EpubOfflineStore _epubStore;
   final AudioCacheService _audioCache;
   final PdfFileService _pdfFile;
+  final MangaImageCache _mangaCache;
   final String Function() _serverUrl;
 
   /// Live task state, keyed by book id. The dialog listens to it, so a
@@ -188,6 +193,14 @@ class BookOfflineService {
 
     final audioBytes = book.hasAudio ? await _audioCache.bytesForBook(book.id) : 0;
 
+    var imageFiles = 0;
+    var imageBytes = 0;
+    if (type == 'manga') {
+      final images = await _mangaCache.statsForBook(book.id);
+      imageFiles = images.files;
+      imageBytes = images.bytes;
+    }
+
     return BookOfflineStatus(
       bookId: book.id,
       bookType: type,
@@ -199,8 +212,8 @@ class BookOfflineService {
       pdfBytes: pdfBytes,
       audioBytes: audioBytes,
       pinned: pages.pinned,
-      imageFiles: 0,
-      imageBytes: 0,
+      imageFiles: imageFiles,
+      imageBytes: imageBytes,
     );
   }
 
@@ -277,6 +290,7 @@ class BookOfflineService {
     final type = typeOf(book);
     if (type == 'epub') await _epubStore.deletePack(book.id);
     if (type == 'pdf') await _pdfFile.deleteLocalPdfs(book.id);
+    if (type == 'manga') await _mangaCache.deleteForBook(book.id);
     await _pageCache.clearBookCache(book.id);
     final remaining = Map<int, BookOfflineTask>.of(tasks.value)
       ..remove(book.id);
@@ -317,10 +331,10 @@ class BookOfflineService {
     );
   }
 
-  /// Text books (and, for now, manga page HTML): fetch every page into the
-  /// Hive cache, pinned, one page at a time.
+  /// Text books and manga: fetch every page into the Hive cache (pinned),
+  /// plus the page image for manga.
   ///
-  /// Runs outside the reader: nothing here reads [ReaderState], so closing
+  /// Runs outside the reader: nothing here reads ReaderState, so closing
   /// the book or the dialog does not stop the walk. Cancelling leaves what
   /// already landed in the ordinary cache.
   Future<void> _downloadPages(Book book) async {
@@ -328,6 +342,7 @@ class BookOfflineService {
     if (total <= 0) {
       throw Exception('This book has no pages to download.');
     }
+    final isManga = typeOf(book) == 'manga';
     await _pageCache.pinBook(book.id);
 
     final stats = await _pageCache.getBookStats(book.id);
@@ -351,40 +366,73 @@ class BookOfflineService {
 
     for (var page = 1; page <= total; page++) {
       if (_isCancelled(book.id)) break;
-      final cached = await _pageCache.getFromCache(book.id, page);
-      if (cached != null) {
-        metadata ??= cached.metadataHtml;
-        continue;
+      var entry = await _pageCache.getFromCache(book.id, page);
+      var justDownloaded = false;
+
+      if (entry == null) {
+        await _contentService.preloadPage(
+          book.id,
+          page,
+          cachedMetadataHtml: metadata,
+        );
+        entry = await _pageCache.getFromCache(book.id, page);
+        if (entry == null) {
+          throw Exception(
+            'Could not download page $page. Check the connection and retry.',
+          );
+        }
+        metadata ??= entry.metadataHtml;
+        done++;
+        justDownloaded = true;
+        _publish(
+          BookOfflineTask(
+            bookId: book.id,
+            done: done,
+            total: total,
+            running: true,
+            unit: BookOfflineUnit.pages,
+          ),
+        );
+      } else {
+        metadata ??= entry.metadataHtml;
       }
 
-      await _contentService.preloadPage(
-        book.id,
-        page,
-        cachedMetadataHtml: metadata,
-      );
-      final saved = await _pageCache.getFromCache(book.id, page);
-      if (saved == null) {
-        throw Exception(
-          'Could not download page $page. Check the connection and retry.',
-        );
+      // 页 HTML 与页图是两次下载；整本离线对漫画来说两样都得有，
+      // 否则断网翻页只能看到空白框。
+      if (isManga) {
+        await _ensureMangaImage(book, page, entry);
       }
-      metadata ??= saved.metadataHtml;
-      done++;
-      _publish(
-        BookOfflineTask(
-          bookId: book.id,
-          done: done,
-          total: total,
-          running: true,
-          unit: BookOfflineUnit.pages,
-        ),
-      );
-      // Gentle pacing: the download should not saturate the request queue
-      // the reader itself is using.
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      if (justDownloaded) {
+        // Gentle pacing: the download should not saturate the request
+        // queue the reader itself is using.
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
     }
 
     if (_isCancelled(book.id)) await _pageCache.unpinBook(book.id);
+  }
+
+  Future<void> _ensureMangaImage(
+    Book book,
+    int page,
+    PageCacheEntry entry,
+  ) async {
+    final manga = _contentService.parser
+        .parsePage(
+          entry.pageTextHtml,
+          entry.metadataHtml,
+          bookId: book.id,
+        )
+        .mangaPage;
+    if (manga == null || manga.imagePath.isEmpty) return;
+    final file = await _mangaCache.ensure(book.id, manga.imagePath);
+    if (file == null) {
+      throw Exception(
+        'Could not download the image for page $page. '
+        'Check the connection and retry.',
+      );
+    }
   }
 
   Future<void> _downloadPdf(Book book) async {
@@ -448,6 +496,7 @@ final bookOfflineServiceProvider = Provider<BookOfflineService>((ref) {
     epubStore: ref.watch(epubOfflineStoreProvider),
     audioCache: ref.watch(audioCacheServiceProvider),
     pdfFile: ref.watch(pdfFileServiceProvider),
+    mangaCache: ref.watch(mangaImageCacheProvider),
     serverUrl: () => ref.read(settingsProvider).serverUrl,
   );
 });

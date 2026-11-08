@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../models/manga_page.dart';
 import '../models/text_item.dart';
+import '../services/manga_image_cache.dart';
 import 'page_turn_flick_listener.dart';
 import 'term_tooltip.dart';
 import 'text_display.dart';
@@ -40,8 +42,16 @@ import 'text_display.dart';
 /// view already sits at the horizontal pan boundary in the swipe
 /// direction; elsewhere the flick pans, as in every manga reader.
 class MangaPageView extends StatefulWidget {
+  /// 书 id，页图缓存按书分目录、按书计配额。
+  final int bookId;
   final MangaPageData manga;
+
+  /// 服务器相对路径（缓存 key），[imageUrl] 是拼好 serverUrl 的网络回退地址。
+  final String imagePath;
   final String imageUrl;
+
+  /// 自管图片缓存。为 null 时（例如组件测试）只走网络。
+  final MangaImageCache? imageCache;
   final Map<String, String>? imageHeaders;
   final bool revealAll;
   final bool fitToScreen;
@@ -64,8 +74,11 @@ class MangaPageView extends StatefulWidget {
 
   const MangaPageView({
     super.key,
+    required this.bookId,
     required this.manga,
+    required this.imagePath,
     required this.imageUrl,
+    this.imageCache,
     this.imageHeaders,
     this.revealAll = false,
     this.fitToScreen = false,
@@ -261,38 +274,14 @@ class _MangaPageViewState extends State<MangaPageView> {
                 behavior: HitTestBehavior.opaque,
                 onTapUp: (details) =>
                     _handleTapOnArt(details.localPosition, pageWidthForLayout),
-                // CachedNetworkImage, not Image.network: page images are
-                // big, so without a disk cache every eviction (a few page
-                // turns, or an app restart) re-downloads the same JPG.
-                // Shares the disk cache with the next-page prefetcher.
-                child: CachedNetworkImage(
+                // 自管缓存（MangaImageCache）优先，磁盘上没有才回退网络。
+                // 预取器和这里共享同一份缓存，翻页时大多数图都在本地。
+                child: _MangaImage(
+                  bookId: widget.bookId,
+                  imagePath: widget.imagePath,
                   imageUrl: widget.imageUrl,
+                  cache: widget.imageCache,
                   httpHeaders: widget.imageHeaders,
-                  fit: BoxFit.fill,
-                  progressIndicatorBuilder: (context, url, progress) {
-                    return const Center(child: CircularProgressIndicator());
-                  },
-                  errorWidget: (context, url, error) {
-                    return Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.broken_image,
-                            size: 48,
-                            color: Colors.grey,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Failed to load manga image',
-                            style: TextStyle(
-                              color: context.appColorScheme.text.secondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
                 ),
               ),
               ...widget.manga.blocks.asMap().entries.map(
@@ -481,6 +470,107 @@ class _MangaPageViewState extends State<MangaPageView> {
               )
             : const SizedBox.expand(),
       ),
+    );
+  }
+}
+
+/// 页图渲染：先用自管缓存里的文件，取不到才走网络（并保留原来的
+/// 加载/失败占位）。
+class _MangaImage extends StatefulWidget {
+  const _MangaImage({
+    required this.bookId,
+    required this.imagePath,
+    required this.imageUrl,
+    this.cache,
+    this.httpHeaders,
+  });
+
+  final int bookId;
+  final String imagePath;
+  final String imageUrl;
+  final MangaImageCache? cache;
+  final Map<String, String>? httpHeaders;
+
+  @override
+  State<_MangaImage> createState() => _MangaImageState();
+}
+
+class _MangaImageState extends State<_MangaImage> {
+  File? _file;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MangaImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imagePath != widget.imagePath ||
+        oldWidget.bookId != widget.bookId) {
+      _file = null;
+      _loading = true;
+      _resolve();
+    }
+  }
+
+  Future<void> _resolve() async {
+    final cache = widget.cache;
+    if (cache == null) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+    final file = await cache.ensure(widget.bookId, widget.imagePath);
+    if (!mounted) return;
+    setState(() {
+      _file = file;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final file = _file;
+    if (file != null) {
+      return Image.file(
+        file,
+        fit: BoxFit.fill,
+        gaplessPlayback: true,
+        // 文件可能刚被配额淘汰：退回网络，而不是显示破图。
+        errorBuilder: (context, error, stack) => _buildNetworkImage(context),
+      );
+    }
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return _buildNetworkImage(context);
+  }
+
+  Widget _buildNetworkImage(BuildContext context) {
+    return CachedNetworkImage(
+      imageUrl: widget.imageUrl,
+      httpHeaders: widget.httpHeaders,
+      fit: BoxFit.fill,
+      progressIndicatorBuilder: (context, url, progress) {
+        return const Center(child: CircularProgressIndicator());
+      },
+      errorWidget: (context, url, error) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.broken_image, size: 48, color: Colors.grey),
+              const SizedBox(height: 8),
+              Text(
+                'Failed to load manga image',
+                style: TextStyle(color: context.appColorScheme.text.secondary),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

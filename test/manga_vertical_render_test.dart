@@ -88,7 +88,9 @@ Widget _host(
   void Function(BuildContext)? onContext,
 }) {
   final view = MangaPageView(
+    bookId: 1,
     manga: page,
+    imagePath: '/001.jpg',
     imageUrl: 'https://example.test/001.jpg',
     revealAll: revealAll,
     fitToScreen: fitToScreen,

@@ -28,6 +28,7 @@ import '../../../core/services/termux_service.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import '../../../core/cache/providers/book_progress_provider.dart';
 import '../../../core/cache/term_sync_service.dart';
+import '../services/manga_image_cache.dart';
 import '../../../core/dict/dict_repository.dart';
 import '../../../core/dict/gloss_format.dart';
 import '../../../core/outbox/providers/outbox_provider.dart';
@@ -2082,8 +2083,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final content = mangaPage != null
         ? MangaPageView(
             key: _pageKey,
+            bookId: pageData.bookId,
             manga: mangaPage,
+            imagePath: mangaPage.imagePath,
             imageUrl: '${settings.serverUrl}${mangaPage.imagePath}',
+            imageCache: ref.read(mangaImageCacheProvider),
             imageHeaders: _mangaImageHeaders(settings),
             revealAll: _mangaRevealAll,
             fitToScreen: _mangaFitToScreen,
