@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io'
+    show InternetAddressType, NetworkInterface;
 import 'package:dio/dio.dart' show DioException, DioExceptionType;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
@@ -746,16 +748,24 @@ class ReaderNotifier extends Notifier<ReaderState> {
   int? _fullPreloadBookId;
   bool _fullPreloadRunning = false;
 
+  /// 整本预载的页数窗口：当前页前后各这么多页。
+  ///
+  /// 原来是 1..pageCount 全本走一遍。一整本就可能是几百次请求，读一本
+  /// 30 页的书要把它后面所有章节也拉下来，而用户真正会翻到的只有附近
+  /// 那几页；跨几十页的跳转另有页码直达的加载路径。±10 页大约 20 次
+  /// 请求，既覆盖常规跳转，也不会在后台把整本书刷一遍。
+  static const int _fullPreloadRadius = 10;
+
   /// Whole-book background preload.
   ///
   /// The reader already preloads page N+1 after each turn, but any jump of
   /// two or more pages (or flipping back) still hits the network and shows
-  /// the loading spinner. This walks the book's pages once, sequentially and
-  /// gently (short pause between fetches), so a book opened on page 1 is
-  /// fully cached a minute later and every turn is a cache hit. Runs behind
-  /// the user's own requests because each page fetch is a single awaited
-  /// call in its own micro-task chain — never holds the serial prefetch
-  /// queue. Aborted on book switch; the first failed fetch (offline) aborts
+  /// the loading spinner. This walks the pages around the one in view,
+  /// sequentially and gently (short pause between fetches), so jumps of a
+  /// few pages are cache hits. Runs behind the user's own requests because
+  /// each page fetch is a single awaited call in its own micro-task chain —
+  /// never holds the serial prefetch queue. Aborted on book switch and on
+  /// leaving the unmetered network; the first failed fetch (offline) aborts
   /// the walk and the next page view re-arms it. Manga page *images* are NOT
   /// included — they are multi-MB each and stay on the next-page-only
   /// prefetch.
@@ -778,6 +788,10 @@ class ReaderNotifier extends Notifier<ReaderState> {
     int pageCount,
   ) async {
     try {
+      // 只在不计量网络上预载：整本预载是几十次请求，移动数据下不该由
+      // 后台悄悄跑掉用户的流量。逐页预取（下一项）不受影响，它只多取
+      // 一页、且是用户正在翻的方向。
+      if (!await _isUnmeteredNetwork()) return;
       final cacheService = ref.read(pageCacheServiceProvider);
       // Metadata is per-book static except #page_num, which preloadPage
       // patches per page — same reuse preloadNextPage already does.
@@ -785,8 +799,10 @@ class ReaderNotifier extends Notifier<ReaderState> {
         bookId,
         startPage,
       );
-      for (var pageNum = 1; pageNum <= pageCount; pageNum++) {
+      for (final pageNum in _preloadOrder(startPage, pageCount)) {
         if (_fullPreloadBookId != bookId) return; // switched books
+        // 中途断开 WiFi 就地停：剩下的页等用户回到 WiFi 再补。
+        if (!await _isUnmeteredNetwork()) return;
         final cached = await cacheService.getFromCache(bookId, pageNum);
         if (cached != null) continue;
         await _repository.preloadPage(
@@ -803,6 +819,46 @@ class ReaderNotifier extends Notifier<ReaderState> {
       if (_fullPreloadBookId == bookId) {
         _fullPreloadRunning = false;
       }
+    }
+  }
+
+  /// 从当前页向两侧扩散的预载顺序：下一页、上一页、下二页、上二页……
+  /// 用户最可能先翻到的那几页因此最先落盘。
+  List<int> _preloadOrder(int startPage, int pageCount) {
+    final pages = <int>[if (startPage >= 1 && startPage <= pageCount) startPage];
+    for (var delta = 1; delta <= _fullPreloadRadius; delta++) {
+      final next = startPage + delta;
+      final previous = startPage - delta;
+      if (next <= pageCount) pages.add(next);
+      if (previous >= 1) pages.add(previous);
+    }
+    return pages;
+  }
+
+  /// 当前是否在 WiFi/以太网这类不计量网络上。
+  ///
+  /// 项目没有 connectivity 依赖，也就没有现成的"网络类型"API；这里用
+  /// 接口名判断（Android 上 WiFi 是 wlan0，以太网是 eth0）。判断不出来
+  /// （抛异常）时返回 true：宁可多预载几页，也不能让 WiFi 下的读者因为
+  /// 一次误判拿不到缓存。
+  Future<bool> _isUnmeteredNetwork() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+        includeLinkLocal: false,
+        type: InternetAddressType.IPv4,
+      );
+      for (final interface in interfaces) {
+        final name = interface.name.toLowerCase();
+        if (name.startsWith('wlan') ||
+            name.startsWith('eth') ||
+            name.startsWith('ap')) {
+          return true;
+        }
+      }
+      return false;
+    } catch (_) {
+      return true;
     }
   }
 
