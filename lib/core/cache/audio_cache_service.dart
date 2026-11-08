@@ -101,6 +101,27 @@ class AudioCacheService {
     }
   }
 
+  /// 某一本书的音频缓存占用（离线状态聚合用）。
+  ///
+  /// 半截文件也计入：用户看到的是磁盘真实占用。
+  Future<int> bytesForBook(int bookId) async {
+    try {
+      final entries = await _listFiles();
+      var bytes = 0;
+      for (final entry in entries) {
+        final parsed = parseAudioCacheFile(
+          fileName: entry.name,
+          modifiedAt: entry.modifiedAt,
+        );
+        if (parsed?.bookId == bookId) bytes += entry.size;
+      }
+      return bytes;
+    } catch (e) {
+      debugPrint('AudioCache: 统计单本失败: $e');
+      return 0;
+    }
+  }
+
   /// 清空整个音频缓存（含 `.part`）。返回删掉的文件数。
   ///
   /// 调用方要先让播放器卸载音源（`audioPlayerProvider.notifier.reset()`），

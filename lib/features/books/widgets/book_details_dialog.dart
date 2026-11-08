@@ -4,8 +4,7 @@ import '../../../core/network/content_service.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/language_flag_mapper.dart';
 import '../../../shared/providers/network_providers.dart';
-import '../../reader/providers/epub_offline_provider.dart';
-import '../../reader/services/epub_offline_store.dart';
+import '../../reader/services/book_offline_service.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/book.dart';
 import '../providers/books_provider.dart';
@@ -31,14 +30,21 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
   late Book _displayBook;
   bool _isRefreshingStats = false;
 
-  // ---- offline pack (reader-mode epub only) ----
-  EpubPackManifest? _pack;
-  bool _packKnown = false;
-  bool _downloadingPack = false;
-  int _packPagesDone = 0;
-  bool _cancelPackDownload = false;
+  // ---- offline state (all book types) ----
+  BookOfflineStatus? _offline;
+  bool _offlineKnown = false;
+  BookOfflineTask? _task;
 
-  bool get _isEpub => _displayBook.bookType == 'epub';
+  /// Resolved once in initState: `ref.read` is not reliable in dispose.
+  BookOfflineService? _service;
+
+  BookOfflineService get _offlineService {
+    final cached = _service;
+    if (cached != null) return cached;
+    final resolved = ref.read(bookOfflineServiceProvider);
+    _service = resolved;
+    return resolved;
+  }
 
   @override
   void initState() {
@@ -48,74 +54,68 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     if (settings.alwaysRefreshBookDetails) {
       _refreshBookStatsInBackground(widget.book.id);
     }
-    if (_isEpub) {
-      _loadPackState();
+    if (!_displayBook.isSeries) {
+      _service = ref.read(bookOfflineServiceProvider);
+      _service!.tasks.addListener(_handleTaskChange);
+      _loadOfflineState();
     }
   }
 
-  Future<void> _loadPackState() async {
-    final pack = await ref.read(epubOfflineStoreProvider).manifestFor(
-      _displayBook.id,
-    );
+  @override
+  void dispose() {
+    _service?.tasks.removeListener(_handleTaskChange);
+    super.dispose();
+  }
+
+  void _handleTaskChange() {
+    if (!mounted) return;
+    final task = _offlineService.tasks.value[_displayBook.id];
+    final wasRunning = _task?.running ?? false;
+    setState(() => _task = task);
+    if (task != null && !task.running && wasRunning) {
+      _loadOfflineState();
+    }
+  }
+
+  Future<void> _loadOfflineState() async {
+    final status = await _offlineService.statusFor(_displayBook);
     if (!mounted) return;
     setState(() {
-      _pack = pack;
-      _packKnown = true;
-      _packPagesDone = pack?.pageTimestamps.length ?? 0;
+      _offline = status;
+      _offlineKnown = true;
+      _task = _offlineService.tasks.value[_displayBook.id];
     });
   }
 
-  Future<void> _downloadPack() async {
-    if (_downloadingPack) return;
-    setState(() {
-      _downloadingPack = true;
-      _cancelPackDownload = false;
-      _packPagesDone = _pack?.pageTimestamps.length ?? 0;
-    });
+  Future<void> _startOfflineDownload({bool forceRefresh = false}) async {
     try {
-      final manifest = await ref
-          .read(epubOfflinePrefetchProvider)
-          .downloadPack(
-            bookId: _displayBook.id,
-            title: _displayBook.title,
-            pageCount: _displayBook.totalPages,
-            onProgress: (progress) {
-              if (mounted) {
-                setState(() => _packPagesDone = progress.pagesDone);
-              }
-            },
-            shouldCancel: () => _cancelPackDownload,
-          );
-      if (!mounted) return;
-      setState(() => _pack = manifest);
+      await _offlineService.download(_displayBook, forceRefresh: forceRefresh);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Offline pack download failed: '
+              'Offline download failed: '
               '${e.toString().replaceFirst('Exception: ', '')}',
             ),
           ),
         );
       }
     } finally {
-      if (mounted) {
-        await _loadPackState();
-        if (mounted) setState(() => _downloadingPack = false);
-      }
+      if (mounted) await _loadOfflineState();
     }
   }
 
-  Future<void> _deletePack() async {
+  Future<void> _deleteOffline() async {
     final confirmed = await _showConfirmDialog(
       context,
-      'Delete Offline Pack',
-      'Delete the offline pack for "${_displayBook.title}"? The book itself stays on the server.',
+      'Delete Offline Copy',
+      'Delete everything stored for "${_displayBook.title}" on this device? '
+          'The book itself stays on the server.',
     );
     if (!confirmed || !mounted) return;
-    await ref.read(epubOfflineStoreProvider).deletePack(_displayBook.id);
-    await _loadPackState();
+    await _offlineService.deleteOffline(_displayBook);
+    await _loadOfflineState();
   }
 
   Future<void> _refreshBookStatsInBackground(int bookId) async {
@@ -331,9 +331,9 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
                 'Last Read',
                 book.formattedLastReadExact ?? 'Never',
               ),
-              if (_isEpub) ...[
+              if (!book.isSeries) ...[
                 const SizedBox(height: 12),
-                _buildOfflinePackSection(context),
+                _buildOfflineSection(context),
               ],
               if (book.tags != null && book.tags!.isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -440,21 +440,22 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     );
   }
 
-  /// Offline-pack row for reader-mode EPUB books: download the whole
-  /// book (chapters, assets, furigana readings) for fully offline
-  /// reading, or drop it again.  The reading screen keeps caching the
-  /// current and next chapter on its own; this button is for the whole
-  /// book.
-  Widget _buildOfflinePackSection(BuildContext context) {
-    if (!_packKnown) {
+  /// Offline row for every book type.
+  ///
+  /// EPUB gets its chapter pack, text books and manga their page cache,
+  /// PDF its file -- all pinned so the 14-day TTL / 100MB LRU cannot
+  /// quietly take them away.  Audio (a separate 6-64MB download) is
+  /// reported but not managed here.
+  Widget _buildOfflineSection(BuildContext context) {
+    if (!_offlineKnown) {
       return const LinearProgressIndicator(minHeight: 2);
     }
 
-    final pageCount = _displayBook.totalPages;
-    final pack = _pack;
-    final packedPages = pack?.pageTimestamps.length ?? 0;
+    final status = _offline;
+    final task = _task;
+    final secondary = status == null ? null : _audioLine(context, status);
 
-    if (_downloadingPack) {
+    if (task != null && task.running) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -468,79 +469,142 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  'Downloading offline pack '
-                  '($_packPagesDone/$pageCount chapters)',
+                  _downloadingLabel(task),
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ),
               TextButton(
-                onPressed: () => _cancelPackDownload = true,
+                onPressed: () => _offlineService.cancel(_displayBook.id),
                 child: const Text('Cancel'),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: pageCount > 0 ? _packPagesDone / pageCount : null,
-            minHeight: 2,
-          ),
+          LinearProgressIndicator(value: task.fraction, minHeight: 2),
+          if (secondary != null) ...[const SizedBox(height: 8), secondary],
         ],
       );
     }
 
-    if (pack == null || packedPages == 0) {
-      return Row(
+    if (status == null || !status.hasAnything) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.cloud_off_outlined,
-            size: 20,
-            color: context.appColorScheme.text.secondary,
+          Row(
+            children: [
+              Icon(
+                Icons.cloud_off_outlined,
+                size: 20,
+                color: context.appColorScheme.text.secondary,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Offline: not downloaded',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _startOfflineDownload,
+                icon: const Icon(Icons.download, size: 18),
+                label: const Text('Download'),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Offline pack: not downloaded',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-          TextButton.icon(
-            onPressed: _downloadPack,
-            icon: const Icon(Icons.download, size: 18),
-            label: const Text('Download'),
-          ),
+          if (secondary != null) ...[const SizedBox(height: 8), secondary],
         ],
       );
     }
 
+    final complete = status.isComplete;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              complete
+                  ? Icons.cloud_done_outlined
+                  : Icons.cloud_download_outlined,
+              size: 20,
+              color: context.appColorScheme.text.secondary,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _offlineLabel(status),
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+            TextButton.icon(
+              onPressed: () =>
+                  _startOfflineDownload(forceRefresh: status.isEpub),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Update'),
+            ),
+            TextButton.icon(
+              onPressed: _deleteOffline,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('Delete'),
+            ),
+          ],
+        ),
+        if (secondary != null) ...[const SizedBox(height: 8), secondary],
+      ],
+    );
+  }
+
+  Widget? _audioLine(BuildContext context, BookOfflineStatus status) {
+    if (status.audioBytes <= 0) return null;
     return Row(
       children: [
         Icon(
-          pack.complete
-              ? Icons.cloud_done_outlined
-              : Icons.cloud_download_outlined,
-          size: 20,
+          Icons.headphones,
+          size: 16,
           color: context.appColorScheme.text.secondary,
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            'Offline pack: $packedPages/$pageCount chapters'
-            '${pack.complete ? '' : ' (incomplete)'}',
-            style: Theme.of(context).textTheme.bodyMedium,
+        Text(
+          'Audio cached: ${_formatBytes(status.audioBytes)}',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: context.appColorScheme.text.secondary,
           ),
-        ),
-        TextButton.icon(
-          onPressed: _downloadPack,
-          icon: const Icon(Icons.refresh, size: 18),
-          label: const Text('Update'),
-        ),
-        TextButton.icon(
-          onPressed: _deletePack,
-          icon: const Icon(Icons.delete_outline, size: 18),
-          label: const Text('Delete'),
         ),
       ],
     );
+  }
+
+  String _offlineLabel(BookOfflineStatus status) {
+    final incomplete = status.isComplete ? '' : ' (incomplete)';
+    if (status.isPdf) {
+      return 'Offline: ${_formatBytes(status.pdfBytes)}';
+    }
+    if (status.isEpub) {
+      return 'Offline pack: ${status.packedPages}/${status.totalPages} '
+          'chapters$incomplete';
+    }
+    return 'Offline: ${status.cachedPages}/${status.totalPages} pages$incomplete';
+  }
+
+  String _downloadingLabel(BookOfflineTask task) {
+    switch (task.unit) {
+      case BookOfflineUnit.bytes:
+        final total = task.total > 0 ? ' / ${_formatBytes(task.total)}' : '';
+        return 'Downloading PDF: ${_formatBytes(task.done)}$total';
+      case BookOfflineUnit.chapters:
+        return 'Downloading offline pack '
+            '${task.done}/${task.total} chapters';
+      case BookOfflineUnit.pages:
+        return 'Downloading offline ${task.done}/${task.total} pages';
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    if (bytes >= 1024) return '${(bytes / 1024).round()} KB';
+    return '$bytes B';
   }
 
   Widget _buildStatusDistributionDetails(BuildContext context, List<int> dist) {

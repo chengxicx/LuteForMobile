@@ -8,6 +8,7 @@ import '../../../core/cache/cache_logger.dart';
 
 class PageCacheService {
   static const String _boxName = 'page_cache';
+  static const String _pinBoxName = 'page_cache_pins';
   static const Duration _ttl = Duration(days: 14);
   static const int _maxCacheSizeBytes = 100 * 1024 * 1024;
   static const String _cachePrefix = 'page_cache_';
@@ -25,6 +26,22 @@ class PageCacheService {
   /// 一本边读边缓存的书，翻回去看过的页不该比从没打开过的页先被丢掉。
   final LinkedHashSet<String> _lruKeys = LinkedHashSet<String>();
 
+  /// 用户显式下载过整本离线的书。
+  ///
+  /// 普通缓存是「可再生」的：14 天没人看就过期，超过 100MB 就按 LRU 淘汰。
+  /// 但用户在详情弹窗里按下 Download 的那一刻，他得到的是「这本书以后断网
+  /// 也能读」的承诺 —— 后台的 TTL/LRU 不能把这个承诺悄悄作废。pin 的书
+  /// 因此既不过期、也不参与淘汰；取消或失败时才解除。
+  final Set<int> _pinnedBookIds = <int>{};
+
+  /// pin 集合的持久化载体（bookId -> true）。只存 id 不存页，
+  /// 因为页里再塞一个 pinned 字段要在下载时逐页重写。
+  Box<bool>? _pinBox;
+
+  /// 被 pin 的页占的字节数。容量判定只看**可淘汰**的部分，
+  /// 否则一本 100MB 的书会逼着每次写入都跑一遍全表淘汰扫描。
+  int _pinnedBytes = 0;
+
   PageCacheService();
 
   Future<void> _initialize() async {
@@ -35,6 +52,10 @@ class PageCacheService {
       await Hive.initFlutter(cacheDir.path);
 
       final box = await Hive.openBox<PageCacheEntry>(_boxName);
+      _pinBox = await Hive.openBox<bool>(_pinBoxName);
+      _pinnedBookIds
+        ..clear()
+        ..addAll(_pinBox!.keys.whereType<int>());
       _buildSizeIndex(box);
       _isInitialized = true;
       CacheLogger.log('initialized');
@@ -48,17 +69,80 @@ class PageCacheService {
   void _buildSizeIndex(Box<PageCacheEntry> box) {
     final ordered = <(String, int)>[];
     var total = 0;
+    var pinned = 0;
     for (final key in box.keys) {
       final entry = box.get(key);
       if (entry == null) continue;
       total += entry.sizeInBytes;
-      ordered.add((key as String, entry.timestamp));
+      if (_isPinnedKey(key as String)) pinned += entry.sizeInBytes;
+      ordered.add((key, entry.timestamp));
     }
     ordered.sort((a, b) => a.$2.compareTo(b.$2));
     _sizeIndexBytes = total;
+    _pinnedBytes = pinned;
     _lruKeys
       ..clear()
       ..addAll(ordered.map((e) => e.$1));
+  }
+
+  /// `page_cache_<bookId>_<pageNum>` 里的 bookId。
+  int? _bookIdFromKey(String key) {
+    if (!key.startsWith(_cachePrefix)) return null;
+    final rest = key.substring(_cachePrefix.length);
+    final split = rest.indexOf('_');
+    if (split <= 0) return null;
+    return int.tryParse(rest.substring(0, split));
+  }
+
+  bool _isPinnedKey(String key) {
+    final bookId = _bookIdFromKey(key);
+    return bookId != null && _pinnedBookIds.contains(bookId);
+  }
+
+  /// 这本书是否被显式下载过（页不过期、不参与淘汰）。
+  bool isBookPinned(int bookId) => _pinnedBookIds.contains(bookId);
+
+  /// Pin 整本书的页缓存。
+  ///
+  /// 必须在**写入之前**调用，下载过程中写进来的页才算 pin 的页；页缓存
+  /// 本身不存 pin 标记，所以解除 pin 对已有页同样立即生效。
+  Future<void> pinBook(int bookId) async {
+    try {
+      await _initialize();
+      if (!_pinnedBookIds.add(bookId)) return;
+      await _pinBox?.put(bookId, true);
+      CacheLogger.log('pinned book $bookId');
+    } catch (e) {
+      CacheLogger.logError('pinBook', e);
+    }
+  }
+
+  /// 解除 pin：已下载的页留在普通缓存里（14 天 TTL / LRU 重新生效）。
+  Future<void> unpinBook(int bookId) async {
+    try {
+      await _initialize();
+      if (!_pinnedBookIds.remove(bookId)) return;
+      await _pinBox?.delete(bookId);
+      // 这些页重新变成可淘汰的，容量账本要把它们算回去。
+      final box = await Hive.openBox<PageCacheEntry>(_boxName);
+      await _recountPinnedBytes(box);
+      CacheLogger.log('unpinned book $bookId');
+    } catch (e) {
+      CacheLogger.logError('unpinBook', e);
+    }
+  }
+
+  /// Pin 变更后重算 [_pinnedBytes]。pin/unpin 是低频操作（用户按按钮），
+  /// 一次全表扫描可以接受；写入路径上仍然只靠增量。
+  Future<void> _recountPinnedBytes(Box<PageCacheEntry> box) async {
+    var pinned = 0;
+    for (final key in box.keys) {
+      if (!_isPinnedKey(key as String)) continue;
+      pinned += box.get(key)?.sizeInBytes ?? 0;
+    }
+    _pinnedBytes = pinned;
+    // 解除 pin 可能让缓存重新超限：顺手淘汰一次。
+    await _enforceSizeLimit(box);
   }
 
   /// Cache hit: the key becomes the newest LRU position.
@@ -71,7 +155,9 @@ class PageCacheService {
   void _forget(String key, int sizeInBytes) {
     _lruKeys.remove(key);
     _sizeIndexBytes -= sizeInBytes;
+    if (_isPinnedKey(key)) _pinnedBytes -= sizeInBytes;
     if (_sizeIndexBytes < 0) _sizeIndexBytes = 0;
+    if (_pinnedBytes < 0) _pinnedBytes = 0;
   }
 
   Future<Box<PageCacheEntry>> _getBox() async {
@@ -97,7 +183,7 @@ class PageCacheService {
       final now = DateTime.now().millisecondsSinceEpoch;
       final age = now - entry.timestamp;
 
-      if (age > _ttl.inMilliseconds) {
+      if (age > _ttl.inMilliseconds && !_pinnedBookIds.contains(bookId)) {
         await box.delete(cacheKey);
         _forget(cacheKey, entry.sizeInBytes);
         CacheLogger.logMiss(_boxName, cacheKey.hashCode);
@@ -143,9 +229,14 @@ class PageCacheService {
 
       // 同一页重写：先把旧条目的大小从账上扣掉，再记新的。
       final previous = box.get(cacheKey);
+      final pinned = _isPinnedKey(cacheKey);
       await box.put(cacheKey, entry);
-      if (previous != null) _sizeIndexBytes -= previous.sizeInBytes;
+      if (previous != null) {
+        _sizeIndexBytes -= previous.sizeInBytes;
+        if (pinned) _pinnedBytes -= previous.sizeInBytes;
+      }
       _sizeIndexBytes += sizeInBytes;
+      if (pinned) _pinnedBytes += sizeInBytes;
       _touch(cacheKey);
       // 先写后清：清理要按包含本页的总量判断，否则刚写进去的那页会把
       // 总量顶过上限而没人处理。
@@ -177,6 +268,8 @@ class PageCacheService {
           'cleared ${keysToDelete.length} entries for book $bookId',
         );
       }
+      // 页都删了，pin 也就没有意义：留着只会让这本书"看起来已离线"。
+      await unpinBook(bookId);
     } catch (e) {
       CacheLogger.logError('clearBookCache', e);
     }
@@ -206,7 +299,10 @@ class PageCacheService {
       final box = await _getBox();
       await box.clear();
       _sizeIndexBytes = 0;
+      _pinnedBytes = 0;
       _lruKeys.clear();
+      _pinnedBookIds.clear();
+      await _pinBox?.clear();
       CacheLogger.logClear(_boxName);
     } catch (e) {
       CacheLogger.logError('clearAllCache', e);
@@ -237,32 +333,103 @@ class PageCacheService {
         'expiredEntries': expiredEntries,
         'totalSizeBytes': totalSize,
         'totalSizeMB': totalSize / (1024 * 1024),
+        'pinnedSizeMB': _pinnedBytes / (1024 * 1024),
+        'pinnedBooks': _pinnedBookIds.length,
         'maxSizeMB': _maxCacheSizeBytes / (1024 * 1024),
         'ttlDays': _ttl.inDays,
-        'isOverSizeLimit': totalSize > _maxCacheSizeBytes,
+        'isOverSizeLimit': _sizeIndexBytes - _pinnedBytes > _maxCacheSizeBytes,
       };
     } catch (e) {
       return {'error': e.toString()};
     }
   }
 
+  /// 某一本书在页缓存里的覆盖情况（离线状态聚合用）。
+  ///
+  /// 过期页不算（和读取路径一致），但 pin 的书不算过期 —— 否则离线行会
+  /// 把刚下好的页当成"没下"。
+  Future<BookPageCacheStats> getBookStats(int bookId) async {
+    try {
+      final box = await _getBox();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final pinned = _pinnedBookIds.contains(bookId);
+      final prefix = '$_cachePrefix${bookId}_';
+      var pages = 0;
+      var bytes = 0;
+      final pagesSet = <int>{};
+
+      for (final key in box.keys) {
+        final keyStr = key as String;
+        if (!keyStr.startsWith(prefix)) continue;
+        final entry = box.get(key);
+        if (entry == null) continue;
+        if (!pinned && now - entry.timestamp > _ttl.inMilliseconds) continue;
+        final pageNum = int.tryParse(keyStr.substring(prefix.length));
+        if (pageNum == null) continue;
+        pagesSet.add(pageNum);
+        pages++;
+        bytes += entry.sizeInBytes;
+      }
+
+      return BookPageCacheStats(
+        pages: pages,
+        bytes: bytes,
+        lastPage:
+            pagesSet.isEmpty
+                ? null
+                : pagesSet.reduce((a, b) => a > b ? a : b),
+        pinned: pinned,
+      );
+    } catch (e) {
+      CacheLogger.logError('getBookStats', e);
+      return const BookPageCacheStats(pages: 0, bytes: 0, pinned: false);
+    }
+  }
+
   /// 超阈值时按 LRU 批量淘汰，一直清到八成为止。
   ///
-  /// 绝大多数写入在这里是 O(1)：总量没超就直接返回。清理一次清掉两成
-  /// 余量，避免连续写入时每页都触发一轮删除。
+  /// 绝大多数写入在这里是 O(1)：可淘汰的部分没超就直接返回。清理一次清掉
+  /// 两成余量，避免连续写入时每页都触发一轮删除。Pin 的页不参与淘汰 ——
+  /// 它们正是用户显式下载的那部分。
   Future<void> _enforceSizeLimit(Box<PageCacheEntry> box) async {
     try {
-      if (_sizeIndexBytes <= _maxCacheSizeBytes) return;
+      final evictable = _sizeIndexBytes - _pinnedBytes;
+      if (evictable <= _maxCacheSizeBytes) return;
 
       final target = _maxCacheSizeBytes * 8 ~/ 10;
-      while (_sizeIndexBytes > target && _lruKeys.isNotEmpty) {
-        final oldestKey = _lruKeys.first;
-        final oldestEntry = box.get(oldestKey);
-        await box.delete(oldestKey);
-        _forget(oldestKey, oldestEntry?.sizeInBytes ?? 0);
+      var remaining = evictable;
+      final victims = <String, int>{};
+      for (final key in _lruKeys) {
+        if (remaining <= target) break;
+        if (_isPinnedKey(key)) continue;
+        final entry = box.get(key);
+        if (entry == null) continue;
+        victims[key] = entry.sizeInBytes;
+        remaining -= entry.sizeInBytes;
       }
+      if (victims.isEmpty) return;
+
+      await box.deleteAll(victims.keys);
+      victims.forEach(_forget);
     } catch (e) {
       CacheLogger.logError('enforceSizeLimit', e);
     }
   }
+}
+
+/// 一本书在页缓存里的覆盖情况。
+class BookPageCacheStats {
+  const BookPageCacheStats({
+    required this.pages,
+    required this.bytes,
+    required this.pinned,
+    this.lastPage,
+  });
+
+  final int pages;
+  final int bytes;
+  final bool pinned;
+
+  /// 缓存里编号最大的页（用来给下载挑一份可复用的 metadata）。
+  final int? lastPage;
 }

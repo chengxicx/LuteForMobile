@@ -73,6 +73,46 @@ class PdfFileService {
     return cacheFile.path;
   }
 
+  /// 某本书已落盘的 PDF 字节数（离线状态聚合用）。0 表示还没下载。
+  Future<int> localPdfBytes(int bookId) async {
+    try {
+      final cacheDir = await getApplicationCacheDirectory();
+      final pdfDir = Directory('${cacheDir.path}/pdfs');
+      if (!await pdfDir.exists()) return 0;
+      var total = 0;
+      await for (final entity in pdfDir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = Uri.file(entity.path).pathSegments.last;
+        if (!name.startsWith('pdf_${bookId}_')) continue;
+        if (!name.endsWith('.pdf')) continue;
+        total += await entity.length();
+      }
+      return total;
+    } catch (e) {
+      ApiLogger.logError('pdfLocalBytes', e, details: 'bookId=$bookId');
+      return 0;
+    }
+  }
+
+  /// 删掉某本书的本地 PDF（详情弹窗的 Delete）。
+  Future<void> deleteLocalPdfs(int bookId) async {
+    try {
+      final cacheDir = await getApplicationCacheDirectory();
+      final pdfDir = Directory('${cacheDir.path}/pdfs');
+      if (!await pdfDir.exists()) return;
+      await for (final entity in pdfDir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = Uri.file(entity.path).pathSegments.last;
+        if (!name.startsWith('pdf_${bookId}_')) continue;
+        try {
+          await entity.delete();
+        } catch (_) {}
+      }
+    } catch (e) {
+      ApiLogger.logError('pdfDeleteLocal', e, details: 'bookId=$bookId');
+    }
+  }
+
   /// The remote file size via a 1-byte range request, or null when the
   /// server does not support ranges / is unreachable.  Null never means
   /// "must re-download": the download then simply overwrites the file.
