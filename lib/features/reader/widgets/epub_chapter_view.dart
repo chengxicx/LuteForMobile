@@ -282,6 +282,13 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// sitting invisible above the WebView for the life of the chapter.
   bool _veilGone = false;
 
+  /// 揭幕兜底：导航开始后这么久还没收到页面的 ready 上报就直接揭幕。
+  ///
+  /// 原来是 30 秒 —— 一个加载失败的章节会让读者对着空白等半分钟。5 秒
+  /// 与 [_onLoadStop] 的 800ms 兜底同一量级：坏页面早点露出来，也比干等
+  /// 好（错误处理本身另有 [_onReceivedError]）。
+  static const Duration _revealBackstop = Duration(seconds: 5);
+
   /// Lifts the veil when the page cannot report: a chapter restored from
   /// an offline pack rendered before [luteEpubReady] existed never calls
   /// it, and a load that never completes must not hang the reader.
@@ -388,7 +395,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     _decideInitialUrl();
     // Backstop for a navigation that never finishes (server gone, no
     // pack): the veil must not outlive the attempt.
-    _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
+    _revealTimer = Timer(_revealBackstop, _revealChapter);
   }
 
   /// Drop the veil.  Idempotent: the page's report, the post-load grace
@@ -404,16 +411,68 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   ///
   /// ready 上报本身只说明章节挂好了，此刻页面还停在「未钉字号」的状态
   /// （首帧护甲兜底之外的因素，比如页面自己的 boot 覆写）——先揭幕再推送
-  /// 会让读者在淡出的 220 ms 里看到整页大字弹回正常尺寸。两个推送在 ready
-  /// 时刻 host 必已存在（页面刚上报过），各是一次 JS 往返，揭幕只晚
-  /// ~100 ms；换来的是揭幕即所见：字号正确、已按屏分栏、页码已恢复。
+  /// 会让读者在淡出的 220 ms 里看到整页大字弹回正常尺寸。两个推送曾经是
+  /// 两次 JS 往返；现在拼进同一次注入（[_applyRevealSetup]），揭幕只等
+  /// 页面主线程跑完这一段。换来的是揭幕即所见：字号正确、已按屏分栏、
+  /// 页码已恢复。
   Future<void> _revealAfterTypeReady() async {
-    await _pushTextStyle();
-    await _pushPagedMode();
+    await _applyRevealSetup();
     _revealChapter();
     // After the veil: `_chapterReady` gates the normal push, and this is
     // the first moment the sentence wrappers are guaranteed to exist.
     _pushSentenceHighlight(force: true);
+  }
+
+  /// 一次 JS 往返同时钉字号、装分栏（并恢复页码）。
+  ///
+  /// 两段脚本各自是一个 IIFE：字号那段的返回值只进日志，分栏那段的
+  /// 状态（`paged…` / `scroll…` / `nohost`）决定页码恢复与本次的恢复
+  /// 语义。拼在一起后页面主线程一次跑完，省掉一个往返。
+  Future<void> _applyRevealSetup() async {
+    if (widget.chapter.fixedLayout) return;
+    final controller = _controller;
+    if (controller == null) return;
+    final px = widget.textSize.clamp(1, 50);
+    final lh = widget.lineSpacing.clamp(0.6, 3.0);
+    final pagedSource = _pagedModeScript.replaceFirst(
+      '__ON__',
+      _pagedActive ? 'true' : 'false',
+    );
+    Object? result;
+    try {
+      result = await controller.evaluateJavascript(
+        source: '''
+(function () {
+  var typeState = ${_textStyleScript(px, lh)};
+  var pagedState = $pagedSource;
+  return String(typeState) + '@@' + String(pagedState);
+})()
+''',
+      );
+    } catch (_) {
+      // Mid-navigation: 揭幕照常进行，load-stop 那条流水线还会再推一次。
+      return;
+    }
+    final raw = result?.toString() ?? '';
+    final sep = raw.indexOf('@@');
+    final typeState = sep < 0 ? raw : raw.substring(0, sep);
+    final pagedState = sep < 0 ? '' : raw.substring(sep + 2);
+    debugPrint('[epub-reveal] px=$px type=$typeState paged=$pagedState');
+    if (!pagedState.startsWith('paged')) return;
+    final pending = _pendingPageRestore;
+    _pendingPageRestore = null;
+    if (pending != null && pending > 0) {
+      try {
+        await controller.evaluateJavascript(
+          source: 'window.__lutePaged && window.__lutePaged.goTo($pending)',
+        );
+      } catch (_) {}
+      // goTo 之后的页码上报可能在 _restoredThisLoad 置位前到达而被持久化
+      // 门槛挡掉 —— 这里直接把恢复页写盘，不等上报。
+      _lastPersistedPage = pending;
+      unawaited(_persistPage(pending));
+    }
+    _restoredThisLoad = true;
   }
 
   /// Where the first navigation goes.
@@ -490,7 +549,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _lastPersistedPage = null;
     });
     _revealTimer?.cancel();
-    _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
+    _revealTimer = Timer(_revealBackstop, _revealChapter);
 
     // 阅读位置按新章节重读（翻页页码的键带 pageNum）；[_decideInitialUrl]
     // 也按新章节重新决定用离线包还是服务器地址。
@@ -666,7 +725,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         _veilGone = false;
       });
       _revealTimer?.cancel();
-      _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
+      _revealTimer = Timer(_revealBackstop, _revealChapter);
       await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(local.toString())));
       return true;
     } catch (_) {
@@ -1144,11 +1203,24 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     num px,
     num lh,
   ) async {
-    final rootNote = px.toStringAsFixed(2);
-    final lhNote = lh.toStringAsFixed(2);
     try {
       final result = await controller.evaluateJavascript(
-        source: '''
+        source: _textStyleScript(px, lh),
+      );
+      debugPrint('[epub-fontsize] px=$px -> $result');
+      return result;
+    } catch (e) {
+      debugPrint('[epub-fontsize] px=$px eval failed: $e');
+      return 'nohost';
+    }
+  }
+
+  /// [_applyTextStyle] 的脚本原文。单独抽出来是为了让揭幕前的
+  /// [_applyRevealSetup] 能把它和分栏脚本拼成一次注入。
+  String _textStyleScript(num px, num lh) {
+    final rootNote = px.toStringAsFixed(2);
+    final lhNote = lh.toStringAsFixed(2);
+    return '''
 (function () {
   var b = document.querySelector('#thetext .epub-body:not([data-epub-viewport])');
   var via = 'thetext';
@@ -1182,14 +1254,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   if (window.__lutePaged) window.__lutePaged.refresh();
   return 'ok:' + before + '->' + after + ' lh=' + $lhNote + ' via=' + via;
 })()
-''',
-      );
-      debugPrint('[epub-fontsize] px=$px -> $result');
-      return result;
-    } catch (e) {
-      debugPrint('[epub-fontsize] px=$px eval failed: $e');
-      return 'nohost';
-    }
+''';
   }
 
   /// Lets the book's own margin be the only gutter on a narrow pane.
@@ -1802,7 +1867,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _veilGone = false;
     });
     _revealTimer?.cancel();
-    _revealTimer = Timer(const Duration(seconds: 30), _revealChapter);
+    _revealTimer = Timer(_revealBackstop, _revealChapter);
     try {
       await controller.loadUrl(
         urlRequest: URLRequest(url: WebUri(_serverPageUrl)),
