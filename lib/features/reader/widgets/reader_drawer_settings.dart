@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:song_mobile/features/settings/providers/settings_provider.dart';
+import 'package:song_mobile/features/settings/providers/tts_settings_provider.dart';
 import 'package:song_mobile/features/settings/widgets/text_formatting_controls.dart';
+import 'package:song_mobile/features/settings/widgets/tts_settings_section.dart';
 import 'package:song_mobile/core/cache/providers/tooltip_cache_provider.dart';
 import 'package:song_mobile/core/cache/providers/cache_stats_provider.dart';
 import 'package:song_mobile/shared/theme/theme_extensions.dart';
@@ -72,7 +74,18 @@ class ReaderDrawerSettings extends ConsumerWidget {
                       pageData.isVideoBook)) {
                 return const SizedBox.shrink();
               }
-              return _buildPlayerToggle(context, ref, settings);
+              final configured = ref.watch(
+                ttsSettingsProvider.select((s) => s.readAloudConfigured),
+              );
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildPlayerToggle(context, ref, settings),
+                  // 条开着、引擎却念不出声：先说明原因再给设置入口。
+                  if (settings.showAudioPlayer && !configured)
+                    _buildReadAloudUnconfiguredHint(context),
+                ],
+              );
             },
           ),
           const SizedBox(height: 24),
@@ -425,6 +438,81 @@ class ReaderDrawerSettings extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  /// 播放条开着、朗读引擎却没配：用户按下播放只会得到一段沉默。
+  ///
+  /// 只在"条开着 + 引擎不可用"时出现（见 `TTSSettings.readAloudConfigured`），
+  /// 引擎正常时不占版面。
+  Widget _buildReadAloudUnconfiguredHint(BuildContext context) {
+    final secondary = context.appColorScheme.text.secondary;
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      decoration: BoxDecoration(
+        color: context.appColorScheme.background.surfaceVariant,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.record_voice_over, size: 18, color: secondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Read-aloud engine not configured — the player has nothing to '
+              'speak with.',
+              style: TextStyle(fontSize: 13, color: secondary),
+            ),
+          ),
+          TextButton(
+            onPressed: () => _openReadAloudSettings(context),
+            child: const Text('Set up'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 打开朗读引擎设置（同一个 [TTSSettingsSection]，在这里以底部面板呈现）。
+  ///
+  /// 直接切到 Settings 屏并不合适：TTS 只是那页长表单中间的一节，跳过去
+  /// 也停在页首，用户还得自己滚。
+  void _openReadAloudSettings(BuildContext context) {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    // 先把抽屉收起来，否则底部面板会被压在抽屉下面。
+    Scaffold.of(context).closeDrawer();
+    showModalBottomSheet<void>(
+      context: navigator.context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.85,
+        minChildSize: 0.4,
+        maxChildSize: 0.95,
+        builder: (context, controller) => ListView(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: [
+            Text(
+              'Read-aloud Engine',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Pick the engine the in-page player reads with.',
+              style: TextStyle(
+                fontSize: 13,
+                color: context.appColorScheme.text.secondary,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const TTSSettingsSection(),
+          ],
+        ),
+      ),
     );
   }
 

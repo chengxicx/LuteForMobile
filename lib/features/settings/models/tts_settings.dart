@@ -17,6 +17,31 @@ class TTSSettings {
 
   const TTSSettings({required this.provider, required this.providerConfigs});
 
+  /// 朗读引擎是否配好了：没选引擎，或选了却缺它必须的那一项。
+  ///
+  /// 播放条总开关默认是开的 —— 引擎为 none 时用户按下播放只会没声音，
+  /// 也看不出原因（release 包拿不到日志）。抽屉里据此提示「朗读引擎未
+  /// 配置」并给设置入口，所以判定要准：引擎正常时不能多出这条文案。
+  ///
+  /// 只判"够不够念"：OpenAI 要 key，自建服务要地址；Edge TTS 走服务端、
+  /// On Device 走系统语音，本地都不需要再填东西。
+  bool get readAloudConfigured {
+    final config = providerConfigs[provider];
+    switch (provider) {
+      case TTSProvider.none:
+        return false;
+      case TTSProvider.openAI:
+        return config?.apiKey?.trim().isNotEmpty ?? false;
+      case TTSProvider.localOpenAI:
+      case TTSProvider.kokoroTTS:
+      case TTSProvider.supertonicFastApi:
+        return config?.endpointUrl?.trim().isNotEmpty ?? false;
+      case TTSProvider.edgeTTS:
+      case TTSProvider.onDevice:
+        return true;
+    }
+  }
+
   TTSSettings copyWith({
     TTSProvider? provider,
     Map<TTSProvider, TTSSettingsConfig>? providerConfigs,
