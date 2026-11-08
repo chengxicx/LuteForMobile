@@ -284,15 +284,23 @@ class _EpubChapterViewState extends State<EpubChapterView> {
 
   /// 揭幕兜底：导航开始后这么久还没收到页面的 ready 上报就直接揭幕。
   ///
-  /// 原来是 30 秒 —— 一个加载失败的章节会让读者对着空白等半分钟。5 秒
-  /// 与 [_onLoadStop] 的 800ms 兜底同一量级：坏页面早点露出来，也比干等
-  /// 好（错误处理本身另有 [_onReceivedError]）。
-  static const Duration _revealBackstop = Duration(seconds: 5);
+  /// 这条兜底只该覆盖「导航根本没能结束」——服务器没回应、页面卡在半路。
+  /// 不能拿来当「冷章慢一点就先给看」的开关：冷章打开的真实链路是
+  /// 「WebView 冷启动 + 服务端渲染/传输 + 页面 mount」，实测 1.4–1.9s
+  /// 是常态，慢网络下会到 3–5s；原先 5 秒正好压在正常路径上，于是慢章
+  /// 由兜底揭幕，露出来的是还没 mount 的原始标记（无词 span、无状态色）。
+  /// 留 15 秒：真正的失败另有 [_onReceivedError] 与 [_onLoadStop] 里的
+  /// 800ms 兜底，这层只负责「一直没人上报」的极端情况。
+  static const Duration _revealBackstop = Duration(seconds: 15);
 
   /// Lifts the veil when the page cannot report: a chapter restored from
   /// an offline pack rendered before [luteEpubReady] existed never calls
   /// it, and a load that never completes must not hang the reader.
   Timer? _revealTimer;
+
+  /// 本章从组件创建到揭幕的计时，只进日志。冷章到底慢在哪一段（建
+  /// WebView / 导航 / mount）要靠它区分，见 [_revealChapter]。
+  final Stopwatch _clock = Stopwatch();
 
   /// Local-pack URL to load instead of the server's, set either before
   /// the first build (server already known unreachable) or as a
@@ -390,20 +398,36 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   void initState() {
     super.initState();
     widget.scroll?._turn = _turnByScreen;
+    _clock.start();
     _installSession();
     _loadSavedScroll();
     _decideInitialUrl();
-    // Backstop for a navigation that never finishes (server gone, no
-    // pack): the veil must not outlive the attempt.
-    _revealTimer = Timer(_revealBackstop, _revealChapter);
+    _armRevealBackstop();
+  }
+
+  /// Starts the "navigation never finished" timer.
+  ///
+  /// Anchored on the last moment the load actually began: [initState] arms
+  /// it (the document deciding its URL can in principle hang), and
+  /// [_onLoadStart] re-arms it so a slow preamble -- the reader's own
+  /// chapter fetch, Chromium's platform-view boot -- is never counted
+  /// against the page's load.
+  void _armRevealBackstop() {
+    _revealTimer?.cancel();
+    _revealTimer = Timer(_revealBackstop, () => _revealChapter('backstop'));
   }
 
   /// Drop the veil.  Idempotent: the page's report, the post-load grace
   /// and the hard timeout all land here.
-  void _revealChapter() {
+  ///
+  /// [source] is only for the log: a cold chapter revealed by `backstop`
+  /// means the page never reported in [_revealBackstop], i.e. the reader
+  /// is looking at unmounted markup; `ready` is the healthy path.
+  void _revealChapter(String source) {
     _revealTimer?.cancel();
     _revealTimer = null;
     if (!mounted || _chapterReady) return;
+    debugPrint('[epub-reveal] $source +${_clock.elapsedMilliseconds}ms');
     setState(() => _chapterReady = true);
   }
 
@@ -417,7 +441,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// 页码已恢复。
   Future<void> _revealAfterTypeReady() async {
     await _applyRevealSetup();
-    _revealChapter();
+    _revealChapter('ready');
     // After the veil: `_chapterReady` gates the normal push, and this is
     // the first moment the sentence wrappers are guaranteed to exist.
     _pushSentenceHighlight(force: true);
@@ -549,7 +573,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _lastPersistedPage = null;
     });
     _revealTimer?.cancel();
-    _revealTimer = Timer(_revealBackstop, _revealChapter);
+    _armRevealBackstop();
 
     // 阅读位置按新章节重读（翻页页码的键带 pageNum）；[_decideInitialUrl]
     // 也按新章节重新决定用离线包还是服务器地址。
@@ -725,7 +749,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         _veilGone = false;
       });
       _revealTimer?.cancel();
-      _revealTimer = Timer(_revealBackstop, _revealChapter);
+      _armRevealBackstop();
       await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(local.toString())));
       return true;
     } catch (_) {
@@ -807,7 +831,8 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         // `mounted: false` is the token-mismatch path, which looks like a
         // slow load but is a real failure.
         debugPrint(
-          '[epub-ready] ms=${payload['ms']} '
+          '[epub-ready] +${_clock.elapsedMilliseconds}ms '
+          'ms=${payload['ms']} '
           'mounted=${payload['mounted']} '
           'mismatch=${payload['mismatch']}',
         );
@@ -1678,6 +1703,17 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     }
   }
 
+  /// A navigation just began: the backstop starts counting here, not at
+  /// widget creation.  The preamble -- the reader's own chapter fetch,
+  /// Chromium booting the platform view -- belongs to the app, not to the
+  /// page, and counting it against the page used to expire the veil on a
+  /// perfectly healthy cold open (see [_revealBackstop]).
+  void _onLoadStart(InAppWebViewController controller, WebUri? url) {
+    if (!mounted) return;
+    debugPrint('[epub-load] start +${_clock.elapsedMilliseconds}ms host=${url?.host}');
+    _armRevealBackstop();
+  }
+
   Future<void> _onLoadStop(InAppWebViewController controller, WebUri? url) async {
     if (!mounted) return;
     // A new document: the chapter has to mount again, and whatever the
@@ -1799,7 +1835,10 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     if (!_chapterReady) {
       debugPrint('[epub-ready] no report; revealing after load-stop');
       _revealTimer?.cancel();
-      _revealTimer = Timer(const Duration(milliseconds: 800), _revealChapter);
+      _revealTimer = Timer(
+        const Duration(milliseconds: 800),
+        () => _revealChapter('after-load-stop'),
+      );
     }
     try {
       final zoom = await controller.evaluateJavascript(
@@ -1841,7 +1880,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     if (request.isForMainFrame != true) return;
     // Whatever landed (the server's error page, or nothing) is what the
     // reader should be looking at -- not a spinner over it.
-    _revealChapter();
+    _revealChapter('load-error');
     unawaited(_handleMainFrameFailure());
   }
 
@@ -1867,7 +1906,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
       _veilGone = false;
     });
     _revealTimer?.cancel();
-    _revealTimer = Timer(_revealBackstop, _revealChapter);
+    _armRevealBackstop();
     try {
       await controller.loadUrl(
         urlRequest: URLRequest(url: WebUri(_serverPageUrl)),
@@ -2078,6 +2117,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
               Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
             },
             onWebViewCreated: _registerHandlers,
+            onLoadStart: _onLoadStart,
             onLoadStop: _onLoadStop,
             onReceivedError: _onReceivedError,
             onReceivedHttpAuthRequest: _onReceivedHttpAuthRequest,
