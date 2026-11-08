@@ -47,7 +47,18 @@ class EpubChapterView extends StatefulWidget {
   final int bookId;
   final int pageNum;
   final String serverUrl;
-  final EpubChapterData chapter;
+
+  /// The chapter to render, or null while pre-warming the WebView.
+  ///
+  /// Cold open paid Chromium's platform-view boot (~2s measured on the
+  /// e-ink reader) *after* the reader had already spent seconds fetching
+  /// the chapter, so that boot sat in front of the reader for no reason.
+  /// The reader now mounts this widget as soon as it knows an EPUB is
+  /// being opened ([chapter] null, no navigation yet): the platform view
+  /// boots behind the spinner while the page fetch runs, and the moment
+  /// the real chapter arrives [didUpdateWidget] navigates this very
+  /// WebView -- same state, same platform view, boot already paid.
+  final EpubChapterData? chapter;
 
   /// The page's tokens as the reader models them (rebuilt from the same
   /// `#lute-epub-tokens` JSON by the HTML parser).  Status updates arrive
@@ -392,7 +403,8 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   String get _pagePrefsKey => 'epub_page_${widget.bookId}_${widget.pageNum}';
 
   /// 翻页模式是否应该作用于本章（开关 + 章节不是固定版式）。
-  bool get _pagedActive => widget.paged && !widget.chapter.fixedLayout;
+  bool get _pagedActive =>
+      widget.paged && !(widget.chapter?.fixedLayout ?? false);
 
   @override
   void initState() {
@@ -402,7 +414,9 @@ class _EpubChapterViewState extends State<EpubChapterView> {
     _installSession();
     _loadSavedScroll();
     _decideInitialUrl();
-    _armRevealBackstop();
+    // 预热阶段没有文档要载，兜底计时不该开（否则 15s 后会揭掉盖在空白
+    // WebView 上的帘子）；真正导航时 [_navigateToChapter] 会重新开表。
+    if (widget.chapter != null) _armRevealBackstop();
   }
 
   /// Starts the "navigation never finished" timer.
@@ -453,7 +467,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// 状态（`paged…` / `scroll…` / `nohost`）决定页码恢复与本次的恢复
   /// 语义。拼在一起后页面主线程一次跑完，省掉一个往返。
   Future<void> _applyRevealSetup() async {
-    if (widget.chapter.fixedLayout) return;
+    if (widget.chapter?.fixedLayout ?? false) return;
     final controller = _controller;
     if (controller == null) return;
     final px = widget.textSize.clamp(1, 50);
@@ -520,6 +534,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// The navigation now starts from the on-disk state alone; the refresh
   /// runs behind it and a changed theme is hot-applied when it lands.
   Future<void> _decideInitialUrl() async {
+    // 预热：只建 platform view，不导航。真正的 URL 在拿到章节数据后由
+    // didUpdateWidget -> [_navigateToChapter] 决定。
+    if (widget.chapter == null) {
+      if (mounted) setState(() => _decidingUrl = false);
+      return;
+    }
     final localServer = widget.localServer;
     if (localServer == null) {
       if (mounted) setState(() => _decidingUrl = false);
@@ -1183,7 +1203,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// book's.  Fixed-layout pages are pixel boxes fitted by the zoom
   /// controls; resizing their text independently would overflow them.
   Future<void> _pushTextStyle() async {
-    if (widget.chapter.fixedLayout) return;
+    if (widget.chapter?.fixedLayout ?? false) return;
     final controller = _controller;
     if (controller == null) return;
     final px = widget.textSize.clamp(1, 50);
@@ -1300,7 +1320,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   Future<void> _pushMargins([InAppWebViewController? page]) async {
     final controller = page ?? _controller;
     if (controller == null || !_pageReady) return;
-    if (widget.chapter.fixedLayout) return;
+    if (widget.chapter?.fixedLayout ?? false) return;
     try {
       await controller.evaluateJavascript(source: _marginsScript);
     } catch (_) {
@@ -1467,7 +1487,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// 的"已恢复"，让页码上报开始走持久化（与滚动恢复的语义对齐）。
   Future<void> _pushPagedMode() async {
     if (!mounted) return;
-    if (widget.chapter.fixedLayout) return;
+    if (widget.chapter?.fixedLayout ?? false) return;
     final controller = _controller;
     if (controller == null) return;
     for (var attempt = 0; attempt < 20; attempt++) {
@@ -1625,6 +1645,13 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   void didUpdateWidget(EpubChapterView oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    // 预热 -> 正式：platform view 早已建好（Chromium 启动已付），现在才
+    // 拿到真正的章节，导航到它。之后的一切由 _onLoadStop 按新文档重置。
+    if (oldWidget.chapter == null && widget.chapter != null) {
+      unawaited(_navigateToChapter());
+      return;
+    }
+
     // 换章：复用同一个 WebView，只导航到新文档。
     //
     // key 不再随页码变（见 ReaderScreen 的 EpubChapterView），所以换章
@@ -1710,12 +1737,20 @@ class _EpubChapterViewState extends State<EpubChapterView> {
   /// perfectly healthy cold open (see [_revealBackstop]).
   void _onLoadStart(InAppWebViewController controller, WebUri? url) {
     if (!mounted) return;
+    if (widget.chapter == null) {
+      // 预热阶段没有文档要载：不揭幕、也不开兜底计时。
+      return;
+    }
     debugPrint('[epub-load] start +${_clock.elapsedMilliseconds}ms host=${url?.host}');
     _armRevealBackstop();
   }
 
   Future<void> _onLoadStop(InAppWebViewController controller, WebUri? url) async {
     if (!mounted) return;
+    if (widget.chapter == null) {
+      // 预热阶段没有章节文档：不揭幕、不推状态。
+      return;
+    }
     // A new document: the chapter has to mount again, and whatever the
     // previous one carried into the page is gone with it.
     _chapterMounted = false;
@@ -2072,10 +2107,12 @@ class _EpubChapterViewState extends State<EpubChapterView> {
             // 只认书：换章走 [_navigateToChapter] 的 loadUrl 复用这个
             // platform view，而不是新建一个（见 didUpdateWidget）。
             key: ValueKey('epub-webview-${widget.bookId}'),
-            initialUrlRequest: URLRequest(url: WebUri(_pageUrl)),
+            initialUrlRequest: widget.chapter == null
+                ? null
+                : URLRequest(url: WebUri(_pageUrl)),
             // 每次主框架导航（首发、reload、离线兜底）都在文档开始解析前
             // 注入字号护甲；固定版式走 fit/zoom，不装。
-            initialUserScripts: widget.chapter.fixedLayout
+            initialUserScripts: (widget.chapter?.fixedLayout ?? false)
                 ? null
                 : UnmodifiableListView<UserScript>([
                     UserScript(
@@ -2126,7 +2163,7 @@ class _EpubChapterViewState extends State<EpubChapterView> {
         // Zoom controls for fixed-layout chapters (fit-to-width pages
         // that cannot reflow); reflowing chapters read at the book's own
         // text size and pinch-zooming the viewport is off.
-        if (widget.chapter.fixedLayout)
+        if (widget.chapter?.fixedLayout ?? false)
           Positioned(
             right: 8,
             bottom: 120,

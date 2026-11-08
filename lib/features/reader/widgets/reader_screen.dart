@@ -263,6 +263,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   int? _lastAttemptedBookId;
   int? _lastAttemptedPageNum;
 
+  /// 正在为这次打开预热的 EPUB（书 id + 页码）。
+  ///
+  /// 在 [loadBook] 一开始就置上：此时只知道要开一本 EPUB，章节数据还在
+  /// 路上。[_buildBody] 拿它先挂一个 [EpubChapterView]（chapter 为 null）
+  /// 把 WebView 平台视图建起来，Chromium 的冷启动就与章节抓取并行，而不是
+  /// 排在它后面白等（真机实测这段约 2s）。数据到达后同一个 keyed widget
+  /// 拿到 chapter，原地导航。
+  int? _prewarmBookId;
+  int? _prewarmPage;
+
   /// 本次运行是否已经为「上次在读的书」拿到过结果（正文或错误）。
   ///
   /// 用来把「正在恢复」和「真的没开书」区分开：前者不该显示
@@ -1129,14 +1139,24 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     }
   }
 
-  Future<void> loadBook(int bookId, [int? pageNum]) async {
+  Future<void> loadBook(int bookId, [int? pageNum, Book? openingBook]) async {
     ApiLogger.logLoading('loadBook', details: 'bookId=$bookId, page=$pageNum');
+    // 点击时调用方手上已经有 Book（app 的 _handleNavigateToReader 解析出来的
+    // 那一本），所以这里直接用它判断是不是 EPUB——不用等章节数据回来才建屏。
+    // 注意不能读 currentBookProvider：那边 setBook 是异步的（要先解析语言名），
+    // 此刻状态里可能还是上一本书。
+    final prewarmEpub =
+        openingBook != null &&
+        openingBook.id == bookId &&
+        openingBook.bookType == 'epub';
     setState(() {
       _pageKey = ValueKey('$bookId-${pageNum ?? 1}');
       _isLastPageMarkedDone = false;
       _lastAttemptedBookId = bookId;
       _lastAttemptedPageNum = pageNum;
       _lastAudioBookId = null;
+      _prewarmBookId = prewarmEpub ? bookId : null;
+      _prewarmPage = prewarmEpub ? pageNum : null;
     });
     try {
       final loaded = await ref
@@ -1155,7 +1175,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           'loadBookStale',
           details: 'bookId=$bookId superseded',
         );
-        if (mounted) setState(() {});
+        if (mounted) {
+          setState(() {
+            _prewarmBookId = null;
+            _prewarmPage = null;
+          });
+        }
         return;
       }
 
@@ -1189,10 +1214,21 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
       // Force rebuild to ensure UI reflects loaded book content
       if (mounted) {
-        setState(() {});
+        setState(() {
+          // 数据已到：正式分支接管，预热标记撤掉（同一 keyed widget）。
+          _prewarmBookId = null;
+          _prewarmPage = null;
+        });
       }
     } catch (e, stackTrace) {
       ApiLogger.logError('loadBook', e, stackTrace: stackTrace);
+
+      if (mounted) {
+        setState(() {
+          _prewarmBookId = null;
+          _prewarmPage = null;
+        });
+      }
 
       final settings = ref.read(settingsProvider);
       if (settings.currentBookId == bookId) {
@@ -1436,6 +1472,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                       ),
                     ),
                   Expanded(
+                    // 固定 key：上面的播放条是按条件插进来的，pageData 从
+                    // 「上一本」换成「这一本」时 hasAudio 可能翻转，Column 的
+                    // 无 key 子项按位置配对，正文槽位就会整体错位 -> 旧
+                    // Expanded 被拆掉重建。EPUB 预热正是靠这个槽位里的
+                    // State 活着才有意义（拆掉 = WebView 冷启动白付），所以
+                    // 让 Flutter 按 key 而不是按位置认它。
+                    key: const ValueKey('reader-body-slot'),
                     child: _buildBody(isLoading, errorMessage, pageData),
                   ),
                 ],
@@ -1884,6 +1927,35 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     return _lastAttemptedBookId == null || _lastAttemptedBookId == bookId;
   }
 
+  /// 预热用：只建 WebView 平台视图，不导航（chapter 为 null）。
+  ///
+  /// 参数与正式分支同源（同一 key、同一 localServer / scroll），这样数据
+  /// 到达时只更新同一个 keyed widget，platform view 与 Chromium 启动都
+  /// 不用重付。回调留空：空文档里没有可点的东西。
+  Widget _buildEpubWarmup(int bookId, int pageNum) {
+    final settings = ref.read(settingsProvider);
+    final textSettings = ref.read(textFormattingSettingsProvider);
+    return EpubChapterView(
+      key: ValueKey('$bookId-epub'),
+      bookId: bookId,
+      pageNum: pageNum,
+      serverUrl: settings.serverUrl,
+      chapter: null,
+      paragraphs: const [],
+      look: settings.epubLookMode,
+      furiganaEnabled: settings.furiganaEnabled,
+      enableTripleTap: settings.enableTripleTapToMarkKnown,
+      paged: settings.epubPagedMode,
+      localServer: ref.read(epubLocalServerProvider),
+      scroll: _epubScroll,
+      languageId: ref.read(currentBookProvider).langId,
+      textSize: textSettings.textSize,
+      lineSpacing: textSettings.lineSpacing,
+      onTap: (_, __) {},
+      onDoubleTap: (_) {},
+    );
+  }
+
   Widget _buildBody(bool isLoading, String? errorMessage, PageData? pageData) {
     final settings = ref.watch(settingsProvider);
 
@@ -1897,6 +1969,23 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             next.asData?.value != null;
         if (arrived && mounted) setState(() {});
       });
+    }
+
+    // EPUB 预热：点击时书的类型已知（currentBookProvider 带着 Book），
+    // 章节数据还在路上。先把 WebView 挂上（chapter == null，不导航），
+    // Chromium 的平台视图启动与页面抓取并行；数据到达后这里落到下面的
+    // 正式分支，key 相同 → 同一个 State / platform view，不会重建。
+    final warmBookId = _prewarmBookId;
+    if (warmBookId != null &&
+        (pageData == null || pageData.bookId != warmBookId)) {
+      // 必须走与正式页同一个外壳（见 [_buildContentArea]）：预热省时间的
+      // 前提是 chapter 到达时这棵子树原地更新，形状不同就会被拆掉重建。
+      // pageData 传 null：预热期没有视频、翻页手势也不该生效。
+      return _buildContentArea(
+        content: _buildEpubWarmup(warmBookId, _prewarmPage ?? 1),
+        pageData: null,
+        settings: settings,
+      );
     }
 
     // 转圈延迟显示：启动恢复走本地页缓存，通常一两帧就位；立刻画进度圈
@@ -2013,8 +2102,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       unawaited(_ensureLanguageDirectionLoaded(langId));
     }
 
-    final hasGestureNav = MediaQuery.of(context).systemGestureInsets.bottom > 0;
-
     // Sentence the read-aloud player is on, marked in the page text the way
     // the web reader does it (LutePlayingLine).  Selected rather than watched
     // whole: the player state ticks every 250 ms with the playhead, and
@@ -2060,6 +2147,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     // 影子跟读面板打开时拿不到 watch 上下文,当前句以这里最近一次算出的
     // 高亮句为准(每次 build 都刷新,面板一开就是"正在播的那句")。
     _shadowingSentenceIds = highlightedSentenceIds;
+
+    final hasGestureNav = MediaQuery.of(context).systemGestureInsets.bottom > 0;
 
     final textDisplay = TextDisplay(
       key: _pageKey,
@@ -2278,16 +2367,39 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     // subtitle text and kept outside the page-transitioned subtree (keyed
     // by book id) so it keeps playing while the user turns pages.  The
     // position is saved to the server on a timer.
-    final youtube = pageData.youtube;
-    final bilibili = pageData.bilibili;
-    final youtubePlayer = (youtube != null || bilibili != null)
+    return _buildContentArea(
+      content: content,
+      pageData: pageData,
+      settings: settings,
+    );
+  }
+
+  /// 正文区域的外壳：翻页手势、拖动回弹、YouTube 视频、底部系统手势条。
+  ///
+  /// 正式页与 EPUB 预热共用这一条路，且结构必须**完全一致** —— 预热之所
+  /// 以能省下 Chromium 冷启动，靠的是 chapter 到达时同一个 keyed widget
+  /// 原地更新；外壳只要差一层（比如少了 GestureDetector），Flutter 就会
+  /// 把旧的 State 拆掉重建，WebView 冷启动白付一次（实测 +1.7s）。
+  ///
+  /// [pageData] 为 null 表示预热态：没有视频、也没有可翻的页，手势只做
+  /// 空转，保证树形与正式 EPUB 页相同。
+  Widget _buildContentArea({
+    required Widget content,
+    required PageData? pageData,
+    required Settings settings,
+  }) {
+    final youtube = pageData?.youtube;
+    final bilibili = pageData?.bilibili;
+    final videoBookId = pageData?.bookId;
+    final youtubePlayer = (videoBookId != null &&
+            (youtube != null || bilibili != null))
         ? Padding(
             padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
             child: YoutubePlayerView(
-              key: ValueKey('yt-${pageData.bookId}'),
+              key: ValueKey('yt-$videoBookId'),
               videoId: youtube?.videoId,
               startPos: youtube?.startPos ?? bilibili?.startPos ?? 0,
-              bookId: pageData.bookId,
+              bookId: videoBookId,
               cues: youtube?.cues ?? bilibili?.cues ?? const [],
               bilibili: bilibili,
               serverUrl: settings.serverUrl,
@@ -2306,6 +2418,11 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
             ),
           )
         : null;
+
+    final textSettings = ref.watch(textFormattingSettingsProvider);
+    final hasGestureNav = MediaQuery.of(context).systemGestureInsets.bottom > 0;
+    final isMangaLike =
+        (pageData?.isManga ?? false) || (pageData?.isPdf ?? false);
 
     return Stack(
       children: [
@@ -2360,7 +2477,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                   // 竞技场，就会在横向位移超过 slop 时抢先判赢，Interactive
                   // Viewer 的缩放识别器被整个拒掉 —— 双指捏合永远失灵。
                   // 漫画页的横向快滑翻页由 MangaPageView 内部自己检测。
-                  onHorizontalDragStart: pageData.isManga || pageData.isPdf
+                  onHorizontalDragStart: isMangaLike
                       ? null
                       : (details) {
                           // 墨水屏下不跟手：拖动过程中的每一帧位移都是一次全屏刷新。
@@ -2369,7 +2486,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                           if (!_canSwipePages(pageData)) return;
                           _isDragActive = true;
                         },
-                  onHorizontalDragUpdate: pageData.isManga || pageData.isPdf
+                  onHorizontalDragUpdate: isMangaLike
                       ? null
                       : (details) {
                           if (!_isDragActive) return;
@@ -2377,7 +2494,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                             _dragOffset += details.delta.dx;
                           });
                         },
-                  onHorizontalDragCancel: pageData.isManga || pageData.isPdf
+                  onHorizontalDragCancel: isMangaLike
                       ? null
                       : () {
                           if (!_isDragActive) return;
@@ -2386,7 +2503,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                             _dragOffset = 0;
                           });
                         },
-                  onHorizontalDragEnd: pageData.isManga || pageData.isPdf
+                  onHorizontalDragEnd: isMangaLike
                       ? null
                       : (details) async {
                     final wasDragging = _isDragActive;
@@ -2456,9 +2573,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
               // began just under the player looked impossible to scroll.
               // Paginated content has nothing to scroll here anyway, so
               // only it keeps the strip.
-              onVerticalDragStart: pageData.isEpub ? null : (_) {},
-              onVerticalDragUpdate: pageData.isEpub ? null : (_) {},
-              onVerticalDragEnd: pageData.isEpub ? null : (_) {},
+              onVerticalDragStart:
+                  (pageData?.isEpub ?? false) ? null : (_) {},
+              onVerticalDragUpdate:
+                  (pageData?.isEpub ?? false) ? null : (_) {},
+              onVerticalDragEnd:
+                  (pageData?.isEpub ?? false) ? null : (_) {},
               onTap: () {
                 if (textSettings.fullscreenMode && !_isUiVisible) {
                   _showUi();

@@ -338,11 +338,16 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
 
     // 优先用调用方显式传入的 Book（Book Set 的成员书不在书架列表里，
     // 因为它们被聚合行隐藏了），其次才去书架列表里找。
-    // 聚合行本身没有真实 BkID，永远不能当作书打开，所以必须排除。
-    Book? resolved = (book != null && !book.isSeries) ? book : null;
+    // 聚合行本身没有真实 BkID，永远不能当作书打开，所以必须排除；
+    // 但成员书也带 seriesTag（[Book.isSeries] 为 true），不能一并排除，
+    // 否则显式传入的章节书会被丢掉、退回书架（书架里没有它，最终拿不到
+    // Book 类型与语言，EPUB 章节的预热也就无从判断）。聚合行的判据是
+    // bookType == 'series'。
+    Book? resolved =
+        (book != null && book.bookType != Book.seriesBookType) ? book : null;
     if (resolved == null) {
       for (final b in allBooks) {
-        if (b.id == bookId && !b.isSeries) {
+        if (b.id == bookId && b.bookType != Book.seriesBookType) {
           resolved = b;
           break;
         }
@@ -384,7 +389,7 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
     }
 
     if (_readerKey.currentState != null) {
-      _readerKey.currentState!.loadBook(bookId, pageNum);
+      _readerKey.currentState!.loadBook(bookId, pageNum, resolved);
     } else {
       ApiLogger.logError(
         '_handleNavigateToReader',
