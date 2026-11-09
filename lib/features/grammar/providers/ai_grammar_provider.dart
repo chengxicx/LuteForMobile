@@ -129,9 +129,14 @@ class AiGrammarNotifier extends Notifier<AiGrammarState> {
     _subscription = null;
 
     if (!forceNetwork) {
-      final entry = await ref
-          .read(aiGrammarCacheServiceProvider)
-          .getFromCache(AiAnalysisCacheService.cacheKey(langId, sentence));
+      final cache = ref.read(aiGrammarCacheServiceProvider);
+      var entry = await cache.getFromCache(
+        AiAnalysisCacheService.cacheKey(langId, sentence),
+      );
+      // 换规范化 key 之前写下的老条目仍要能读。
+      entry ??= await cache.getFromCache(
+        AiAnalysisCacheService.legacyCacheKey(langId, sentence),
+      );
       if (generation != _generation) return;
       if (entry != null) {
         state = _stateFromCacheEntry(entry, sentence, langId);

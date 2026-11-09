@@ -35,11 +35,12 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
   bool _offlineKnown = false;
   BookOfflineTask? _task;
 
-  /// 下载时是否把这本书已有的 AI 句子解释一起打包（默认勾选）。
-  /// 只 pin 本地已有的条目，不发 AI 请求，下载耗时不变。
+  /// 下载时是否把服务端的 AI 句子解释一起拉回来（默认勾选）。
+  /// 只拉服务端已经存下的结果，不触发 LLM 生成。
   bool _includeAi = true;
 
-  /// 这本书随包保留的解释条数；0 或 null 时不显示覆盖口径。
+  /// 这本书随包保留的解释条数。0 也要显示一行，别让用户把「页面都离线
+  /// 完了」误读成「AI 解释也在了」。
   int _aiIncluded = 0;
 
   /// Resolved once in initState: `ref.read` is not reliable in dispose.
@@ -531,7 +532,7 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
               : Icons.cloud_download_outlined,
           text: _offlineLabel(status),
         ),
-        if (_aiIncluded > 0) _aiCoverageRow(context),
+        _aiCoverageRow(context),
         _aiToggleRow(context),
         Wrap(
           alignment: WrapAlignment.end,
@@ -591,9 +592,8 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     );
   }
 
-  /// 下载开关：把这本书本地已经缓存过的 AI 句子解释 pin 住一起带走。
-  /// 只打包已有的，不发 AI 请求，所以下载耗时不变；没缓存过解释的书
-  /// 勾着也只是空操作。
+  /// 下载开关：把服务端这本书已经存下的 AI 句子解释拉回本地并随包保留。
+  /// 纯读库，不触发 LLM 生成；服务端一条都没有时勾着也只是空操作。
   Widget _aiToggleRow(BuildContext context) {
     final running = _task?.running ?? false;
     return Row(
@@ -606,7 +606,7 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            'Include AI explanations (cached only)',
+            'Download AI explanations from server',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: context.appColorScheme.text.secondary,
             ),
@@ -622,8 +622,8 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
     );
   }
 
-  /// 覆盖口径：只说「已包含 N 条」，绝不说「全部已包含」——本地没解释
-  /// 过的句子离线打开时不会凭空有内容。
+  /// 覆盖口径：只说「N 条可离线用」，绝不说「全部已包含」——服务端没有
+  /// 结果的句子离线打开时不会凭空有内容。0 条时明写出来，避免误解。
   Widget _aiCoverageRow(BuildContext context) {
     return Row(
       children: [
@@ -635,7 +635,9 @@ class _BookDetailsDialogState extends ConsumerState<BookDetailsDialog> {
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            '$_aiIncluded AI explanations included (cached sentences only)',
+            _aiIncluded > 0
+                ? '$_aiIncluded AI explanations available offline'
+                : 'No AI explanations available offline',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: context.appColorScheme.text.secondary,
             ),

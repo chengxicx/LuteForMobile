@@ -144,10 +144,34 @@ class AiAnalysisCacheService {
   /// The Hive box backing this cache; tests use it to plant raw entries.
   String get boxName => _boxName;
 
+  /// 与服务端 `ai.service.clean_sentence` 一致的句子规范化。
+  ///
+  /// 服务端 airesults.sentence 是「去 U+200B + 空白折叠 + trim」后的形式，
+  /// 而阅读页的句子是 token 直接拼接（内含 U+200B 零宽空格与 U+3000 全角
+  /// 空格）。整本离线下载从 `/ai/library/export` 拉回的是前一种，面板打开
+  /// 时拿的是后一种；两边各算各的 hash 会永远 miss，所以缓存身份统一用
+  /// 规范化后的文本。U+3000 单独先换掉，Dart 的 `\s` 在不同实现里对它的
+  /// 归属并不稳定，而 Python 的 `re.sub(r'\s+')` 一定吃它。
+  static String normalizeSentence(String sentence) {
+    return sentence
+        .replaceAll('\u200b', '')
+        .replaceAll('\u3000', ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
   /// Cache key for an analysis request.  Results depend only on the sentence
   /// text and language, so the hash of both is the identity across sessions
   /// and books.
   static String cacheKey(int langId, String sentence) {
+    return sha1
+        .convert(utf8.encode('$langId|${normalizeSentence(sentence)}'))
+        .toString();
+  }
+
+  /// 升级前写入的条目用的是未规范化的原句 hash。读缓存时再查一次这个 key，
+  /// 老解释不会因为换 key 算法就凭空消失。
+  static String legacyCacheKey(int langId, String sentence) {
     return sha1.convert(utf8.encode('$langId|$sentence')).toString();
   }
 
@@ -242,6 +266,9 @@ class AiAnalysisCacheService {
     String? model,
     bool pinned = false,
     int? bookId,
+    // 批量导入几百条时每条都全表扫一遍体积会变成 O(n²)；调用方传 false
+    // 并自行在收尾时跑一次。导入的都是 pinned 条目，本来也不参与淘汰。
+    bool enforceSizeLimit = true,
   }) async {
     try {
       if (!_isInitialized) {
@@ -276,7 +303,7 @@ class AiAnalysisCacheService {
       );
 
       await _putMeasured(key, entry);
-      await _enforceSizeLimits();
+      if (enforceSizeLimit) await _enforceSizeLimits();
 
       CacheLogger.log('$_boxName SAVE: key=$key');
       return true;

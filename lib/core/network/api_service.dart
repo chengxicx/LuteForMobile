@@ -1453,6 +1453,44 @@ class ApiService {
     );
   }
 
+  /// GET /ai/library/export —— 一本书在服务端**已经存下**的 AI 解释。
+  ///
+  /// 服务端把句子解释持久化在 airesults 表（Web 预取 / 导入 / 面板产生），
+  /// 这个导出接口只查库，不触发任何 LLM 调用。整本离线下载勾选 AI 解释时
+  /// 用它把结果拉回本地缓存，断网后打开句子面板即可命中。
+  ///
+  /// 返回 `{"lang_id", "items": [{"sentence", "kind", ...result}]}`。
+  /// 任何失败返回 null：断网、未登录、或老服务端还没有这个路由时，整本
+  /// 离线下载照常完成，只是少了服务端那批解释。
+  Future<Map<String, dynamic>?> getAiExplanationExport({
+    required int bookId,
+    int? langId,
+  }) async {
+    try {
+      final response = await _dio.get<dynamic>(
+        '/ai/library/export',
+        queryParameters: <String, dynamic>{
+          'book_id': bookId,
+          if (langId != null) 'lang_id': langId,
+        },
+        options: Options(
+          receiveTimeout: const Duration(seconds: 60),
+          extra: _noQueue,
+        ),
+      );
+      final data = response.data;
+      if (data is Map<String, dynamic>) return data;
+      if (data is String && data.isNotEmpty) {
+        final decoded = jsonDecode(data);
+        return decoded is Map<String, dynamic> ? decoded : null;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[ai-export] bookId=$bookId failed: $e');
+      return null;
+    }
+  }
+
   /// GET /term/sync —— 词库全量同步。服务端对全部词条算内容 hash，客户端带上
   /// 上次同步的 hash，没变化时只回 unchanged（几十字节），变了才回全量 JSON
   /// （约 2MB / 1.6 万词）。任何失败返回 null，调用方静默跳过——同步永远

@@ -194,15 +194,25 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
         // Prefetch failed -- fall through and let the panel try live; the
         // user is watching this sheet, so a visible retry is worth it.
       } else {
-        final entry =
-            await ref.read(sentenceAiCacheServiceProvider).getFromCache(key);
+        final cache = ref.read(sentenceAiCacheServiceProvider);
+        var resolvedKey = key;
+        var entry = await cache.getFromCache(key);
+        if (entry == null) {
+          // 换规范化 key 之前写下的老条目仍要能读，别让一次升级把用户
+          // 攒过的解释全部变成「离线没有内容」。
+          resolvedKey = AiAnalysisCacheService.legacyCacheKey(
+            langId,
+            sentence,
+          );
+          entry = await cache.getFromCache(resolvedKey);
+        }
         if (generation != _generation) return;
         if (entry != null) {
           state = _stateFromCacheEntry(entry, sentence, langId, bookId);
           // 缓存是永久的，但服务端结果可能已经变了（换模型、清缓存重算）。
           // 先按本地内容即时显示，再在后台比对一次；有差异就挂个提示。
           _scheduleServerCheck(
-            key: key,
+            key: resolvedKey,
             sentence: sentence,
             langId: langId,
             cached: entry,
@@ -268,8 +278,11 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     }
     if (_inFlight.containsKey(key)) return;
 
-    final cached =
-        await ref.read(sentenceAiCacheServiceProvider).getFromCache(key);
+    final cache = ref.read(sentenceAiCacheServiceProvider);
+    var cached = await cache.getFromCache(key);
+    cached ??= await cache.getFromCache(
+      AiAnalysisCacheService.legacyCacheKey(langId, sentence),
+    );
     if (cached != null) return;
 
     final future = _analyzeAndCache(

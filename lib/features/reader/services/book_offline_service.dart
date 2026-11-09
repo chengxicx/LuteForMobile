@@ -20,6 +20,7 @@ import 'manga_image_cache.dart';
 import 'page_cache_service.dart';
 import 'pdf_file_service.dart';
 import 'sentence_cache_service.dart';
+import 'server_ai_explanation_importer.dart';
 
 /// Download progress / state of one book's offline copy.
 ///
@@ -132,6 +133,7 @@ class BookOfflineService {
     required MangaImageCache mangaCache,
     required SentenceCacheService sentenceCache,
     required AiAnalysisCacheService aiCache,
+    required ServerAiExplanationImporter aiImporter,
     required String Function() serverUrl,
   }) : _pageCache = pageCache,
        _contentService = contentService,
@@ -142,6 +144,7 @@ class BookOfflineService {
        _mangaCache = mangaCache,
        _sentenceCache = sentenceCache,
        _aiCache = aiCache,
+       _aiImporter = aiImporter,
        _serverUrl = serverUrl;
 
   final PageCacheService _pageCache;
@@ -153,6 +156,7 @@ class BookOfflineService {
   final MangaImageCache _mangaCache;
   final SentenceCacheService _sentenceCache;
   final AiAnalysisCacheService _aiCache;
+  final ServerAiExplanationImporter _aiImporter;
   final String Function() _serverUrl;
 
   /// Live task state, keyed by book id. The dialog listens to it, so a
@@ -231,9 +235,10 @@ class BookOfflineService {
   ///
   /// Idempotent per book: a second call while the first runs is ignored.
   ///
-  /// [includeAiExplanations]（默认开）只做「打包已有的」：把这本书本地
-  /// 已经缓存过的 AI 句子解释标成 pinned 随包保留，**不发任何 AI 请求**，
-  /// 所以下载耗时与流量不因此变化。没有缓存过解释的书只是一个空操作。
+  /// [includeAiExplanations]（默认开）：先从服务端把这本书**已经存下**的
+  /// AI 句子解释拉回本地（`/ai/library/export` 纯读库，不触发 LLM），再把
+  /// 本地这些条目标成 pinned 随包保留。服务端没有解释、接口失败或老服务端
+  /// 没有该路由时静默跳过，退回到「只保留本地已有解释」，整本下载照常完成。
   Future<void> download(
     Book book, {
     bool forceRefresh = false,
@@ -265,6 +270,7 @@ class BookOfflineService {
           await _downloadPages(book);
       }
       if (includeAiExplanations && !_isCancelled(bookId)) {
+        await _aiImporter.importForBook(bookId);
         await pinAiExplanations(bookId);
       }
       final status = await statusFor(book);
@@ -334,6 +340,7 @@ class BookOfflineService {
       bookId,
     )) {
       legacy.add(AiAnalysisCacheService.cacheKey(langId, sentence));
+      legacy.add(AiAnalysisCacheService.legacyCacheKey(langId, sentence));
     }
     final count = await _aiCache.pinForBook(bookId: bookId, legacyKeys: legacy);
     _aiIncluded[bookId] = count;
@@ -549,6 +556,12 @@ final bookOfflineServiceProvider = Provider<BookOfflineService>((ref) {
     mangaCache: ref.watch(mangaImageCacheProvider),
     sentenceCache: ref.watch(sentenceCacheServiceProvider),
     aiCache: ref.watch(sentenceAiCacheServiceProvider),
+    aiImporter: ServerAiExplanationImporter(
+      fetch: (bookId) => ref
+          .read(apiServiceProvider)
+          .getAiExplanationExport(bookId: bookId),
+      cache: ref.watch(sentenceAiCacheServiceProvider),
+    ),
     serverUrl: () => ref.read(settingsProvider).serverUrl,
   );
 });
