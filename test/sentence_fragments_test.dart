@@ -41,13 +41,45 @@ void main() {
       expect(splitCombinedSentence(''), isEmpty);
     });
 
-    test('片段去重且不超过上限', () {
+    test('片段去重并丢弃纯标点片段', () {
       expect(
         splitCombinedSentence('同じ。 同じ。 違う。'),
         ['同じ。', '違う。'],
       );
-      final tooMany = List.generate(13, (i) => '句$i。').join(' ');
-      expect(splitCombinedSentence(tooMany), isEmpty);
+      expect(
+        splitCombinedSentence('張：ええっ！？ 次。'),
+        ['張：ええっ！', '次。'],
+      );
+    });
+
+    // 1.4.58 的回归：真机上 Sentence Reader 把整页课文合成一句，按句读
+    // 会拆出 22 段，旧代码 12 段上限直接返回空，片段回退一次都没跑。
+    test('长合并句（22 段）完整返回，不再被 12 段上限挡掉', () {
+      final long = List.generate(22, (i) => '第${i}句。').join(' ');
+      final parts = splitCombinedSentence(long);
+      expect(parts, hasLength(22));
+      expect(parts.first, '第0句。');
+      expect(parts.last, '第21句。');
+    });
+
+    test('超过上限时取前 N 段，而不是整句放弃', () {
+      final long = List.generate(70, (i) => '第${i}句。').join(' ');
+      final parts = splitCombinedSentence(long);
+      expect(parts, hasLength(maxSentenceFragments));
+      expect(parts.last, '第63句。');
+    });
+
+    test('真机整页合并句能拆出服务端单句片段', () {
+      const real = '第26課 電源をオフのままにしてしまいました'
+          'ユニット1張：もしもし、上田さん。'
+          'あ、やっとつながった。今日はどうしたんですか。上田：え？ '
+          'あ、そうだ、今日約束していましたね。ごめんなさい。'
+          'うっかりしていました。';
+      final parts = splitCombinedSentence(real);
+      expect(parts.length, greaterThanOrEqualTo(7));
+      expect(parts, contains('あ、やっとつながった。'));
+      expect(parts, contains('今日はどうしたんですか。'));
+      expect(parts, isNot(contains('？')));
     });
   });
 

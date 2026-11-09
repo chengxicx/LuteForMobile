@@ -8,8 +8,11 @@
 /// 拼回来 —— 不用重新下载、不用改服务端、也不用复刻合并规则。
 library;
 
-/// 一条合并句最多拆成多少段。防止异常长文本导致无意义的批量查表。
-const int maxSentenceFragments = 12;
+/// 一条合并句最多查多少个片段。只是防止异常长文本导致无意义的批量查表：
+/// 超限时**取前 N 段**而不是整句放弃 —— 真机上 Sentence Reader 把整页
+/// 课文合成一句，按句读会拆出 20+ 段，早先 12 段的上限让所有长句都
+/// 直接返回空、片段回退完全没跑（1.4.58 实测）。
+const int maxSentenceFragments = 64;
 
 /// 有序、去重的片段列表。返回空列表表示「拆不出更小的句子」，调用方
 /// 应跳过片段回退（整句本身已经查过一次了）。
@@ -49,15 +52,20 @@ List<String> splitCombinedSentence(String sentence) {
           .where((part) => part.isNotEmpty)
           .toList();
 
-  if (parts.length < 2 || parts.length > maxSentenceFragments) {
-    return const <String>[];
-  }
+  if (parts.length < 2) return const <String>[];
+
   final unique = <String>[];
-  for (final part in parts) {
+  for (final part in parts.take(maxSentenceFragments)) {
+    // 「ええっ！？」会被切成 '張：ええっ！' 和 '？' 两段；后者是纯标点，
+    // 拼进译文只会多一行噪音，跳过。
+    if (_isPunctuationOnly(part)) continue;
     if (!unique.contains(part)) unique.add(part);
   }
   return unique.length >= 2 ? unique : const <String>[];
 }
+
+bool _isPunctuationOnly(String part) =>
+    RegExp(r'^[。．、！？!?.,，\s]+$').hasMatch(part);
 
 bool _isClauseEnd(String ch) =>
     ch == '。' ||
