@@ -14,8 +14,10 @@ import '../../../shared/theme/theme_extensions.dart';
 import '../../../core/network/dictionary_service.dart';
 import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/network_providers.dart';
+import '../../../shared/providers/server_status_provider.dart';
 import '../providers/sentence_tts_provider.dart';
 import '../providers/current_book_provider.dart';
+import 'offline_sentence_ai_view.dart';
 
 class SentenceTranslationWidget extends ConsumerStatefulWidget {
   final String sentence;
@@ -64,6 +66,26 @@ class _SentenceTranslationWidgetState
   bool _isOriginalCollapsed = true;
   int _popupHeight = DictionaryService.defaultPopupHeight;
   Future<void>? _loadFuture;
+
+  /// `/ai/sentence` 那一页 WebView 加载失败过（断网、服务端不可达）后改走
+  /// 本地缓存渲染；按词典身份记，词典列表刷新导致 index 变化也不串位。
+  final Set<String> _failedAiPages = <String>{};
+
+  /// 点「重试联网」时自增，逼 KeyedSubtree 重建该页的 InAppWebView
+  /// （initialUrlRequest 只在元素首次创建时生效）。
+  int _aiPageGeneration = 0;
+
+  static String _aiPageId(DictionarySource dictionary) =>
+      '${dictionary.name}\u0000${dictionary.urlTemplate}';
+
+  /// 可达性标记可能滞后（刚恢复网络时 App 还以为是离线），所以 WebView
+  /// 真的加载失败时也切到本地缓存，避免弹出系统错误页。
+  void _markAiPageFailed(DictionarySource dictionary) {
+    if (!mounted) return;
+    final id = _aiPageId(dictionary);
+    if (_failedAiPages.contains(id)) return;
+    setState(() => _failedAiPages.add(id));
+  }
 
   /// build() 里弹窗容器的左右内边距，用来反推 webview 的实际宽度。
   static const double _sheetHorizontalPadding = 20;
@@ -735,11 +757,13 @@ class _SentenceTranslationWidgetState
         // 必须按词典身份给 Key：InAppWebView 的 initialUrlRequest 只在
         // 元素首次创建时生效。后台刷新会在列表前部插入新词典，若无 Key，
         // index 0 会复用旧 webview 元素，显示错词典的页面。
+        final dict = _dictionaries[index];
+        // 只有服务端 AI 句译页会因「重试联网」重建 WebView；其余页的
+        // generation 恒为 0，词典列表刷新时不会无谓重载。
+        final generation = dict.isServerAiSentence ? _aiPageGeneration : 0;
         return KeyedSubtree(
-          key: ValueKey(
-            '${_dictionaries[index].name}\u0000${_dictionaries[index].urlTemplate}',
-          ),
-          child: _buildWebViewPage(context, _dictionaries[index], index),
+          key: ValueKey('${dict.name}\u0000${dict.urlTemplate}\u0000$generation'),
+          child: _buildWebViewPage(context, dict, index),
         );
       },
     );
@@ -755,6 +779,24 @@ class _SentenceTranslationWidgetState
         return _buildVirtualDictionaryContent(context);
       }
       return _buildAIContent(context);
+    }
+
+    // 服务端 AI 句译页是纯在线 WebView；离线（或它真的加载失败）时改用
+    // 整本下载拉回的本地缓存渲染，不再弹 net::ERR_INTERNET_DISCONNECTED。
+    if (dictionary.isServerAiSentence &&
+        (!ServerStatusManager.isReachable ||
+            _failedAiPages.contains(_aiPageId(dictionary)))) {
+      return OfflineSentenceAiView(
+        sentence: widget.sentence,
+        languageId: widget.languageId,
+        onRetry: () {
+          if (!mounted) return;
+          setState(() {
+            _failedAiPages.remove(_aiPageId(dictionary));
+            _aiPageGeneration++;
+          });
+        },
+      );
     }
 
     // 本地词典的模板是服务器池里的 .db 文件名，必须换成服务端的查询路由
@@ -820,6 +862,19 @@ class _SentenceTranslationWidgetState
         if (isServerOwned) {
           unawaited(DictionaryService.installSessionCookie(serverUrl));
         }
+      },
+      onReceivedError: (controller, request, error) {
+        if (!dictionary.isServerAiSentence) return;
+        if (request.isForMainFrame != true) return;
+        // CANCELLED 是自己发起的跳转/重新加载打断的，不是失败。
+        if (error.type == WebResourceErrorType.CANCELLED) return;
+        _markAiPageFailed(dictionary);
+      },
+      onReceivedHttpError: (controller, request, response) {
+        if (!dictionary.isServerAiSentence) return;
+        if (request.isForMainFrame != true) return;
+        if ((response.statusCode ?? 0) < 400) return;
+        _markAiPageFailed(dictionary);
       },
       onLoadStop: (controller, url) {
         if (index == _currentPage) {

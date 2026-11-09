@@ -11,8 +11,8 @@ import '../../../core/network/session_manager.dart';
 import '../../../shared/providers/network_providers.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import '../models/sentence_ai_result.dart';
+import '../services/offline_sentence_ai_lookup.dart';
 import '../services/sentence_ai_service.dart';
-import '../utils/sentence_fragments.dart';
 
 enum SentenceAiStatus { idle, streaming, done, error }
 
@@ -244,49 +244,17 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
     );
   }
 
-  /// 合并句的片段回退：逐段查精确 key（含升级前的 legacy key），把命中的
-  /// 结果拼成一份缓存条目。只命中部分片段也照常展示 —— 有内容总比断网
-  /// 时报「需要网络」好；一段都没命中就返回 null，交回原来的流式路径。
+  /// 合并句的片段回退与词卡离线面板共用一套实现（见
+  /// [composeCachedSentenceAiFragments]）：逐段查精确 key（含 legacy key），
+  /// 部分命中也照常展示，一段都没命中才交回原来的流式路径。
   Future<AiAnalysisCacheEntry?> _composeFromFragments(
     String sentence,
     int langId,
   ) async {
-    final parts = splitCombinedSentence(sentence);
-    if (parts.isEmpty) return null;
-
-    final cache = ref.read(sentenceAiCacheServiceProvider);
-    final results = <Map<String, dynamic>>[];
-    final fallbacks = <String>[];
-    AiAnalysisCacheEntry? first;
-    for (final part in parts) {
-      var entry = await cache.getFromCache(
-        AiAnalysisCacheService.cacheKey(langId, part),
-      );
-      entry ??= await cache.getFromCache(
-        AiAnalysisCacheService.legacyCacheKey(langId, part),
-      );
-      if (entry == null) continue;
-      first ??= entry;
-      final result = entry.result;
-      if (result != null) results.add(result);
-      final fallback = entry.fallbackText?.trim();
-      if (fallback != null && fallback.isNotEmpty) fallbacks.add(fallback);
-    }
-    if (first == null) return null;
-
-    final merged = mergeSentenceAiResults(results);
-    final fallbackText = fallbacks.isEmpty ? null : fallbacks.join('\n');
-    if (merged.isEmpty && fallbackText == null) return null;
-
-    // 拼出来的条目没有单一 key 可比，这里不做后台服务端比对；面板会按
-    // cached=true 展示，用户想拿整句的完整解释可以联网刷新。
-    return AiAnalysisCacheEntry(
-      timestamp: first.timestamp,
-      sizeInBytes: 0,
-      result: merged.isEmpty ? null : merged,
-      fallbackText: fallbackText,
-      provider: first.provider,
-      model: first.model,
+    return composeCachedSentenceAiFragments(
+      cache: ref.read(sentenceAiCacheServiceProvider),
+      langId: langId,
+      sentence: sentence,
     );
   }
 
