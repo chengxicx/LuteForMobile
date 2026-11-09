@@ -334,6 +334,92 @@ void main() {
     expect(endpoint.calls, isEmpty);
     expect(await cache.getCacheStats(), isA<Map<String, dynamic>>());
   });
+
+  // 整本离线下载拉回的解释按服务端切句存，Sentence Reader 的「句子合并」
+  // 会把相邻短句拼成一句。精确 key miss 时要能按片段把解释拼回来。
+  const partA = 'あ、やっとつながった。';
+  const partB = '今日はどうしたんですか。';
+  const combined = 'あ、やっとつながった。 今日はどうしたんですか。';
+
+  test('合并句按片段拼回已缓存的解释，不发网络请求', () async {
+    final (:container, :endpoint, :cache) = makeContainer();
+    await cache.saveToCache(
+      key: AiAnalysisCacheService.cacheKey(langId, partA),
+      result: resultOf('A 译').toJson(),
+    );
+    await cache.saveToCache(
+      key: AiAnalysisCacheService.cacheKey(langId, partB),
+      result: resultOf('B 译').toJson(),
+    );
+
+    await container.read(sentenceAiProvider.notifier).analyze(
+          sentence: combined,
+          langId: langId,
+        );
+    final state = await waitForState(
+      container,
+      (s) => s.status == SentenceAiStatus.done,
+    );
+    expect(state.result?.translation, 'A 译\nB 译');
+    expect(state.result?.segments, hasLength(2));
+    expect(state.meta?.cached, isTrue);
+    expect(endpoint.calls, isEmpty);
+  });
+
+  test('只命中一个片段也照常展示，不因缺片段退回网络', () async {
+    final (:container, :endpoint, :cache) = makeContainer();
+    await cache.saveToCache(
+      key: AiAnalysisCacheService.cacheKey(langId, partA),
+      result: resultOf('A 译').toJson(),
+    );
+
+    await container.read(sentenceAiProvider.notifier).analyze(
+          sentence: combined,
+          langId: langId,
+        );
+    final state = await waitForState(
+      container,
+      (s) => s.status == SentenceAiStatus.done,
+    );
+    expect(state.result?.translation, 'A 译');
+    expect(endpoint.calls, isEmpty);
+  });
+
+  test('片段回退也认升级前的 legacy key', () async {
+    final (:container, :endpoint, :cache) = makeContainer();
+    await cache.saveToCache(
+      key: AiAnalysisCacheService.legacyCacheKey(langId, partA),
+      fallbackText: '旧版译文',
+    );
+
+    await container.read(sentenceAiProvider.notifier).analyze(
+          sentence: combined,
+          langId: langId,
+        );
+    final state = await waitForState(
+      container,
+      (s) => s.status == SentenceAiStatus.done,
+    );
+    expect(state.fallbackText, '旧版译文');
+    expect(endpoint.calls, isEmpty);
+  });
+
+  test('单句 miss 仍走网络，片段回退不会吞掉正常请求', () async {
+    final setup = makeContainer();
+    final container = setup.container;
+    final endpoint = setup.endpoint;
+    endpoint.responses['$langId|$sentenceA'] = [() => okStream(resultOf('A'))];
+
+    await container.read(sentenceAiProvider.notifier).analyze(
+          sentence: sentenceA,
+          langId: langId,
+        );
+    await waitForState(
+      container,
+      (s) => s.status == SentenceAiStatus.done && s.result?.translation == 'A',
+    );
+    expect(endpoint.calls, ['$langId|$sentenceA']);
+  });
 }
 
 /// 面板/预取把结果写进缓存是异步的：等条目真正出现再继续，否则下一个

@@ -12,6 +12,7 @@ import '../../../shared/providers/network_providers.dart';
 import '../../../shared/providers/server_status_provider.dart';
 import '../models/sentence_ai_result.dart';
 import '../services/sentence_ai_service.dart';
+import '../utils/sentence_fragments.dart';
 
 enum SentenceAiStatus { idle, streaming, done, error }
 
@@ -223,11 +224,69 @@ class SentenceAiNotifier extends Notifier<SentenceAiState> {
       }
     }
 
+    // 精确 key 没命中时，把「句子合并」拼出来的长句拆回服务端单句逐段查
+    // 缓存。整本下载拉回的解释是按服务端切句存的，合并句本身不会有条目；
+    // 走这一步断网也能给出解释，且全程只读本地、不发任何请求。
+    if (!forceNetwork) {
+      final composed = await _composeFromFragments(sentence, langId);
+      if (generation != _generation) return;
+      if (composed != null) {
+        state = _stateFromCacheEntry(composed, sentence, langId, bookId);
+        return;
+      }
+    }
+
     _startStream(
       sentence: sentence,
       langId: langId,
       bookId: bookId,
       generation: generation,
+    );
+  }
+
+  /// 合并句的片段回退：逐段查精确 key（含升级前的 legacy key），把命中的
+  /// 结果拼成一份缓存条目。只命中部分片段也照常展示 —— 有内容总比断网
+  /// 时报「需要网络」好；一段都没命中就返回 null，交回原来的流式路径。
+  Future<AiAnalysisCacheEntry?> _composeFromFragments(
+    String sentence,
+    int langId,
+  ) async {
+    final parts = splitCombinedSentence(sentence);
+    if (parts.isEmpty) return null;
+
+    final cache = ref.read(sentenceAiCacheServiceProvider);
+    final results = <Map<String, dynamic>>[];
+    final fallbacks = <String>[];
+    AiAnalysisCacheEntry? first;
+    for (final part in parts) {
+      var entry = await cache.getFromCache(
+        AiAnalysisCacheService.cacheKey(langId, part),
+      );
+      entry ??= await cache.getFromCache(
+        AiAnalysisCacheService.legacyCacheKey(langId, part),
+      );
+      if (entry == null) continue;
+      first ??= entry;
+      final result = entry.result;
+      if (result != null) results.add(result);
+      final fallback = entry.fallbackText?.trim();
+      if (fallback != null && fallback.isNotEmpty) fallbacks.add(fallback);
+    }
+    if (first == null) return null;
+
+    final merged = mergeSentenceAiResults(results);
+    final fallbackText = fallbacks.isEmpty ? null : fallbacks.join('\n');
+    if (merged.isEmpty && fallbackText == null) return null;
+
+    // 拼出来的条目没有单一 key 可比，这里不做后台服务端比对；面板会按
+    // cached=true 展示，用户想拿整句的完整解释可以联网刷新。
+    return AiAnalysisCacheEntry(
+      timestamp: first.timestamp,
+      sizeInBytes: 0,
+      result: merged.isEmpty ? null : merged,
+      fallbackText: fallbackText,
+      provider: first.provider,
+      model: first.model,
     );
   }
 
