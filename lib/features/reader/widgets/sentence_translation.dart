@@ -781,14 +781,29 @@ class _SentenceTranslationWidgetState
       return _buildAIContent(context);
     }
 
-    // 服务端 AI 句译页是纯在线 WebView；离线（或它真的加载失败）时改用
-    // 整本下载拉回的本地缓存渲染，不再弹 net::ERR_INTERNET_DISCONNECTED。
+    // 在线 / 离线两份页面的 App 主题色必须由同一处算出来。
+    final theme = _serverAiTheme(context);
+
+    // 服务端 AI 句译页在线时是纯 WebView；离线（或它真的加载失败）时用
+    // 同一套网页模板渲染整本下载拉回的本地缓存，排版与联网一致，也不再弹
+    // net::ERR_INTERNET_DISCONNECTED。
     if (dictionary.isServerAiSentence &&
         (!ServerStatusManager.isReachable ||
             _failedAiPages.contains(_aiPageId(dictionary)))) {
       return OfflineSentenceAiView(
         sentence: widget.sentence,
         languageId: widget.languageId,
+        themeCss: DictionaryService.serverPageThemeCss(
+          background: theme.background,
+          surface: theme.surface,
+          primaryText: theme.primaryText,
+          secondaryText: theme.secondaryText,
+          divider: theme.divider,
+          accent: theme.accent,
+          dark: theme.dark,
+        ),
+        onControllerCreated: (controller) =>
+            _webviewControllers[dictionary.hashCode] = controller,
         onRetry: () {
           if (!mounted) return;
           setState(() {
@@ -818,21 +833,13 @@ class _SentenceTranslationWidgetState
     // 的颜色注入页面，避免弹窗是浅色、内容区却是深色（或相反）。
     final serverPageTheme = dictionary.isServerAiSentence
         ? DictionaryService.serverPageThemeScript(
-            background: _cssColor(
-              context.appColorScheme.background.background,
-            ),
-            surface: _cssColor(context.appColorScheme.background.surface),
-            primaryText: _cssColor(context.appColorScheme.text.primary),
-            secondaryText: _cssColor(context.appColorScheme.text.secondary),
-            divider: _cssColor(context.appColorScheme.border.dividerColor),
-            // 深色下沿用 M3 深色主题的 primary（#6750A4 在深色背景上对比度
-            // 不够，链接会糊成一片）。
-            accent: _cssColor(
-              Theme.of(context).brightness == Brightness.dark
-                  ? const Color(0xFFD0BCFF)
-                  : context.appColorScheme.material3.primary,
-            ),
-            dark: Theme.of(context).brightness == Brightness.dark,
+            background: theme.background,
+            surface: theme.surface,
+            primaryText: theme.primaryText,
+            secondaryText: theme.secondaryText,
+            divider: theme.divider,
+            accent: theme.accent,
+            dark: theme.dark,
           )
         : null;
 
@@ -1217,6 +1224,34 @@ class _HeightAdjustmentDialogState extends State<_HeightAdjustmentDialog> {
       ],
     );
   }
+}
+
+/// `/ai/sentence` 网页（在线）与它的离线替身共用同一份 App 主题色。
+/// 两处各算一遍迟早会漂，抽到这里一起算。
+({
+  String background,
+  String surface,
+  String primaryText,
+  String secondaryText,
+  String divider,
+  String accent,
+  bool dark,
+}) _serverAiTheme(BuildContext context) {
+  final scheme = context.appColorScheme;
+  final isDark = Theme.of(context).brightness == Brightness.dark;
+  return (
+    background: _cssColor(scheme.background.background),
+    surface: _cssColor(scheme.background.surface),
+    primaryText: _cssColor(scheme.text.primary),
+    secondaryText: _cssColor(scheme.text.secondary),
+    divider: _cssColor(scheme.border.dividerColor),
+    // 深色下沿用 M3 深色主题的 primary（#6750A4 在深色背景上对比度
+    // 不够，链接会糊成一片）。
+    accent: _cssColor(
+      isDark ? const Color(0xFFD0BCFF) : scheme.material3.primary,
+    ),
+    dark: isDark,
+  );
 }
 
 /// CSS 不接受 Flutter 的 0xAARRGGBB，这里只取 RGB（主题色都是不透明的）。

@@ -1,17 +1,25 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/ai_analysis_cache_service.dart';
 import '../../../core/cache/providers/ai_analysis_cache_provider.dart';
-import '../../../shared/theme/theme_extensions.dart';
+import '../../../core/network/dictionary_service.dart';
 import '../models/sentence_ai_result.dart';
 import '../services/offline_sentence_ai_lookup.dart';
+import 'offline_sentence_ai_html.dart';
 
 /// 词卡「Sentence」面板里 `/ai/sentence` 那一页的**离线替身**。
 ///
 /// 在线时那一页是 WebView 直接渲染服务端网页；断网时 WebView 只会弹
-/// `net::ERR_INTERNET_DISCONNECTED`。这里不发任何请求，改用整本下载拉回
-/// 的 `sentence_ai_cache`，把结构化结果用 Flutter 画出来。
+/// `net::ERR_INTERNET_DISCONNECTED`。这里改成用**同一个 WebView** 渲染一份
+/// 本地 HTML：页面骨架、CSS、结果渲染函数都来自服务端 `ai/sentence.html`，
+/// 数据换成整本下载拉回的 `sentence_ai_cache`。因此离线与联网的排版、
+/// 字号、表格、主题配色一致，区别只剩 eyebrow 上的状态标记。
 ///
 /// 刻意不复用 [SentenceAITranslationWidget]：那个面板带自己的 header、
 /// 关闭按钮，还共用全局 `sentenceAiProvider`；塞进 PageView 的一页会互相
@@ -20,14 +28,24 @@ class OfflineSentenceAiView extends ConsumerStatefulWidget {
   final String sentence;
   final int languageId;
 
+  /// 与在线页完全相同的 App 主题 CSS（见
+  /// [DictionaryService.serverPageThemeCss]），由调用方算好后传入。
+  final String themeCss;
+
   /// 「重试联网」：调用方清掉失败标记并重建 WebView。
   final VoidCallback onRetry;
+
+  /// 把 controller 交给调用方，切回这一页时才能和在线 WebView 一样强制重画
+  /// （BOOX 墨水屏上 platform view 复贴后不重绘会整页空白）。
+  final void Function(InAppWebViewController controller)? onControllerCreated;
 
   const OfflineSentenceAiView({
     super.key,
     required this.sentence,
     required this.languageId,
+    required this.themeCss,
     required this.onRetry,
+    this.onControllerCreated,
   });
 
   @override
@@ -70,192 +88,57 @@ class _OfflineSentenceAiViewState
         }
 
         final entry = snapshot.data;
-        SentenceAiResult? result;
-        if (entry?.result != null) {
-          final parsed = SentenceAiResult.fromJson(entry!.result!);
-          if (!parsed.isEmpty) result = parsed;
+        Map<String, dynamic>? result = entry?.result;
+        if (result != null && SentenceAiResult.fromJson(result).isEmpty) {
+          result = null;
         }
         final fallback = entry?.fallbackText?.trim();
         final hasFallback = fallback != null && fallback.isNotEmpty;
-        if (result == null && !hasFallback) {
-          return _buildEmpty(context, hasError: snapshot.hasError);
-        }
-        return _buildContent(context, result, hasFallback ? fallback : null);
-      },
-    );
-  }
+        final hasContent = result != null || hasFallback;
+        final provider = entry?.provider?.trim();
+        final model = entry?.model?.trim();
 
-  Widget _buildEmpty(BuildContext context, {required bool hasError}) {
-    final scheme = context.appColorScheme;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _badge(context),
-          const SizedBox(height: 18),
-          Icon(Icons.cloud_off_outlined, size: 40,
-              color: scheme.text.secondary),
-          const SizedBox(height: 12),
-          Text(
-            '这句没有离线解释',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: scheme.text.primary,
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            hasError
-                ? '读取本地缓存时出错了，可以重试联网查看。'
-                : '联网打开一次这句的解释，或在书架长按这本书，\n'
-                    '勾选下载 AI 解释后即可离线使用。',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: scheme.text.secondary,
-                  height: 1.5,
-                ),
-          ),
-          const SizedBox(height: 20),
-          OutlinedButton.icon(
-            onPressed: widget.onRetry,
-            icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('重试联网'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildContent(
-    BuildContext context,
-    SentenceAiResult? result,
-    String? fallback,
-  ) {
-    final scheme = context.appColorScheme;
-    final textStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: scheme.text.primary,
-          height: 1.5,
+        final html = buildOfflineSentenceAiHtml(
+          sentence: widget.sentence,
+          result: result,
+          fallbackText: result == null && hasFallback ? fallback : null,
+          themeCss: widget.themeCss,
+          providerLabel: (provider != null && provider.isNotEmpty)
+              ? provider
+              : (model != null && model.isNotEmpty ? model : 'Local cache'),
+          badgeLabel: hasContent ? 'Cached' : 'Offline',
+          hasContent: hasContent,
+          emptyMessage: snapshot.hasError
+              ? '读取本地缓存时出错了，点 Retry 联网查看。'
+              : '这句没有离线解释。联网打开一次，或在书架长按这本书、'
+                  '勾选下载 AI 解释后重新下载。',
         );
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _badge(context),
-          const SizedBox(height: 14),
-          _sectionLabel(context, 'Original Sentence'),
-          const SizedBox(height: 6),
-          Text(widget.sentence, style: textStyle),
-          if (result?.translation != null || fallback != null) ...[
-            const SizedBox(height: 18),
-            _sectionLabel(context, 'Translation'),
-            const SizedBox(height: 6),
-            Text(
-              result?.translation ?? fallback!,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: scheme.text.primary,
-                    height: 1.55,
-                  ),
-            ),
-          ],
-          if (result != null && result.segments.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            _sectionLabel(context, 'Word by word'),
-            const SizedBox(height: 6),
-            for (final seg in result.segments)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  [
-                    if (seg.part != null) seg.part!,
-                    if (seg.reading != null) '（${seg.reading}）',
-                    if (seg.meaning != null) ' — ${seg.meaning}',
-                    if (seg.role != null) ' [${seg.role}]',
-                  ].join(),
-                  style: textStyle,
-                ),
-              ),
-          ],
-          if (result != null && result.grammar.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            _sectionLabel(context, 'Grammar'),
-            const SizedBox(height: 6),
-            for (final g in result.grammar)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  [
-                    if (g.point != null) g.point!,
-                    if (g.explanation != null) '：${g.explanation}',
-                    if (g.fragment != null) '（${g.fragment}）',
-                  ].join(),
-                  style: textStyle,
-                ),
-              ),
-          ],
-          if (result?.context != null) ...[
-            const SizedBox(height: 18),
-            _sectionLabel(context, 'Context'),
-            const SizedBox(height: 6),
-            Text(result!.context!, style: textStyle),
-          ],
-          if (result != null && result.examples.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            _sectionLabel(context, 'Examples'),
-            const SizedBox(height: 6),
-            for (final ex in result.examples)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  [
-                    if (ex.source != null) ex.source!,
-                    if (ex.translation != null) '\n${ex.translation}',
-                  ].join(),
-                  style: textStyle,
-                ),
-              ),
-          ],
-          const SizedBox(height: 20),
-          Text(
-            '来自整本下载的本地缓存；联网打开可刷新为整句完整解释。',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.text.secondary,
-                ),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: widget.onRetry,
-            icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('联网刷新'),
-          ),
-        ],
-      ),
-    );
-  }
 
-  Widget _badge(BuildContext context) {
-    final scheme = context.appColorScheme;
-    return Row(
-      children: [
-        Icon(Icons.cloud_off_outlined,
-            size: 16, color: scheme.text.secondary),
-        const SizedBox(width: 6),
-        Text(
-          '离线结果 · 本地缓存',
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: scheme.text.secondary,
-              ),
-        ),
-      ],
-    );
-  }
-
-  Widget _sectionLabel(BuildContext context, String text) {
-    return Text(
-      text,
-      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-            color: context.m3Primary,
-            fontWeight: FontWeight.bold,
+        return InAppWebView(
+          initialSettings: DictionaryService.webviewSettings(
+            localDictionary: false,
           ),
+          gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+            Factory(() => VerticalDragGestureRecognizer()),
+          },
+          onWebViewCreated: (controller) {
+            widget.onControllerCreated?.call(controller);
+            controller.addJavaScriptHandler(
+              handlerName: 'retryOnline',
+              callback: (args) {
+                widget.onRetry();
+                return null;
+              },
+            );
+            unawaited(
+              controller.loadData(
+                data: html,
+                baseUrl: WebUri('about:blank'),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

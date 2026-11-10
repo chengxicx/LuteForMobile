@@ -1459,6 +1459,12 @@ class ApiService {
   /// 这个导出接口只查库，不触发任何 LLM 调用。整本离线下载勾选 AI 解释时
   /// 用它把结果拉回本地缓存，断网后打开句子面板即可命中。
   ///
+  /// `match=online` 让服务端按阅读页 `/ai/translate` 的缓存口径（句子 +
+  /// 目标语言 + provider/model，**不含 book_id**）逐句解析，而不是直接交出
+  /// 这本书名下的那一行。同一句可能在库里有多条结果（本书 import 的、别的
+  /// 书 prefetch 的），不这么对齐就会出现「联网看到 A、离线看到 B」。
+  /// 老服务端忽略这个参数，退回原来的按书导出，不会报错。
+  ///
   /// 返回 `{"lang_id", "items": [{"sentence", "kind", ...result}]}`。
   /// 任何失败返回 null：断网、未登录、或老服务端还没有这个路由时，整本
   /// 离线下载照常完成，只是少了服务端那批解释。
@@ -1471,6 +1477,8 @@ class ApiService {
         '/ai/library/export',
         queryParameters: <String, dynamic>{
           'book_id': bookId,
+          // Same stored row the online Sentence tab would stream.
+          'match': 'online',
           if (langId != null) 'lang_id': langId,
         },
         options: Options(

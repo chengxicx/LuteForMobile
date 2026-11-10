@@ -515,7 +515,7 @@ class DictionaryService {
   /// 主题变量，正文、次级文字、背景、表格分隔线一次性对齐弹窗。
   ///
   /// [dark] 只影响 `color-scheme` 与错误提示的配色，其余全部走显式颜色。
-  static String serverPageThemeScript({
+  static String serverPageThemeCss({
     required String background,
     required String surface,
     required String primaryText,
@@ -524,7 +524,7 @@ class DictionaryService {
     required String accent,
     required bool dark,
   }) {
-    final css = '''
+    return '''
 body {
   --background-color: $background !important;
   --font-color: $primaryText !important;
@@ -576,6 +576,28 @@ body {
 a, a:link, a:visited { color: $accent !important; }
 ${dark ? '.ai-error { color: #FFB4AB !important; background: rgba(255, 180, 171, 0.14) !important; }' : ''}
 ''';
+  }
+
+  /// 上面那份 CSS 的 JS 注入版：服务端页面的主题样式可能更晚生效，所以
+  /// 除了立即写一次，还在几个时间点补写。离线页直接内嵌 CSS，不需要这段。
+  static String serverPageThemeScript({
+    required String background,
+    required String surface,
+    required String primaryText,
+    required String secondaryText,
+    required String divider,
+    required String accent,
+    required bool dark,
+  }) {
+    final css = serverPageThemeCss(
+      background: background,
+      surface: surface,
+      primaryText: primaryText,
+      secondaryText: secondaryText,
+      divider: divider,
+      accent: accent,
+      dark: dark,
+    );
     return '''
 (function(){
   var css = ${jsonEncode(css)};
