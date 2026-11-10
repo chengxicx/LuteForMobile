@@ -296,7 +296,9 @@ const String _pageScript = r'''
   document.getElementById('ai-provider').textContent = DATA.providerLabel;
   var badge = document.getElementById('ai-badge');
   badge.textContent = DATA.badgeLabel;
-  if (!DATA.badgeLabel) badge.hidden = true;
+  // The markup starts with `hidden` (like the server page); a non-empty
+  // label has to clear it or Cached / Offline never shows up.
+  badge.hidden = !DATA.badgeLabel;
   document.getElementById('ai-source-text').textContent = DATA.sentence;
 
   if (DATA.result) renderResult(DATA.result);

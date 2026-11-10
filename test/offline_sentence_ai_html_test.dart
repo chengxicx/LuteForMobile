@@ -54,6 +54,18 @@ void main() {
     expect(html, isNot(contains('https://')));
   });
 
+  test('reveals the status badge that the server page shows', () {
+    final html = build(
+      result: <String, dynamic>{'translation': '啊，终于连上了。'},
+    );
+    // The span is `hidden` in the markup, so the script MUST clear the
+    // attribute when a label exists. A one-way `if (!label) hidden = true`
+    // regressed here: Cached / Offline stayed invisible forever.
+    expect(html, contains('id="ai-badge" class="ai-badge" hidden'));
+    expect(html, contains('badge.hidden = !DATA.badgeLabel;'));
+    expect(html, isNot(contains('if (!DATA.badgeLabel) badge.hidden = true;')));
+  });
+
   test('structured result and labels are passed as JSON data', () {
     final html = build(
       result: <String, dynamic>{
