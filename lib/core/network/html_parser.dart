@@ -217,9 +217,23 @@ class HtmlParser {
       final classes = span.classes;
       final isStartOfSentence = classes.contains('sentencestart');
 
+      // `overlapped` 的多词词元：`data-text` 是**整条**词元（token 之间用零宽
+      // 空格隔开），而这一格只画它的尾部 `display_count` 个 token —— 服务器
+      // 只有在 `display_text != text` 时才加这个 class，此时 `span.text`（等于
+      // `html_display_text`）才是读者真正看到的那几个字。
+      //
+      // 真实例子（书 1143「サヨナラ」第二句）：两个多词词元在同一个「か」上
+      // 重叠 —— `のか` 占 `の\u200bか`，`かな` 只剩尾部 `な`，它的 `data-text`
+      // 仍是 `か\u200bな`。拿 data-text 拼行，正文就比字幕多出一个「か」
+      // （`…愛したのかかな?` vs SRT `…のかな?`），于是这一句的高亮对不上、
+      // 整页朗读也会多念一个音。
+      final text = classes.contains('overlapped') && span.text.trim().isNotEmpty
+          ? span.text
+          : dataText;
+
       textItems.add(
         TextItem(
-          text: dataText,
+          text: text,
           statusClass: statusClass,
           wordId: wordId,
           sentenceId: sentenceId,
