@@ -217,7 +217,32 @@ class AudioPlayerNotifier extends Notifier<AudioPlayerState> {
       _audioPlayer = null;
     });
 
-    _audioPlayer ??= AudioPlayer();
+    if (_audioPlayer == null) {
+      final player = AudioPlayer();
+      // 位置事件**不能靠帧驱动**。audioplayers 默认的 `FramePositionUpdater`
+      // 用 `SchedulerBinding.scheduleFrameCallback` 拉位置：只在 Flutter 出新
+      // 帧时才 `getCurrentPosition()`。前台 60 帧/秒没问题，**切到后台就没有
+      // 帧了**（引擎停止出帧），位置流随之断掉 —— 而 ExoPlayer 在原生侧照旧
+      // 出声。后果是 `state.position` 冻在切走那一刻，句边界的"跨越判定"
+      // （`_handlePositionChanged`）永远不成立：单句循环 / 自动暂停 / AB 复读
+      // 在后台全部失效，声音一路往后播，回到前台第一个位置事件才补判一次跨界
+      // 并回卷 —— 看起来像"回来才修好"，实际后台已经漏了几十秒。
+      //
+      // 2026-11-12 真机取证（OnePlus PLK110 / 书 1143）：后台 90 秒里
+      // `POST /read/save_youtube_player_data` 每 2 秒照常成功（Dart 定时器活着，
+      // 进程没被冻结、`MediaPlaybackService` 前台服务在跑），但每次上报的位置
+      // 都是同一个 30.712，而 `dumpsys audio` 里该 App 的 AudioTrack 一直是
+      // `state:started`。指认的就是"事件源停了、播放没停"。
+      //
+      // 换成定时器驱动（200ms，正是 audioplayers 文档承诺的粒度）：Dart
+      // Timer 与前台服务已证明在后台照常跑，位置事件就不会断；顺带把调用
+      // 频率从 60 次/秒降到 5 次/秒，省下来的都是每帧一次的方法通道往返。
+      player.positionUpdater = TimerPositionUpdater(
+        interval: const Duration(milliseconds: 200),
+        getPosition: player.getCurrentPosition,
+      );
+      _audioPlayer = player;
+    }
     _audioPlayer!.setReleaseMode(ReleaseMode.stop);
     _contentService = ref.read(readerRepositoryProvider).contentService;
 
