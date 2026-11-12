@@ -114,6 +114,47 @@ void main() {
         {2, 3},
       );
     });
+
+    test('正文多打一个字仍按映射定位（真实：1143「サヨナラ」第二句）', () {
+      // 页面正文写成「…の\\u200bかか\\u200bな?」（多打了一个「か」），
+      // SRT 是「…のかな?」。逐字相等时代码认为"映射不可信"，整行都不高亮
+      // —— 前后两句正常，看起来就是"播到第二句高亮没了，第三句才恢复"。
+      final paragraphs = [
+        _sentence(sentenceId: 1, paragraphId: 1, text: 'あの時こうなることが分かってたら'),
+        _sentence(
+          sentenceId: 2,
+          paragraphId: 2,
+          text: '違う風に君を愛したの\u200bかか\u200bな?',
+        ),
+        _sentence(sentenceId: 3, paragraphId: 3, text: 'とめどなく溢れくる涙は'),
+      ];
+
+      expect(
+        _resolve(
+          paragraphs: paragraphs,
+          pageCueMap: [10, 11, 12],
+          cueIndex: 11,
+          cueText: '違う風に君を愛したのかな?',
+        ),
+        {2},
+      );
+    });
+
+    test('正文与字幕只差全角/半角标点仍按映射定位', () {
+      final paragraphs = [
+        _sentence(sentenceId: 1, paragraphId: 1, text: '今日はいい天気ですね。'),
+      ];
+
+      expect(
+        _resolve(
+          paragraphs: paragraphs,
+          pageCueMap: [0],
+          cueIndex: 0,
+          cueText: '今日はいい天気ですね',
+        ),
+        {1},
+      );
+    });
   });
 
   group('映射不可信时回退到文本匹配', () {
@@ -162,10 +203,9 @@ void main() {
         _sentence(sentenceId: 2, paragraphId: 2, text: '第二行'),
       ];
 
-      expect(
-        _resolve(paragraphs: paragraphs, cueIndex: 7, cueText: '第二行'),
-        {2},
-      );
+      expect(_resolve(paragraphs: paragraphs, cueIndex: 7, cueText: '第二行'), {
+        2,
+      });
     });
 
     test('空白与零宽空格不影响匹配', () {
@@ -239,6 +279,35 @@ void main() {
       expect(PlayingLine.cueIndexAt(cues, 2.5), -1, reason: '两句之间的空隙');
       expect(PlayingLine.cueIndexAt(cues, 4.0), -1, reason: 'cue 的 end 是开区间');
       expect(PlayingLine.cueIndexAt(const [], 1.0), -1);
+    });
+  });
+
+  group('textsMatch：正文与字幕的同一行判定', () {
+    test('完全相同（忽略空白与零宽空格）', () {
+      expect(PlayingLine.textsMatch('さよなら サヨナラ', 'さよならサヨナラ'), isTrue);
+      expect(PlayingLine.textsMatch('hello\u200bworld', 'hello world'), isTrue);
+    });
+
+    test('个别字的出入仍算同一行', () {
+      expect(
+        PlayingLine.textsMatch('違う風に君を愛したの\u200bかか\u200bな?', '違う風に君を愛したのかな?'),
+        isTrue,
+      );
+    });
+
+    test('两行不同的歌词不是同一行', () {
+      expect(PlayingLine.textsMatch('君の影がのびて', '二度と戻らない日々に'), isFalse);
+      expect(PlayingLine.textsMatch('心の傷がうずいた', '泣きたいほど 会いたい'), isFalse);
+    });
+
+    test('差太长的两行直接判否', () {
+      expect(PlayingLine.textsMatch('さよなら', 'さよなら またいつか会える日まで'), isFalse);
+    });
+
+    test('空串只与空串相等', () {
+      expect(PlayingLine.textsMatch('', ' '), isTrue, reason: '规范化后都是空行');
+      expect(PlayingLine.textsMatch('', 'さよなら'), isFalse);
+      expect(PlayingLine.textsMatch('さよなら', '  '), isFalse);
     });
   });
 }

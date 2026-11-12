@@ -45,7 +45,9 @@ class PlayingLine {
     // text: the page text can be edited out of step with the cues, and
     // marking the wrong line is worse than marking none.  The hit lines are
     // compared joined, since one cue can be a multi-line subtitle and so own
-    // several lines.
+    // several lines.  The comparison is tolerant (see [textsMatch]): the two
+    // texts are typed in separately, and one stray character in the page
+    // must not cost the line its highlight.
     if (pageCueMap.length == lines.length) {
       final hits = <_PageLine>[];
       for (var k = 0; k < lines.length; k++) {
@@ -53,7 +55,7 @@ class PlayingLine {
       }
       if (hits.isNotEmpty) {
         final joined = hits.map((line) => line.text).join();
-        if (joined == want) {
+        if (textsMatch(joined, want)) {
           return hits.expand((line) => line.sentenceIds).toSet();
         }
       }
@@ -124,6 +126,59 @@ class PlayingLine {
   /// space, which `\s` does not match.
   static String _norm(String text) =>
       text.replaceAll(RegExp(r'[\s\u200b]+'), '');
+
+  /// 两段文本是不是"同一行"，容忍个别字的出入。
+  ///
+  /// 页面正文与字幕是两份**独立录入**的文本：歌词是人手打的，课文可能是
+  /// OCR 稿，差一个标点、一个假名、甚至多打一个字都很常见。真实例子：
+  /// book 1143「サヨナラ」的第二句正文写成「違う風に君を愛したの**かか**な?」，
+  /// SRT 是「…のかな?」。逐字比对于是失败 → 位置映射被判"不可信" → 整行
+  /// 从头到尾都没有高亮（前后两句都正常，用户看到的就是"播到第二句高亮
+  /// 没了，第三句才恢复"）。
+  ///
+  /// 位置映射是服务端按行号算出来的，行号对得上就足以说明这一行是这条
+  /// 字幕；个别字的出入不该让整行失去高亮。但也不能烂容：整行被删掉、
+  /// 页面被重排这类真正"对不上"的情况，两行文本会完全不同，相似度掉到
+  /// 很低，仍然判不可信（见 `test/playing_line_test.dart` 的"改过的正文"）。
+  ///
+  /// 相似度用二元组 Dice 系数：对换位/插入很稳，实现只有十几行，且不必
+  /// 关心编辑距离的边界细节。阈值 0.8 对应"每行 20% 以内差异"。
+  static bool textsMatch(String a, String b) {
+    final x = _norm(a);
+    final y = _norm(b);
+    if (x == y) return true;
+    if (x.isEmpty || y.isEmpty) return false;
+    // 长度差到一半以上就不可能是同一行（多打一个字远到不了）。
+    final shorter = x.length < y.length ? x.length : y.length;
+    final longer = x.length < y.length ? y.length : x.length;
+    if (shorter * 2 < longer) return false;
+    return _dice(x, y) >= 0.8;
+  }
+
+  /// 二元组 Dice 系数，[0, 1]。
+  static double _dice(String a, String b) {
+    final left = _bigrams(a);
+    final right = _bigrams(b);
+    if (left.isEmpty || right.isEmpty) return 0;
+    final remaining = <String, int>{};
+    for (final gram in right) {
+      remaining[gram] = (remaining[gram] ?? 0) + 1;
+    }
+    var overlap = 0;
+    for (final gram in left) {
+      final count = remaining[gram] ?? 0;
+      if (count > 0) {
+        overlap++;
+        remaining[gram] = count - 1;
+      }
+    }
+    return 2 * overlap / (left.length + right.length);
+  }
+
+  static List<String> _bigrams(String text) {
+    if (text.length < 2) return [text];
+    return [for (var i = 0; i + 1 < text.length; i++) text.substring(i, i + 2)];
+  }
 }
 
 class _PageLine {

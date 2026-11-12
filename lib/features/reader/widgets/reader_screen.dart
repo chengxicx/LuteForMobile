@@ -997,8 +997,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       }
     }
 
-    String norm(String text) => text.replaceAll(RegExp(r'[\s\u200b]+'), '');
-
     final clipPaths = List<String?>.filled(lines.length, null);
     final clipStarts = List<double?>.filled(lines.length, null);
     final clipEnds = List<double?>.filled(lines.length, null);
@@ -1010,7 +1008,9 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         if (cueIndex < 0 || cueIndex >= pageData.cues.length) continue;
         final cue = pageData.cues[cueIndex];
         final joined = lines[k].map((p) => p.fullText).join();
-        if (norm(joined) == norm(cue.text)) {
+        // 与高亮同一个判定（容忍个别字的出入）：正文里有一个错字不该让
+        // 这一句连原句音频都拿不到、只剩 TTS 兜底。
+        if (PlayingLine.textsMatch(joined, cue.text)) {
           clipPaths[k] = clipPath;
           clipStarts[k] = cue.start;
           clipEnds[k] = cue.end;
