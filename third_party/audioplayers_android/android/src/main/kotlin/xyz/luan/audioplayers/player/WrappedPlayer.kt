@@ -216,6 +216,12 @@ class WrappedPlayer internal constructor(
             } else if (prepared) {
                 requestFocusAndStart()
             }
+            // `rate` 只在播放中转发给底层播放器。TTS 播放条是在 play() 之前
+            // 调 setPlaybackRate 的（语句重启用新倍速重新开口），于是这个值
+            // 被记下来却从没应用到播放器 —— 速度控制看起来完全无效。
+            // 起播时补发一次；Media3 的 setPlaybackSpeed 在 prepare 之前
+            // 设也有效，且会跨媒体项保留。
+            player?.setRate(rate)
         }
     }
 
