@@ -372,6 +372,39 @@ void main() {
       expect(service.intents, isEmpty);
     });
 
+    test('flush 期间同一词的新意图不会被旧意图的删除动作带走', () async {
+      // 一次 flush 的重放（取表单 + POST）在弱网下要几秒；用户在这期间再双击
+      // 同一个词，新状态会以同一 coalesceKey 覆盖队列里的旧对象。旧的重放
+      // 完成后按 key 删除，会把这条新意图一起删掉 —— 随后页面一刷新，颜色
+      // 就退回旧状态。只允许删除真正发出去的那一条。
+      final content = _FakeContent()..delay = const Duration(milliseconds: 50);
+      final store = InMemoryOutboxStore();
+      final service = OutboxService(store: store, content: content);
+
+      await service.enqueueTermStatus(
+        7,
+        '3',
+        formData: const {'term': '猫', 'status': '3'},
+      );
+      final first = service.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await service.enqueueTermStatus(
+        7,
+        '99',
+        formData: const {'term': '猫', 'status': '99'},
+      );
+      await first;
+
+      expect(service.intents, hasLength(1), reason: '新意图必须留在队列里');
+      expect((service.intents.single as TermEditIntent).status, '99');
+      expect(await store.readAll(), hasLength(1), reason: '落盘的也必须是新意图');
+
+      await service.flush();
+
+      expect(content.editPayloads.map((p) => p['status']), ['3', '99']);
+      expect(service.intents, isEmpty);
+    });
+
     test('flush 期间 isFlushing 为真,结束后复位', () async {
       final content = _FakeContent()..delay = const Duration(milliseconds: 30);
       final service = OutboxService(

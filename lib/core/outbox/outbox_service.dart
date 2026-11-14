@@ -266,8 +266,17 @@ class OutboxService {
         final outcome = await _replay(intent);
         switch (outcome) {
           case _Outcome.sent:
-            _intents.remove(intent.coalesceKey);
-            await _store.delete(intent.coalesceKey);
+            // A newer edit of the same term can be enqueued while this replay
+            // is in flight (a quick second double-tap).  It replaced the
+            // queued object under the same key, so removing by key alone would
+            // silently drop the user's latest status; the refresh that follows
+            // this round then repaints the older value -- the "word changes
+            // colour, then flips back a moment later" report.  Drop only the
+            // intent that actually went out and leave any newer one queued.
+            if (identical(_intents[intent.coalesceKey], intent)) {
+              _intents.remove(intent.coalesceKey);
+              await _store.delete(intent.coalesceKey);
+            }
             sent.add(intent);
           case _Outcome.permanent:
             await _markFailed(intent);
@@ -379,6 +388,11 @@ class OutboxService {
   }
 
   Future<void> _markFailed(PendingIntent intent) async {
+    // A newer edit of the same term may have replaced this intent while the
+    // replay was in flight.  Marking the old one failed would overwrite the
+    // user's latest status with the stale payload; the new intent gets its
+    // own attempt on the next round.
+    if (!identical(_intents[intent.coalesceKey], intent)) return;
     final failed = intent.asFailed();
     _intents[intent.coalesceKey] = failed;
     await _write(failed);
@@ -386,6 +400,9 @@ class OutboxService {
   }
 
   Future<void> _backOff(PendingIntent intent) async {
+    // Same rule as _markFailed: never back off a *stale* intent over a newer
+    // one the user just enqueued under the same key.
+    if (!identical(_intents[intent.coalesceKey], intent)) return;
     final attempts = intent.attempts + 1;
     final retryAt =
         DateTime.now().millisecondsSinceEpoch +
