@@ -1453,8 +1453,14 @@ class BooksNotifier extends Notifier<BooksState> {
     return await _repository.previewBookImportFromUrl(importUrl);
   }
 
-  Future<int> createBook(BookCreateRequest request) async {
-    final newBookId = await _repository.createBook(request);
+  Future<int> createBook(
+    BookCreateRequest request, {
+    void Function(int percent, String? message)? onProgress,
+  }) async {
+    final newBookId = await _repository.createBook(
+      request,
+      onProgress: onProgress,
+    );
 
     await loadBooks(forceRefresh: true, skipExpiredBookRefresh: true);
 

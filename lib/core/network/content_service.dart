@@ -26,6 +26,7 @@ import '../../core/cache/models/term_cache_entry.dart';
 import 'api_service.dart';
 import 'html_parser.dart';
 import 'concurrent_queue.dart';
+import 'session_manager.dart';
 
 enum ContentMode { reading, peeking, refresh, statusOnly }
 
@@ -771,7 +772,10 @@ class ContentService {
     return BookImportPreview(title: title, text: text, sourceUri: sourceUri);
   }
 
-  Future<int> createBook(BookCreateRequest request) async {
+  Future<int> createBook(
+    BookCreateRequest request, {
+    void Function(int percent, String? message)? onProgress,
+  }) async {
     dynamic payload = request.toFormFields();
 
     if (request.hasTextFile || request.hasAudioFile) {
@@ -799,11 +803,26 @@ class ContentService {
 
     final response = await _apiService.createBook(payload);
 
-    final location = response.headers.value('location');
-    if (location != null) {
-      final match = RegExp(r'/read/(\d+)/page/\d+').firstMatch(location);
-      if (match != null) {
-        final id = int.tryParse(match.group(1) ?? '');
+    final location = response.headers.value('location')?.trim() ?? '';
+    if (location.isNotEmpty) {
+      // New servers run the import on a background task: the POST answers 302
+      // to /book/import/progress/<task_id>, not /read/<bookid>/page/1.  The
+      // old client only understood the latter, so every create ended in
+      // "server did not return a book ID" even though the import was running
+      // (or already finished) server-side.
+      final progressTask = RegExp(
+        r'/book/import/progress/([A-Za-z0-9_-]+)',
+      ).firstMatch(location);
+      if (progressTask != null) {
+        return await _awaitBookImport(
+          progressTask.group(1)!,
+          onProgress: onProgress,
+        );
+      }
+
+      final bookPage = RegExp(r'/read/(\d+)/page/\d+').firstMatch(location);
+      if (bookPage != null) {
+        final id = int.tryParse(bookPage.group(1) ?? '');
         if (id != null) {
           return id;
         }
@@ -821,6 +840,94 @@ class ContentService {
     }
 
     throw Exception('Book creation failed: server did not return a book ID.');
+  }
+
+  /// Wait for a background book import started by `/book/new`.
+  ///
+  /// Polls `/book/import/status/<task_id>` once a second until the task
+  /// reports `finished` (with the new book id) or `error`.  `unknown` means
+  /// the server lost the in-process task (restart), which is not something
+  /// waiting longer can fix.
+  Future<int> _awaitBookImport(
+    String taskId, {
+    void Function(int percent, String? message)? onProgress,
+  }) async {
+    const interval = Duration(seconds: 1);
+    const timeout = Duration(minutes: 15);
+    final deadline = DateTime.now().add(timeout);
+
+    while (DateTime.now().isBefore(deadline)) {
+      final Response<dynamic> response;
+      try {
+        response = await _apiService.getBookImportStatus(taskId);
+      } on DioException catch (e) {
+        // A blip while the server is still importing must not throw the task
+        // away -- the import keeps running and only this poll is lost.  Real
+        // answers (auth, malformed request) still fail immediately.
+        if (e.error is ServerLoginRequiredException) rethrow;
+        final status = e.response?.statusCode;
+        if (status != null && status >= 400 && status < 500) rethrow;
+        await Future<void>.delayed(interval);
+        continue;
+      }
+
+      final data = _asJsonMap(response.data);
+      final state = data?['state']?.toString() ?? '';
+
+      switch (state) {
+        case 'finished':
+          final rawId = data?['book_id'];
+          final bookId = rawId is int ? rawId : int.tryParse('$rawId');
+          if (bookId != null) return bookId;
+          throw Exception(
+            'Import finished but the server did not return a book id.',
+          );
+        case 'error':
+          final error = data?['error']?.toString().trim();
+          throw Exception(
+            (error == null || error.isEmpty ? 'Book import failed.' : error),
+          );
+        case 'unknown':
+          throw Exception(
+            'The server lost this import task (it may have restarted). '
+            'Check the shelf; if the book is not there, import it again.',
+          );
+        case 'queued':
+        case 'importing':
+          final percent = data?['percent'];
+          onProgress?.call(
+            percent is num ? percent.toInt() : 0,
+            data?['message']?.toString(),
+          );
+          break;
+        default:
+          // A transient/proxy response with no recognisable state: keep
+          // polling until the deadline rather than failing the import.
+          break;
+      }
+
+      await Future<void>.delayed(interval);
+    }
+
+    throw Exception(
+      'Book import is still running after 15 minutes. '
+      'Check the shelf later; the server may still finish it.',
+    );
+  }
+
+  /// Decode a status payload whether Dio handed back a map or raw JSON text.
+  Map<String, dynamic>? _asJsonMap(dynamic raw) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    if (raw is String && raw.trimLeft().startsWith('{')) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, dynamic>) return decoded;
+      } catch (_) {
+        // Not JSON: fall through to null, the caller keeps polling.
+      }
+    }
+    return null;
   }
 
   Future<BookEditFormData> getBookEditForm(int bookId) async {

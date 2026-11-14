@@ -1009,6 +1009,23 @@ class ApiService {
     );
   }
 
+  /// Poll the background import task the new `/book/new` starts.
+  ///
+  /// The server no longer imports inside the POST: it answers 302 to
+  /// `/book/import/progress/<task_id>` and this endpoint reports
+  /// `{state, percent, error, book_id, message}`.  A task is in-process, so a
+  /// server restart reports `state: unknown`.
+  Future<Response<dynamic>> getBookImportStatus(String taskId) async {
+    return await _dio.get<dynamic>(
+      '/book/import/status/$taskId',
+      options: Options(
+        extra: _noQueue,
+        connectTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 10),
+      ),
+    );
+  }
+
   Future<void> invalidateAllBookStatsCache({Duration? timeout}) async {
     await _dio.get<String>(
       '/refresh_all_stats',

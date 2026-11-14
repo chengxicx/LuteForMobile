@@ -2,6 +2,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../shared/models/language.dart';
+import '../../../shared/providers/language_data_provider.dart';
+import '../../settings/providers/settings_provider.dart';
 import '../models/book_create.dart';
 import '../providers/books_provider.dart';
 import '../../../shared/providers/network_providers.dart';
@@ -21,6 +23,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
   final _tagsController = TextEditingController();
   final _importUrlController = TextEditingController();
   final _thresholdController = TextEditingController(text: '250');
+  final _scrollController = ScrollController();
 
   List<Language> _languages = const [];
   int? _selectedLanguageId;
@@ -28,6 +31,15 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
   bool _isLoadingLanguages = true;
   bool _isSaving = false;
   bool _isImporting = false;
+  bool _importStarted = false;
+  int _importPercent = 0;
+  String? _importMessage;
+
+  /// Inline error banner.  The dialog used to report failures through a
+  /// SnackBar, which the soft keyboard covers -- the user had to dismiss the
+  /// keyboard to find out that a field (or the import) had failed.
+  String? _errorMessage;
+
   String? _textFilePath;
   String? _textFileName;
   String? _audioFilePath;
@@ -47,47 +59,90 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
     _tagsController.dispose();
     _importUrlController.dispose();
     _thresholdController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadLanguages() async {
-    try {
-      final contentService = ref.read(contentServiceProvider);
-      final languages = await contentService.getLanguagesWithIds();
-      final uniqueLanguagesById = <int, Language>{};
-      for (final language in languages) {
-        uniqueLanguagesById.putIfAbsent(language.id, () => language);
-      }
-      final uniqueLanguages = uniqueLanguagesById.values.toList();
-      int? currentLanguageId;
-      final currentLanguageSetting = await contentService.getUserSetting(
-        'current_language_id',
+  /// Close the keyboard before acting on the form.
+  ///
+  /// Every action here reads or validates the fields, and the keyboard is the
+  /// reason both the result and the errors used to be out of sight.
+  void _dismissKeyboard() {
+    FocusScope.of(context).unfocus();
+  }
+
+  void _scrollToTop() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
       );
-      if (currentLanguageSetting != null) {
-        currentLanguageId = int.tryParse(currentLanguageSetting);
-      }
+    });
+  }
 
-      final hasCurrentLanguage =
-          currentLanguageId != null &&
-          uniqueLanguages.any((lang) => lang.id == currentLanguageId);
-
-      if (!mounted) return;
-      setState(() {
-        _languages = uniqueLanguages;
-        _selectedLanguageId = hasCurrentLanguage
-            ? currentLanguageId
-            : (uniqueLanguages.isNotEmpty ? uniqueLanguages.first.id : null);
-        _isLoadingLanguages = false;
-      });
+  Future<void> _loadLanguages() async {
+    var languages = const <Language>[];
+    try {
+      // Same terminal list the rest of the app uses: server -> /book/new form
+      // -> the languages already present on this account's shelf.  A sub-user
+      // cannot read /language/index, and the /book/new fallback has a 2.5 s
+      // budget that a cold mobile request can miss; without the shelf stage
+      // the Add Book dialog showed "No languages available" and refused to
+      // save anything, which is what "importing a text book does nothing"
+      // looked like.
+      final result = await ref.read(languageListResultProvider.future);
+      languages = result.languages;
     } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _isLoadingLanguages = false;
-      });
+      // Fall through to the shelf cache below.
     }
+
+    if (languages.isEmpty) {
+      final books = ref.read(booksProvider);
+      final byId = <int, Language>{};
+      for (final book in [...books.activeBooks, ...books.archivedBooks]) {
+        final id = book.langId;
+        final name = book.language.trim();
+        if (id == null || id <= 0 || name.isEmpty) continue;
+        byId.putIfAbsent(id, () => Language(id: id, name: name));
+      }
+      languages = byId.values.toList();
+    }
+
+    var currentLanguageId = ref.read(settingsProvider).currentBookLangId;
+    if (currentLanguageId == null ||
+        !languages.any((lang) => lang.id == currentLanguageId)) {
+      try {
+        final contentService = ref.read(contentServiceProvider);
+        final currentLanguageSetting = await contentService.getUserSetting(
+          'current_language_id',
+        );
+        final parsed = int.tryParse(currentLanguageSetting ?? '');
+        if (parsed != null && languages.any((lang) => lang.id == parsed)) {
+          currentLanguageId = parsed;
+        }
+      } catch (_) {
+        // Keep the shelf default; the dropdown still works.
+      }
+    }
+
+    final hasCurrentLanguage =
+        currentLanguageId != null &&
+        languages.any((lang) => lang.id == currentLanguageId);
+
+    if (!mounted) return;
+    setState(() {
+      _languages = languages;
+      _selectedLanguageId = hasCurrentLanguage
+          ? currentLanguageId
+          : (languages.isNotEmpty ? languages.first.id : null);
+      _isLoadingLanguages = false;
+    });
   }
 
   Future<void> _importFromUrl() async {
+    _dismissKeyboard();
     final url = _importUrlController.text.trim();
     if (url.isEmpty) {
       _showError('Enter a URL to import.');
@@ -96,6 +151,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
 
     setState(() {
       _isImporting = true;
+      _errorMessage = null;
     });
 
     try {
@@ -110,6 +166,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
         _sourceUriController.text = preview.sourceUri;
         _textController.text = preview.text;
       });
+      _scrollToTop();
     } catch (e) {
       _showError(e.toString());
     } finally {
@@ -122,6 +179,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
   }
 
   Future<void> _pickTextFile() async {
+    _dismissKeyboard();
     try {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
@@ -139,6 +197,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
       setState(() {
         _textFilePath = file.path;
         _textFileName = file.name;
+        _errorMessage = null;
         if (_titleController.text.trim().isEmpty) {
           _titleController.text = _filenameWithoutExtension(file.name);
         }
@@ -149,6 +208,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
   }
 
   Future<void> _pickAudioFile() async {
+    _dismissKeyboard();
     try {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
@@ -175,6 +235,7 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
       setState(() {
         _audioFilePath = file.path;
         _audioFileName = file.name;
+        _errorMessage = null;
       });
     } catch (e) {
       _showError(e.toString());
@@ -183,7 +244,17 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
 
   Future<void> _save() async {
     if (_isSaving) return;
-    if (!_formKey.currentState!.validate()) return;
+    _dismissKeyboard();
+
+    setState(() {
+      _errorMessage = null;
+    });
+
+    if (!_formKey.currentState!.validate()) {
+      _showError('Please complete the highlighted fields.');
+      _scrollToTop();
+      return;
+    }
 
     final languageId = _selectedLanguageId;
     if (languageId == null || languageId <= 0) {
@@ -193,12 +264,14 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
                       'management permission - ask the server admin.'
             : 'Please select a language.',
       );
+      _scrollToTop();
       return;
     }
 
     final threshold = int.tryParse(_thresholdController.text.trim());
     if (threshold == null || threshold < 1 || threshold > 1500) {
       _showError('Words per page must be between 1 and 1500.');
+      _scrollToTop();
       return;
     }
 
@@ -207,11 +280,13 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
 
     if (hasText && hasTextFile) {
       _showError('Both Text and Text file are set, please only specify one.');
+      _scrollToTop();
       return;
     }
 
     if (!hasText && !hasTextFile) {
       _showError('Please specify either Text or Text file.');
+      _scrollToTop();
       return;
     }
 
@@ -235,16 +310,35 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
 
     setState(() {
       _isSaving = true;
+      _importStarted = false;
+      _importPercent = 0;
+      _importMessage = null;
     });
 
     try {
+      // The server imports on a background task and the client polls it.
+      // Those few seconds are the whole wait, so surface the progress here
+      // instead of leaving the dialog on a frozen spinner.
       final newBookId = await ref
           .read(booksProvider.notifier)
-          .createBook(request);
+          .createBook(
+            request,
+            onProgress: (percent, message) {
+              if (!mounted) return;
+              setState(() {
+                _importStarted = true;
+                _importPercent = percent;
+                if (message != null && message.trim().isNotEmpty) {
+                  _importMessage = message;
+                }
+              });
+            },
+          );
       if (!mounted) return;
       Navigator.of(context).pop(newBookId);
     } catch (e) {
       _showError(e.toString());
+      _scrollToTop();
     } finally {
       if (mounted) {
         setState(() {
@@ -262,9 +356,13 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
 
   void _showError(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message.replaceFirst('Exception: ', ''))),
-    );
+    final text = message
+        .replaceFirst('Exception: ', '')
+        .replaceFirst('Failed to create book: ', '')
+        .replaceFirst('Failed to import from URL: ', '');
+    setState(() {
+      _errorMessage = text;
+    });
   }
 
   @override
@@ -285,10 +383,25 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
             : Form(
                 key: _formKey,
                 child: SingleChildScrollView(
+                  controller: _scrollController,
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (_errorMessage != null) ...[
+                        _ErrorBanner(message: _errorMessage!),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_isSaving) ...[
+                        _ImportProgress(
+                          indeterminate: !_importStarted,
+                          percent: _importPercent,
+                          message: _importMessage,
+                        ),
+                        const SizedBox(height: 12),
+                      ],
                       TextFormField(
                         controller: _importUrlController,
                         decoration: InputDecoration(
@@ -488,6 +601,84 @@ class _AddBookDialogState extends ConsumerState<AddBookDialog> {
                 )
               : const Text('Save'),
         ),
+      ],
+    );
+  }
+}
+
+/// The dialog's persistent error line.
+///
+/// Inline on purpose: the old SnackBar sat under the soft keyboard, so a
+/// rejected import or a missing field was invisible until the user dismissed
+/// the keyboard.
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.errorContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.error_outline,
+            size: 20,
+            color: colors.onErrorContainer,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: colors.onErrorContainer),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Progress for the server-side background import (`/book/import/status`).
+class _ImportProgress extends StatelessWidget {
+  const _ImportProgress({
+    required this.indeterminate,
+    required this.percent,
+    this.message,
+  });
+
+  final bool indeterminate;
+  final int percent;
+  final String? message;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = (percent / 100).clamp(0.0, 1.0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          indeterminate
+              ? 'Creating book…'
+              : 'Importing book… $percent%',
+        ),
+        const SizedBox(height: 6),
+        LinearProgressIndicator(value: indeterminate ? null : value),
+        if (message != null && message!.trim().isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            message!,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ],
     );
   }

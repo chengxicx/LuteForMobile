@@ -208,9 +208,15 @@ class BooksRepository {
     }
   }
 
-  Future<int> createBook(BookCreateRequest request) async {
+  Future<int> createBook(
+    BookCreateRequest request, {
+    void Function(int percent, String? message)? onProgress,
+  }) async {
     try {
-      return await contentService.createBook(request);
+      return await contentService.createBook(
+        request,
+        onProgress: onProgress,
+      );
     } catch (e) {
       throw Exception('Failed to create book: $e');
     }
