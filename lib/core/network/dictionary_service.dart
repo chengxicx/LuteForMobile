@@ -574,6 +574,10 @@ body {
 .ai-table td { font-size: 0.9rem !important; color: $primaryText !important; }
 .ai-table td .ai-reading { color: $secondaryText !important; }
 a, a:link, a:visited { color: $accent !important; }
+/* 「AI settings」/「Open AI settings」链接指向 /settings/index，在面板内
+   跳转只会把页面换成打不开的 Web 设置页（App 侧把 AI 页打成 LOCAL
+   CACHE），手机上没有意义，直接隐藏；web 端模板不受影响。 */
+a.ai-settings-link, a[href="/settings/index"] { display: none !important; }
 ${dark ? '.ai-error { color: #FFB4AB !important; background: rgba(255, 180, 171, 0.14) !important; }' : ''}
 ''';
   }
