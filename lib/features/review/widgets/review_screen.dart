@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,6 +8,9 @@ import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/app_bar_leading.dart';
 import '../../../shared/widgets/error_display.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../../../shared/widgets/option_card.dart';
+import '../../picwords/widgets/picwords_entry_card.dart';
+import '../../picwords/widgets/picwords_screen.dart';
 import '../../reader/providers/sentence_tts_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../../../shared/utils/tts_speak_text.dart';
@@ -48,6 +53,17 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   void _startSession() {
     _typingController.clear();
     ref.read(reviewProvider.notifier).startSession();
+  }
+
+  /// 打开 Web 端插件「看图背单词」。
+  ///
+  /// 页面自己用 `/tts/<lang>/<text>` 的 `<audio>` 发音；App 的句朗读也在
+  /// 同一个输入上，两个播放器同时响是最难解释的 bug，所以先停掉这边。
+  void _openPicWords() {
+    unawaited(ref.read(sentenceTTSProvider.notifier).stop());
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const PicWordsScreen()),
+    );
   }
 
   void _checkTyped() {
@@ -96,7 +112,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
         ],
       ),
       body: switch (state.phase) {
-        ReviewPhase.idle => _IdleBody(onStart: _startSession),
+        ReviewPhase.idle => _IdleBody(
+          onStart: _startSession,
+          onOpenPicWords: _openPicWords,
+        ),
         ReviewPhase.loading => const LoadingIndicator(
           message: 'Loading your cards ...',
         ),
@@ -117,27 +136,57 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 // Landing / done / error bodies
 // ---------------------------------------------------------------------------
 
+/// 复习落地页：选哪一套复习。
+///
+/// 两张卡而不是一个「Start Review」：传统 FSRS 卡和 Web 插件「看图背单词」
+/// 是两条不同的动线（后者整页是 WebView），把选择放在落地页上，比每次点
+/// 底栏都弹一个 sheet 更省墨水屏刷新。
 class _IdleBody extends StatelessWidget {
   final VoidCallback onStart;
+  final VoidCallback onOpenPicWords;
 
-  const _IdleBody({required this.onStart});
+  const _IdleBody({required this.onStart, required this.onOpenPicWords});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.style, size: 56, color: context.appColorScheme.text.secondary),
-          const SizedBox(height: 16),
-          const Text('Review due terms with spaced repetition.'),
-          const SizedBox(height: 20),
-          FilledButton.icon(
-            onPressed: onStart,
-            icon: const Icon(Icons.play_arrow),
-            label: const Text('Start Review'),
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          // 小屏/横屏可滚动，大屏仍垂直居中。
+          constraints: BoxConstraints(minHeight: constraints.maxHeight - 48),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Icon(
+                    Icons.style,
+                    size: 56,
+                    color: context.appColorScheme.text.secondary,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Review due terms with spaced repetition.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  OptionCard(
+                    icon: Icons.style,
+                    title: 'Classic Review',
+                    subtitle: 'Due terms, Again / Good grading',
+                    trailing: const Icon(Icons.play_arrow),
+                    onTap: onStart,
+                  ),
+                  const SizedBox(height: 12),
+                  PicWordsEntryCard(onOpen: onOpenPicWords),
+                ],
+              ),
+            ),
           ),
-        ],
+        ),
       ),
     );
   }

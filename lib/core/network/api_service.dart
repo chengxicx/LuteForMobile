@@ -1232,6 +1232,39 @@ class ApiService {
     return response.data;
   }
 
+  // -------------------------------------------------------------------------
+  // Feature plugin: lute-picwords (看图背单词, mounted at /picwords)
+  // -------------------------------------------------------------------------
+
+  /// 探测服务器是否装了 `lute-picwords` 插件。
+  ///
+  /// 探的是插件的**静态 bundle** 而不是 `/picwords/api/state`：后者会加载
+  /// 整份词表 JSON 并算 due/bands（`service.state`），在弱 CPU 的机器上是
+  /// 几百毫秒到秒级；这里只是一次文件读取，而且这个 JS 正是页面必需的
+  /// 客户端代码 —— 拿不到它，页面一定打不开，判据与结论正好对齐。
+  ///
+  /// 只有 **404**（蓝图未注册）返回 false；其余 <500 的状态视为「已安装」
+  /// （例如插件在、数据库有毛病时的 400，页面自己会报错，不该因此把入口
+  /// 藏掉）。302 → /login 由 session 拦截器转成
+  /// [ServerLoginRequiredException]（包在 `DioException.error` 里），连接失败
+  /// 抛 connection 类 [DioException] —— 调用方要靠这个区分「没装」和
+  /// 「现在问不到」。
+  Future<bool> probePicWordsPlugin() async {
+    final response = await _dio.get<dynamic>(
+      '/picwords/static/js/picwords.js',
+      options: Options(
+        // 不排队（离线时立刻有终态）+ 失败路径跳过 5–8s 的健康探测。
+        extra: _failFastRead,
+        // 默认 responseType 是 json：对 JS 正文 jsonDecode 会抛 unknown，
+        // 把一台完全正常的服务器误判成「探测失败」。
+        responseType: ResponseType.plain,
+        receiveTimeout: const Duration(seconds: 6),
+        validateStatus: (status) => status != null && status < 500,
+      ),
+    );
+    return (response.statusCode ?? 0) != 404;
+  }
+
   String _filenameFromPath(String path) {
     final normalized = path.replaceAll('\\', '/');
     final segments = normalized.split('/');
