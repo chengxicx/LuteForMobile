@@ -72,8 +72,8 @@ EXIT= 行、APK mtime 不更新——用这三点识别被杀）。现用 2800M 
 ### 5. 装机验证（设备常插着 USB）
 
 ```bash
-ADB=~/.workbuddy-ai/binaries/platform-tools/platform-tools/adb
-$ADB devices -l                      # Leaf5C 的 serial 是 38120d06
+ADB=/usr/local/bin/adb               # 2026-11-15：旧路径 ~/.workbuddy-ai/... 已不存在，改用系统 adb
+$ADB devices -l                      # Leaf5C 的 serial 是 38120d06；PLK110 手机是 3B16AW00BTD00000
 $ADB -s 38120d06 install -r dist/<名字>.apk     # BOOX 没有 ColorOS 的 -99 拦截，直接成功
 ```
 
