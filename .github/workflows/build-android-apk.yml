@@ -29,9 +29,13 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Flutter (latest stable)
+      # 钉到与发布服务器 /opt/flutter 相同的版本：新 stable（3.50+）要求
+      # Gradle ≥ 9.3.1，项目 wrapper 是 8.14。以后两端升级 Flutter 时要
+      # 同步改这里和服务器，必要时一起升 Gradle wrapper。
+      - name: Set up Flutter (pinned, same as release server)
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: 3.47.5
           channel: stable
           cache: true
 
