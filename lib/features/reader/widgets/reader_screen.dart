@@ -3588,6 +3588,19 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     ref.read(navigationProvider).navigateToReader(bookId, null, book);
   }
 
+  /// The chapter list of the current set, for the bottom bar's "Contents"
+  /// slot (`app.dart` calls this while a series chapter book is open).
+  ///
+  /// Same sheet as the end-of-chapter block's Contents row -- deliberately
+  /// not a second implementation: only the reader knows the chapter on
+  /// screen (`currentBookId`, the "you are here" bar) and only it can turn
+  /// a selection into a chapter switch ([_openChapter]) without losing the
+  /// page cache, the offline pack or the player.
+  void openSeriesContents() {
+    if (!mounted) return;
+    unawaited(_openContents());
+  }
+
   /// The chapter list of the current set.
   Future<void> _openContents() async {
     final pageData = ref.read(readerProvider).pageData;

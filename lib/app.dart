@@ -10,6 +10,7 @@ import 'package:song_mobile/features/reader/widgets/sentence_reader_screen.dart'
 import 'package:song_mobile/features/reader/providers/audio_player_provider.dart';
 import 'package:song_mobile/features/reader/providers/sentence_tts_provider.dart';
 import 'package:song_mobile/features/reader/providers/current_book_provider.dart';
+import 'package:song_mobile/features/reader/providers/reader_provider.dart';
 
 import 'package:song_mobile/features/settings/widgets/settings_screen.dart';
 import 'package:song_mobile/features/settings/widgets/help_screen.dart';
@@ -460,10 +461,14 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
   /// settings / sentence-reader）没有其他移动途径，抽屉列出全部。
   /// 宽屏：rail 是除阅读屏之外所有屏的主导航（那些屏抽屉只补 Terms）；
   /// 阅读屏 rail 隐藏，抽屉接管，列全部目的地。
-  List<String> _drawerRoutes(bool isWide) {
+  List<String> _drawerRoutes(bool isWide, {required bool contentsTab}) {
     final Set<String> onPrimary;
     if (!isWide) {
-      onPrimary = _navBarIndex == null ? const <String>{} : _navBarRoutes.toSet();
+      // 底栏第二格让给目录时，书架这一目的地只剩抽屉可达 —— 少列它，
+      // 读 series 期间就再也进不去书架了。
+      final barRoutes = _navBarRoutes.toSet();
+      if (contentsTab) barRoutes.remove('books');
+      onPrimary = _navBarIndex == null ? const <String>{} : barRoutes;
     } else {
       onPrimary = _isReadingRoute ? const <String>{} : kPrimaryNavRoutes.toSet();
     }
@@ -505,9 +510,33 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
     'review': 6,
   };
 
+  /// Bottom-bar tap.  Reading a series chapter book, the second slot is the
+  /// book's contents instead of the shelf, so it opens the chapter list
+  /// rather than switching screens.
+  ///
+  /// The sheet is opened by the reader itself ([ReaderScreenState.
+  /// openSeriesContents]) instead of from here: it needs to know which
+  /// chapter is on screen (to mark "you are here") and its selection has to
+  /// go through the reader's chapter switch -- page cache, offline pack and
+  /// neighbouring-chapter bookkeeping all live there.
   void _handleNavBarTap(int index) {
+    if (index == 1 && _isSeriesContentsTab) {
+      HapticFeedback.selectionClick();
+      _readerKey.currentState?.openSeriesContents();
+      return;
+    }
     _handleNavTap(_navBarRoutes[index]);
   }
+
+  /// Whether the second bottom-bar slot is the contents right now.  The same
+  /// test as `contentsTab` in [build], read at tap time -- a turn may have
+  /// changed the page since that build.
+  bool get _isSeriesContentsTab =>
+      _currentRoute == 'reader' &&
+      _hasSeriesTag(ref.read(readerProvider).pageData?.seriesTag);
+
+  static bool _hasSeriesTag(String? tag) =>
+      tag != null && tag.trim().isNotEmpty;
 
   void _handleNavTap(String route) {
     HapticFeedback.selectionClick();
@@ -604,13 +633,28 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
     // AppBar 汉堡 + 抽屉承担（抽屉此刻要列出全部目的地）。
     final isWide = MediaQuery.sizeOf(context).width >= _wideLayoutMinWidth;
 
+    // 阅读 series（书集）里的某一章时，底栏第二格从书架换成目录。
+    //
+    // 读这种书时整本书的书架列表帮不上忙 —— 你正在读的那 89 个「页」其实是
+    // 同一套书的 89 章，想做的动作是「跳到第几章」，而这件事章末块早就有了
+    // （Contents 弹层，同一个 showChapterContentsSheet）。底栏只是把它搬到
+    // 手边：不用读到章末才能换章。
+    //
+    // 只有 reader 这一屏换：sentence-reader（句读）不算，那里正文不在手边，
+    // 弹层没有可依附的正文位置。
+    final contentsTab =
+        _currentRoute == 'reader' &&
+        _hasSeriesTag(
+          ref.watch(readerProvider.select((s) => s.pageData?.seriesTag)),
+        );
+
     return Scaffold(
       key: _scaffoldKey,
       // 抽屉补齐主导航（底栏 / rail）够不着的目的地：Terms、Help、Settings。
       drawer: AppDrawer(
         currentRoute: ref.watch(currentScreenRouteProvider),
         onNavigate: _handleNavTap,
-        routes: _drawerRoutes(isWide),
+        routes: _drawerRoutes(isWide, contentsTab: contentsTab),
       ),
       // 底部导航：Reader | Books | Grammar | Review | Stats。
       // Help / Settings / Terms 只在抽屉里，所以这一屏即使表现不如预期，
@@ -636,24 +680,35 @@ class _MainNavigationState extends ConsumerState<MainNavigation> {
                 // 黑白 #FFFFFF/#EEEEEE），不会出现指示器与背景撞色。
                 backgroundColor: context.appColorScheme.background.surface,
                 elevation: 0,
-                destinations: const <NavigationDestination>[
-                  NavigationDestination(
+                destinations: <NavigationDestination>[
+                  const NavigationDestination(
                     icon: Icon(Icons.book),
                     label: 'Reader',
                   ),
-                  NavigationDestination(
-                    icon: Icon(Icons.collections_bookmark),
-                    label: 'Books',
-                  ),
-                  NavigationDestination(
+                  // 第二格：平常是书架；读 series 章节书时是这套书的目录
+                  // （见 build 里的 contentsTab）。文案走 l10n 的
+                  // readerContents —— 和章末块、弹层标题是同一个词，不另造。
+                  if (contentsTab)
+                    NavigationDestination(
+                      icon: const Icon(Icons.toc),
+                      label:
+                          AppLocalizations.of(context)?.readerContents ??
+                          'Contents',
+                    )
+                  else
+                    const NavigationDestination(
+                      icon: Icon(Icons.collections_bookmark),
+                      label: 'Books',
+                    ),
+                  const NavigationDestination(
                     icon: Icon(Icons.spellcheck),
                     label: 'Grammar',
                   ),
-                  NavigationDestination(
+                  const NavigationDestination(
                     icon: Icon(Icons.style),
                     label: 'Review',
                   ),
-                  NavigationDestination(
+                  const NavigationDestination(
                     icon: Icon(Icons.bar_chart),
                     label: 'Stats',
                   ),
