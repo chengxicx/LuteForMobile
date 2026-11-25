@@ -622,7 +622,12 @@ class ReaderDrawerSettings extends ConsumerWidget {
   }
 
   /// 正文注音开关。这是 App 自己的开关，与 web 端语言设置里的
-  /// 「Show furigana above words」相互独立。
+  /// 「Show pronunciation above words」相互独立。
+  ///
+  /// 标题跟 web 语言页的字段标签走（那边 2026-11 把 "Show furigana above
+  /// words" 改成了这个说法：furigana 严格说只指日语的假名，而这条覆盖
+  /// 拼音 / 粤拼 / 泰语 RTGS）。抽屉比设置页窄，所以用 Expanded 让它换行，
+  /// 不给 Spacer 留出被挤出屏幕的机会。
   Widget _buildFuriganaToggle(
     BuildContext context,
     WidgetRef ref,
@@ -630,11 +635,12 @@ class ReaderDrawerSettings extends ConsumerWidget {
   ) {
     return Row(
       children: [
-        const Text(
-          'Show Furigana',
-          style: TextStyle(fontWeight: FontWeight.bold),
+        const Expanded(
+          child: Text(
+            'Show pronunciation above words',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
         ),
-        const Spacer(),
         Transform.scale(
           scale: 0.8,
           child: Switch(

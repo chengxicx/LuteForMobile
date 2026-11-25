@@ -1275,7 +1275,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     const Text(
-                                      'Show furigana',
+                                      'Show pronunciation above words',
                                       style: TextStyle(
                                         fontWeight: FontWeight.bold,
                                       ),
