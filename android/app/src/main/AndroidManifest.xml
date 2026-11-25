@@ -36,11 +36,23 @@
         android:usesCleartextTraffic="true"
         android:requestLegacyExternalStorage="true"
         android:preserveLegacyExternalStorage="true">
+        <!-- singleTop + the default (package-name) task affinity: every way
+             into the app (launcher icon, a notification, adb) has to land in
+             the SAME task and the same Flutter engine.
+
+             It used to be launchMode="singleTask" with taskAffinity="", and
+             an empty affinity means the system cannot recognise the task it
+             already has: each launch source opened another one. Measured on
+             the phone (2026-11-25): five tasks for this activity at once
+             (#992 #993 #994 #1161 #1169). Two visible symptoms came out of
+             it: two "Song Mobile" cards in Recents, and state that looked
+             reset after switching apps, because each activity has its own
+             engine and therefore its own Riverpod container (e.g. the
+             collapsed player sliding back up on return). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask"
-            android:taskAffinity=""
+            android:launchMode="singleTop"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
