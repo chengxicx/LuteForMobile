@@ -1524,6 +1524,28 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     widget.scaffoldKey?.currentState?.openDrawer();
   }
 
+  /// Aa（文本排版）按钮；窄屏上不渲染。
+  ///
+  /// 它和左上角汉堡开的是**同一个抽屉**（[_openReaderDrawer] 就是
+  /// openDrawer、抽屉内容就是 Reader Settings 面板），所以少它不丢任何功能。
+  /// 而这一屏的 AppBar 已经放不下全部动作：363dp 的 PHB110 实测「云图标+计数
+  /// + 播放器 + Aa + ‹页码› + 右内边距」比可用宽度宽 113px（云图标描点
+  /// [69,204][229,274] 压在 leading [14,155][182,323] 上），actions 行向左
+  /// 伸进 leading 区之后标题也被整个盖住。去掉这唯一的重复入口，云图标和页码
+  /// 都回位。阈值与 [_buildBooksButton] 的 <600dp 门槛是同一套处理。
+  static const double _compactAppBarMinWidth = 420;
+
+  Widget _buildTextFormattingButton(BuildContext context) {
+    if (MediaQuery.sizeOf(context).width < _compactAppBarMinWidth) {
+      return const SizedBox.shrink();
+    }
+    return IconButton(
+      icon: const Icon(Icons.text_fields),
+      tooltip: 'Text formatting',
+      onPressed: _openReaderDrawer,
+    );
+  }
+
   /// 当前页是否有播放条可显示（漫画/视频书、未配置 TTS、播放条总开关关闭
   /// 时为 false）。与 body 里两条播放条的显示条件保持一致。
   bool _playerAvailable(PageData? pageData, Settings settings) {
@@ -1591,6 +1613,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// 给一个单击就换的入口，只切 original <-> night —— `Theme`（跟随服务器
   /// 主题）留在抽屉里给"就要跟着网页端"的人。
   Widget _buildEpubLookToggle(Settings settings) {
+    // 窄屏也收起来：抽屉里的 Reader Settings 有同一个开关（见
+    // reader_drawer_settings 的 epubLookMode 面板），而 EPUB 书比文本书
+    // 还要多占这一格 48dp —— 同样会把离线云徽标挤到汉堡上。
+    if (MediaQuery.sizeOf(context).width < _compactAppBarMinWidth) {
+      return const SizedBox.shrink();
+    }
     final night = settings.epubLookMode == 'night';
     return IconButton(
       icon: Icon(night ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
@@ -1704,11 +1732,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
                 ),
               if (currentPageData?.epubChapter != null)
                 _buildEpubLookToggle(settings),
-              IconButton(
-                icon: const Icon(Icons.text_fields),
-                tooltip: 'Text formatting',
-                onPressed: _openReaderDrawer,
-              ),
+              _buildTextFormattingButton(context),
               _buildGrammarButton(),
               if (totalPages > 1)
                 PageNav(
@@ -1756,11 +1780,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           ),
         if (currentPageData?.epubChapter != null)
           _buildEpubLookToggle(settings),
-        IconButton(
-          icon: const Icon(Icons.text_fields),
-          tooltip: 'Text formatting',
-          onPressed: _openReaderDrawer,
-        ),
+        _buildTextFormattingButton(context),
         _buildGrammarButton(),
         if (totalPages > 1)
           PageNav(
