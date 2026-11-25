@@ -290,7 +290,19 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   /// instead of stacking another load behind the first (on a slow link the
   /// two would answer in either order).
   bool _isTurning = false;
-  Key _pageKey = const ValueKey('page');
+
+  /// 正文槽位的 key —— 由**已经在屏上的** [PageData] 派生，不是由"正要去的
+  /// 页码"派生。
+  ///
+  /// 以前翻页时先乐观地把 key 改成新页码再发请求：网络一慢，正文就按新页的
+  /// 身份重画一遍（新 Element ⇒ 新的 ScrollPosition ⇒ 滚回顶部），看起来是
+  /// 「先跳回本页开头，过一会儿才跳到下一页」；请求失败还会白丢一次滚动位置。
+  /// 现在 key 只在数据真的换了页之后才变，旧页在请求期间保持原样（连滚动位置
+  /// 一起），换页动画（[_PageTransition] 比 child.key）也正好落在新内容到达的
+  /// 那一刻，而不是提前两秒空放。
+  Key _pageKeyFor(PageData pageData) =>
+      ValueKey('${pageData.bookId}-${pageData.currentPage}');
+
   Map<int, String> _languageIdToName = {};
   final Map<int, TextDirection> _languageIdToDirection = {};
   final Set<int> _languageDirectionLoadsInFlight = {};
@@ -1127,7 +1139,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final pageData = ref.read(readerProvider).pageData;
     if (pageData != null) {
       setState(() {
-        _pageKey = ValueKey('${pageData!.bookId}-${pageData!.currentPage}');
         _isLastPageMarkedDone = false;
       });
       await ref
@@ -1168,7 +1179,6 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         openingBook.id == bookId &&
         openingBook.bookType == 'epub';
     setState(() {
-      _pageKey = ValueKey('$bookId-${pageNum ?? 1}');
       _isLastPageMarkedDone = false;
       _lastAttemptedBookId = bookId;
       _lastAttemptedPageNum = pageNum;
@@ -2169,7 +2179,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final hasGestureNav = MediaQuery.of(context).systemGestureInsets.bottom > 0;
 
     final textDisplay = TextDisplay(
-      key: _pageKey,
+      key: _pageKeyFor(pageData),
       paragraphs: pageData.paragraphs,
       scrollController: _scrollController,
       topPadding: textSettings.fullscreenMode && !_isUiVisible
@@ -2218,7 +2228,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     final epubChapter = pageData.epubChapter;
     final content = mangaPage != null
         ? MangaPageView(
-            key: _pageKey,
+            key: _pageKeyFor(pageData),
             bookId: pageData.bookId,
             manga: mangaPage,
             imagePath: mangaPage.imagePath,
@@ -2249,7 +2259,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           )
         : pdfPage != null
         ? PdfPageView(
-            key: _pageKey,
+            key: _pageKeyFor(pageData),
             bookId: pageData.bookId,
             pdf: pdfPage,
             pdfUrl: '${settings.serverUrl}${pdfPage.pdfPath}',
@@ -3634,7 +3644,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     setState(() {
       _isNavigatingForward = pageNum > fromPage;
-      _pageKey = ValueKey('$bookId-$pageNum');
+      // 这里**不动** _pageKey：它由 pageData 派生，请求期间旧页必须保持原样
+      // （包括滚动位置）。见 [_pageKeyFor]。
       _isLastPageMarkedDone = false;
       _lastAttemptedBookId = bookId;
       _lastAttemptedPageNum = pageNum;
@@ -3687,7 +3698,8 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     setState(() {
       _isNavigatingForward = pageNum > fromPage;
-      _pageKey = ValueKey('$bookId-$pageNum');
+      // 这里**不动** _pageKey：它由 pageData 派生，请求期间旧页必须保持原样
+      // （包括滚动位置）。见 [_pageKeyFor]。
       _isLastPageMarkedDone = false;
       _lastAttemptedBookId = bookId;
       _lastAttemptedPageNum = pageNum;

@@ -694,15 +694,58 @@ class ReaderNotifier extends Notifier<ReaderState> {
     );
   }
 
-  /// Kicks off the next-page preload chain when the reader has a page in
-  /// view and a next page exists: the page HTML via [preloadNextPage], and
-  /// -- for manga -- the next page's image into the disk cache.
+  /// Warms `currentPage - 1`, the mirror of [preloadNextPage].
+  ///
+  /// Only the direction the reader is most likely to move in is worth a
+  /// request, which is why this is one page and not a window: the ±10-page
+  /// walk in [_runFullBookPreload] covers both directions but runs on
+  /// unmetered networks only.  On mobile data a back turn had no warm-up at
+  /// all -- including pages read a minute earlier, which is what "going back
+  /// reloads and stutters" was.
+  ///
+  /// [ContentService.preloadPage] answers from the cache without a request
+  /// when the page is already there, so the common case (going back to a page
+  /// just left) costs one Hive read.
+  Future<void> preloadPreviousPage() async {
+    final current = state.pageData;
+    if (current == null) return;
+    final prevPageNum = current.currentPage - 1;
+    if (prevPageNum < 1) {
+      ApiLogger.logRequest(
+        'preloadPreviousPage',
+        details: 'SKIP - already at first page',
+      );
+      return;
+    }
+
+    final cacheService = ref.read(pageCacheServiceProvider);
+    final cachedMetadata = await cacheService.getMetadataFromCache(
+      current.bookId,
+      current.currentPage,
+    );
+    await _repository.preloadPage(
+      current.bookId,
+      prevPageNum,
+      cachedMetadataHtml: cachedMetadata,
+    );
+  }
+
+  /// Kicks off the preload chain for the pages either side of the one in
+  /// view: the page HTML via [preloadNextPage] / [preloadPreviousPage], the
+  /// neighbouring chapters of a chapter book, and -- for manga -- the next
+  /// page's image into the disk cache.
   void _triggerNextPagePreload(PageData pageData) {
     _startFullBookPreload(pageData);
     // EPUB chapters are separate books, so the page cache and the next-page
-    // preload never see the chapter boundary.  Warm the next chapter here,
+    // preload never see the chapter boundary.  Warm both neighbours here,
     // while the reader is still on this one.
     _enqueuePrefetch(() => _prefetchNextChapter(pageData));
+    _enqueuePrefetch(() => _prefetchPrevChapter(pageData));
+
+    // 上一页也要热。整本 ±10 页的预载只在 WiFi 下跑（见
+    // [_runFullBookPreload]），而单页预取原先只看 +1 —— 于是在移动数据下
+    // 往回翻永远是冷请求，连一分钟前刚读过的页也要从网络重取一遍。
+    _enqueuePrefetch(() => preloadPreviousPage());
     if (pageData.currentPage >= pageData.pageCount) return;
 
     _enqueuePrefetch(() async {
@@ -740,6 +783,36 @@ class ReaderNotifier extends Notifier<ReaderState> {
         'prefetchNextChapter',
         e,
         details: 'bookId=$nextBookId',
+      );
+    }
+  }
+
+  /// Warms the first page of [PageData.seriesPrevBookId] the same way
+  /// [_prefetchNextChapter] warms the next one.
+  ///
+  /// Going back a chapter used to be the only direction with no warm-up at
+  /// all: the pack grows forward as you read, but the *document* still has
+  /// to be navigated again, and on a cold pack that is a network load.  A
+  /// chapter read ten seconds ago should re-open from disk.
+  Future<void> _prefetchPrevChapter(PageData pageData) async {
+    if (!pageData.isEpub) return;
+    final prevBookId = pageData.seriesPrevBookId;
+    if (prevBookId == null) return;
+    if (!ServerStatusManager.isReachable) return;
+    try {
+      await ref.read(epubOfflinePrefetchProvider).prefetchNearby(
+            bookId: prevBookId,
+            page: 1,
+            pageCount: 1,
+            // The previous chapter's real pageCount is unknown here; this
+            // call must not mark its pack as complete.
+            updatePageCount: false,
+          );
+    } catch (e) {
+      ApiLogger.logError(
+        'prefetchPrevChapter',
+        e,
+        details: 'bookId=$prevBookId',
       );
     }
   }
