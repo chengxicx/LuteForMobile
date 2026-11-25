@@ -1167,6 +1167,47 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               ),
                             ],
                           ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('Mark rest known when turning'),
+                                    Text(
+                                      'Turning the page also marks every word '
+                                      'still unknown on the page you are '
+                                      'leaving as known (the web reader calls '
+                                      'this "Mark rest known"). The page is '
+                                      'also counted as read.',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.6),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.8,
+                                child: Switch(
+                                  value: textSettings.markRestKnownOnTurn,
+                                  onChanged: (value) {
+                                    ref
+                                        .read(
+                                          textFormattingSettingsProvider
+                                              .notifier,
+                                        )
+                                        .updateMarkRestKnownOnTurn(value);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
                           const SizedBox(height: 24),
                           const Text('Page Turn Animations'),
                           const SizedBox(height: 8),
@@ -1240,12 +1281,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                       ),
                                     ),
                                     Text(
-                                      'Readings above words that contain kanji. '
-                                      'Only languages that supply readings '
-                                      '(Japanese, Mandarin, Cantonese) are '
-                                      'affected. This switch is the app\'s own '
-                                      'and is independent of the language '
-                                      'setting on the web reader.',
+                                      'Draw pronunciation readings above '
+                                      'words: kana for Japanese, pinyin for '
+                                      'Mandarin, jyutping for Cantonese, RTGS '
+                                      'romanization for Thai. Thai annotates '
+                                      'every word; the others annotate only '
+                                      'words carrying Han characters. Nothing '
+                                      'appears for a language the server has '
+                                      'no readings for. This is the app\'s own '
+                                      'switch — it does not need the web '
+                                      'reader\'s per-language box to be '
+                                      'checked.',
                                       style: TextStyle(
                                         fontSize: 12,
                                         color: Theme.of(context)

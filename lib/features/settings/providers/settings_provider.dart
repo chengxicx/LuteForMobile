@@ -932,6 +932,14 @@ class TextFormattingSettings {
   final bool swipeNavigationEnabled;
   final bool swipeMarksRead;
 
+  /// 翻走这一页时，把它剩下的生词一并标成已知 —— 对应 web 阅读菜单里的
+  /// 「Mark rest known」（`arrow_marks_known`）。
+  ///
+  /// 服务端的 `restknown=1` 同时会盖上已读日期（见 `reader_provider.dart`
+  /// 的 markPageKnown），所以打开它时不再单独发 [swipeMarksRead] 那条
+  /// 「只标已读」的记录。
+  final bool markRestKnownOnTurn;
+
   const TextFormattingSettings({
     this.textSize = 20.0,
     this.lineSpacing = 1.5,
@@ -941,6 +949,7 @@ class TextFormattingSettings {
     this.fullscreenMode = false,
     this.swipeNavigationEnabled = false,
     this.swipeMarksRead = true,
+    this.markRestKnownOnTurn = false,
   });
 
   TextFormattingSettings copyWith({
@@ -952,6 +961,7 @@ class TextFormattingSettings {
     bool? fullscreenMode,
     bool? swipeNavigationEnabled,
     bool? swipeMarksRead,
+    bool? markRestKnownOnTurn,
   }) {
     return TextFormattingSettings(
       textSize: textSize ?? this.textSize,
@@ -963,6 +973,7 @@ class TextFormattingSettings {
       swipeNavigationEnabled:
           swipeNavigationEnabled ?? this.swipeNavigationEnabled,
       swipeMarksRead: swipeMarksRead ?? this.swipeMarksRead,
+      markRestKnownOnTurn: markRestKnownOnTurn ?? this.markRestKnownOnTurn,
     );
   }
 
@@ -977,7 +988,8 @@ class TextFormattingSettings {
         other.isItalic == isItalic &&
         other.fullscreenMode == fullscreenMode &&
         other.swipeNavigationEnabled == swipeNavigationEnabled &&
-        other.swipeMarksRead == swipeMarksRead;
+        other.swipeMarksRead == swipeMarksRead &&
+        other.markRestKnownOnTurn == markRestKnownOnTurn;
   }
 
   @override
@@ -990,6 +1002,7 @@ class TextFormattingSettings {
     fullscreenMode,
     swipeNavigationEnabled,
     swipeMarksRead,
+    markRestKnownOnTurn,
   );
 
   static const TextFormattingSettings defaultSettings =
@@ -1005,6 +1018,7 @@ class TextFormattingSettingsNotifier extends Notifier<TextFormattingSettings> {
   static const String _keyFullscreenMode = 'fullscreen_mode';
   static const String _keySwipeNavigationEnabled = 'swipe_navigation_enabled';
   static const String _keySwipeMarksRead = 'swipe_marks_read';
+  static const String _keyMarkRestKnownOnTurn = 'mark_rest_known_on_turn';
   bool _isInitialized = false;
 
   @override
@@ -1027,6 +1041,8 @@ class TextFormattingSettingsNotifier extends Notifier<TextFormattingSettings> {
     final swipeNavigationEnabled =
         prefs.getBool(_keySwipeNavigationEnabled) ?? false;
     final swipeMarksRead = prefs.getBool(_keySwipeMarksRead) ?? true;
+    final markRestKnownOnTurn =
+        prefs.getBool(_keyMarkRestKnownOnTurn) ?? false;
 
     final fontWeightMap = [
       FontWeight.w200,
@@ -1048,6 +1064,7 @@ class TextFormattingSettingsNotifier extends Notifier<TextFormattingSettings> {
       fullscreenMode: fullscreenMode,
       swipeNavigationEnabled: swipeNavigationEnabled,
       swipeMarksRead: swipeMarksRead,
+      markRestKnownOnTurn: markRestKnownOnTurn,
     );
     if (state != loadedSettings) {
       state = loadedSettings;
@@ -1137,6 +1154,14 @@ class TextFormattingSettingsNotifier extends Notifier<TextFormattingSettings> {
     state = state.copyWith(swipeMarksRead: value);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keySwipeMarksRead, value);
+  }
+
+  /// 对应 web 阅读菜单的「Mark rest known」：翻页时把剩下没标过的词一并标成
+  /// 已知。
+  Future<void> updateMarkRestKnownOnTurn(bool value) async {
+    state = state.copyWith(markRestKnownOnTurn: value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyMarkRestKnownOnTurn, value);
   }
 
   Future<void> updateSwipeNavigationEnabled(bool value) async {

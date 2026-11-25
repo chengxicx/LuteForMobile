@@ -53,6 +53,8 @@ class ReaderDrawerSettings extends ConsumerWidget {
             const SizedBox(height: 16),
             _buildPageNumbersToggle(context, ref, settings),
             const SizedBox(height: 16),
+            _buildMarkRestKnownToggle(context, ref),
+            const SizedBox(height: 16),
             _buildFuriganaToggle(context, ref, settings),
             const SizedBox(height: 16),
             _buildEpubPagedToggle(context, ref, settings),
@@ -584,6 +586,35 @@ class ReaderDrawerSettings extends ConsumerWidget {
             onChanged: (value) {
               ref.read(settingsProvider.notifier).updateShowPageNumbers(value);
             },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 翻走这一页时，把本页剩下的生词一并标成已知 —— 对应 web 阅读菜单里的
+  /// 同名开关（`arrow_marks_known`，标签就是「Mark rest known」）。
+  ///
+  /// 与 web 一样存本机（那边是 localStorage，这边是 SharedPreferences），
+  /// 两边各存各的、互不同步。翻页动作本身走 reader 的 `_turnPage`。
+  Widget _buildMarkRestKnownToggle(BuildContext context, WidgetRef ref) {
+    final value = ref.watch(
+      textFormattingSettingsProvider.select((s) => s.markRestKnownOnTurn),
+    );
+    return Row(
+      children: [
+        const Text(
+          'Mark rest known',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const Spacer(),
+        Transform.scale(
+          scale: 0.8,
+          child: Switch(
+            value: value,
+            onChanged: (v) => ref
+                .read(textFormattingSettingsProvider.notifier)
+                .updateMarkRestKnownOnTurn(v),
           ),
         ),
       ],

@@ -487,7 +487,16 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     } else {
       if (pageData.currentPage < pageData.pageCount) {
         HapticFeedback.lightImpact();
-        if (textSettings.swipeMarksRead) {
+        if (textSettings.markRestKnownOnTurn) {
+          // web 阅读菜单的「Mark rest known」：翻走这一页时把它剩下的生词
+          // 一并标成已知。服务端的 restknown=1 同时会盖已读日期，所以这里
+          // 不再另发一条「只标已读」的记录 —— outbox 会把两条合并成一条。
+          unawaited(
+            ref
+                .read(readerProvider.notifier)
+                .markPageKnown(pageData.bookId, pageData.currentPage),
+          );
+        } else if (textSettings.swipeMarksRead) {
           // Now a local outbox record rather than a POST, so leaving it
           // un-awaited is finally safe -- this used to be an unhandled async
           // error with no signal, and the read stat was simply lost.
