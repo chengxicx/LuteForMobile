@@ -423,6 +423,10 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
   /// 章内翻屏到头后的换页：翻小节（页码），小节尽头接相邻章 —— 与章末
   /// 块那三个按钮同一个目标。物理键与翻页模式的手势/点按区共用。
+  ///
+  /// 走到这里的调用方都已经把「翻一屏」这件事判定过了（章节里真的滑了一
+  /// 次，或按了物理键），所以换页必须 [alreadyDecided]，不能再被滑动开关
+  /// 拦一次 —— 否则 EPUB 章末那次左滑会静默失效。
   void _turnPastChapterEnd(bool forward) {
     final data = ref.read(readerProvider).pageData;
     if (data == null) return;
@@ -430,7 +434,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         ? data.currentPage < data.pageCount
         : data.currentPage > 1;
     if (canPage) {
-      _turnPage(forward ? -1 : 1, data);
+      _turnPage(forward ? -1 : 1, data, alreadyDecided: true);
       return;
     }
     final neighbour = forward ? data.seriesNextBookId : data.seriesPrevBookId;
@@ -441,9 +445,23 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
   ///
   /// 拖动翻页与墨水屏的左右区域点击共用这一条路径 —— 墨水屏下没有拖动，
   /// 只有点击（跟手位移每帧都要刷一次屏，见 onHorizontalDragStart）。
-  void _turnPage(int direction, PageData? pageData) {
+  ///
+  /// [alreadyDecided] 给「翻页这件事已被别处判定过」的调用方：章内翻屏到头
+  /// 之后的那一次换页（[EpubChapterView.onTurnPage] 的手势/三分区点按、
+  /// 物理键走的 [_turnChapterScreen]）。那一下已经在章节里真的滑过一次，
+  /// 不该再被「Enable swipe navigation」这个触屏开关否决 —— 实测 EPUB 读到
+  /// 章内最后一屏（角标 3/3）时左滑毫无反应，就是被 [_canSwipePages] 静默
+  /// 吞掉的（该开关默认关，而顶部箭头绕过它，于是箭头好使、滑动不好使）。
+  /// 与 [_canSwipePages] 里给墨水屏点击区打的那个补丁是同一个坑。
+  /// 其余守卫由调用方各自保证：多选态进不来（EpubChapterView 的
+  /// _multiSelectActive 先挡），pageCount 不够时 [canPage] 早已为假。
+  void _turnPage(
+    int direction,
+    PageData? pageData, {
+    bool alreadyDecided = false,
+  }) {
     if (direction == 0 || pageData == null) return;
-    if (!_canSwipePages(pageData)) return;
+    if (!alreadyDecided && !_canSwipePages(pageData)) return;
     // The term card lives in the root overlay and would float over the new
     // page; every turn (tap zone, flick, hardware key, page controls) goes
     // through here.  After the guards, so a rejected turn keeps the card.
