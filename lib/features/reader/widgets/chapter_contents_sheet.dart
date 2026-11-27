@@ -6,10 +6,16 @@ import '../providers/series_chapters_provider.dart';
 
 /// The chapter list of the book set being read ("Contents").
 ///
-/// Reached from the end-of-chapter block, so it opens on top of the reader
-/// rather than replacing it: the reader keeps its scroll position, its
-/// player and its word state, and closing the sheet puts the reader back
-/// exactly where it was.
+/// Reached from the end-of-chapter block and from the bottom bar's second
+/// slot, so it opens on top of the reader rather than replacing it: the
+/// reader keeps its scroll position, its player and its word state, and
+/// closing the sheet puts the reader back exactly where it was.
+///
+/// The first row leaves the set altogether ([shelfLabel] / [onOpenShelf]).
+/// While a series chapter book is open the shelf has no slot of its own --
+/// the second bottom-bar slot is this list, and on the wide layout the rail
+/// retreats from the reader entirely -- so "back to the shelf" has to be
+/// written down somewhere the reader can see it, not just left in the drawer.
 ///
 /// Deliberately flat -- square corners, hairline separators, one filled bar
 /// for "you are here", no ripple, no shadow.  On the Leaf 5C the sheet is
@@ -23,6 +29,8 @@ Future<void> showChapterContentsSheet({
   required String title,
   required String loadingLabel,
   required String emptyLabel,
+  required String shelfLabel,
+  required VoidCallback onOpenShelf,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -114,6 +122,15 @@ Future<void> showChapterContentsSheet({
                 ),
               ),
               Container(height: 1, color: scheme.outlineVariant),
+              _ShelfRow(
+                label: shelfLabel,
+                onTap: () {
+                  // Pop first, same as a chapter tap: the shelf must not
+                  // appear behind a list of the book set it is leaving.
+                  Navigator.of(sheetContext).pop();
+                  onOpenShelf();
+                },
+              ),
               body,
             ],
           ),
@@ -121,6 +138,62 @@ Future<void> showChapterContentsSheet({
       },
     ),
   );
+}
+
+/// The line that takes you out of the set and back to the shelf.
+///
+/// Same height and hairline as a chapter row so it reads as part of the same
+/// list rather than as a toolbar, but an arrow instead of a position number:
+/// this row leaves the list, it does not scroll it.
+class _ShelfRow extends StatelessWidget {
+  const _ShelfRow({required this.label, required this.onTap});
+
+  static const double height = 48;
+
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        height: height,
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: scheme.outlineVariant, width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 15),
+            Icon(
+              Icons.arrow_back,
+              size: 18,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurface,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// The scrolling list, opening near the chapter being read.

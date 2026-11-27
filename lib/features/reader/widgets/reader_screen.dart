@@ -1659,6 +1659,42 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     );
   }
 
+  /// 阅读页标题；读章节书（书集里的某一本）时它同时是目录入口。
+  ///
+  /// 目录不放顶栏 action：360dp 下 actions 行已经被「云端徽标 + 播放条 + Aa
+  /// + 页码导航」吃到只剩 0（见 [_buildBooksButton] 里那笔 uiautomator 实测），
+  /// 再加一个 48dp 图标必然压到汉堡上。标题是整条顶栏里唯一不占 actions
+  /// 宽度的地方，而「点标题换章」在阅读器里本来就是常见手势 —— 末尾那个
+  /// ▾ 负责说明它可以点。
+  ///
+  /// 宽屏也走同一个入口，不再额外给一个 toc 图标：一个动作一处入口。
+  Widget _buildAppBarTitle(String text, String? seriesTag) {
+    final label = Text(text, maxLines: 1, overflow: TextOverflow.ellipsis);
+    if (seriesTag == null || seriesTag.trim().isEmpty) return label;
+
+    final contents = AppLocalizations.of(context)?.readerContents;
+    return Tooltip(
+      // 无鼠标的场景下 tooltip 只剩语义作用：读屏要能听出标题能点。
+      message: contents == null ? text : '$contents · $text',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(_openContents()),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(child: label),
+            const SizedBox(width: 2),
+            Icon(
+              Icons.arrow_drop_down,
+              size: 22,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   PreferredSizeWidget _buildAppBar(
     BuildContext context,
     PageData? pageData,
@@ -1707,6 +1743,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
         ? _playerAvailable(currentPageData, settings)
         : playerSlotWhileLoading;
 
+    // 章节书的标题即目录入口。seriesTag 只从 `currentPageData` 取：换书加载
+    // 期间 pageData 可能还是上一本书的残留，不能把它的 seriesTag 带过来。
+    final appBarTitle = _buildAppBarTitle(
+      pageData?.title ?? book?.title ?? 'Reader',
+      currentPageData?.seriesTag,
+    );
+
     if (fullscreenMode) {
       final topPadding = MediaQuery.of(context).padding.top;
       return PreferredSize(
@@ -1722,7 +1765,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
           height: _isUiVisible ? kToolbarHeight + topPadding : 0,
           child: AppBar(
             leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
-            title: Text(pageData?.title ?? book?.title ?? 'Reader'),
+            title: appBarTitle,
             actions: [
               OutboxStatusIndicator(serverReachable: serverReachable),
               _buildBooksButton(),
@@ -1759,7 +1802,7 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
 
     return AppBar(
       leading: AppBarLeading(scaffoldKey: widget.scaffoldKey),
-      title: Text(pageData?.title ?? book?.title ?? 'Reader'),
+      title: appBarTitle,
       actions: [
         OutboxStatusIndicator(serverReachable: serverReachable),
         _buildBooksButton(),
@@ -3627,20 +3670,13 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
     ref.read(navigationProvider).navigateToReader(bookId, null, book);
   }
 
-  /// The chapter list of the current set, for the bottom bar's "Contents"
-  /// slot (`app.dart` calls this while a series chapter book is open).
+  /// The chapter list of the current set, for the reader's title entry.
   ///
   /// Same sheet as the end-of-chapter block's Contents row -- deliberately
   /// not a second implementation: only the reader knows the chapter on
   /// screen (`currentBookId`, the "you are here" bar) and only it can turn
   /// a selection into a chapter switch ([_openChapter]) without losing the
   /// page cache, the offline pack or the player.
-  void openSeriesContents() {
-    if (!mounted) return;
-    unawaited(_openContents());
-  }
-
-  /// The chapter list of the current set.
   Future<void> _openContents() async {
     final pageData = ref.read(readerProvider).pageData;
     final tag = pageData?.seriesTag;
@@ -3654,6 +3690,12 @@ class ReaderScreenState extends ConsumerState<ReaderScreen>
       title: l10n.readerContents,
       loadingLabel: l10n.readerChaptersLoading,
       emptyLabel: l10n.readerChaptersUnavailable,
+      // While a series chapter book is open the shelf has no bottom-bar slot
+      // of its own (the second slot is this list, see app.dart), so this row
+      // is the visible way out.  navBooks is the same word as that slot's
+      // label, not a second name for the same place.
+      shelfLabel: l10n.navBooks,
+      onOpenShelf: () => ref.read(navigationProvider).navigateToScreen('books'),
       onSelect: (chapter) => _openChapter(chapter.bookId),
     );
   }
